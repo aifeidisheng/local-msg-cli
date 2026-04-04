@@ -10,10 +10,12 @@ if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 import pilk
+from config import load_config
 
-DB_PATH = r"decrypted\message\media_0.db"
-CONTACT_DB_PATH = r"decrypted\contact\contact.db"
-OUTPUT_DIR = "data"
+_cfg = load_config()
+DB_PATH = os.path.join(_cfg["decrypted_dir"], "message", "media_0.db")
+CONTACT_DB_PATH = os.path.join(_cfg["decrypted_dir"], "contact", "contact.db")
+OUTPUT_DIR = os.path.join(_cfg["wechat_base_dir"], "voice")
 
 def silk_to_mp3(voice_data, output_path):
     """将微信 SILK 语音数据转换为 MP3"""

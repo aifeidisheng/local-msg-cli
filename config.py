@@ -41,6 +41,9 @@ _DEFAULT = {
     "decrypted_dir": "decrypted",
     "decoded_image_dir": "decoded_images",
     "wechat_process": _DEFAULT_PROCESS,
+    "wxwork_db_dir": "",
+    "wxwork_keys_file": "wxwork_keys.json",
+    "wxwork_process": "WXWork.exe",
 }
 
 
@@ -213,8 +216,8 @@ def load_config():
 
     # 将相对路径转为绝对路径
     base = _app_base_dir()
-    for key in ("keys_file", "decrypted_dir", "decoded_image_dir"):
-        if key in cfg and not os.path.isabs(cfg[key]):
+    for key in ("keys_file", "decrypted_dir", "decoded_image_dir", "wxwork_keys_file"):
+        if key in cfg and cfg[key] and not os.path.isabs(cfg[key]):
             cfg[key] = os.path.join(base, cfg[key])
 
     # 自动推导微信数据根目录（db_dir 的上级目录）

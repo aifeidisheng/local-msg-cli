@@ -1,5 +1,5 @@
 """导出微信消息记录到 CSV / HTML / JSON
-目录结构: export/<display_name>/messages.csv|html|json
+目录结构: <wechat_base_dir>/export/<display_name>/messages.csv|html|json
 """
 import sqlite3
 import glob
@@ -18,9 +18,12 @@ import zstandard as zstd
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-MSG_DB_DIR = r"decrypted\message"
-CONTACT_DB_PATH = r"decrypted\contact\contact.db"
-OUTPUT_DIR = "export"
+from config import load_config
+
+_cfg = load_config()
+MSG_DB_DIR = os.path.join(_cfg["decrypted_dir"], "message")
+CONTACT_DB_PATH = os.path.join(_cfg["decrypted_dir"], "contact", "contact.db")
+OUTPUT_DIR = os.path.join(_cfg["wechat_base_dir"], "export")
 
 MSG_TYPES = {
     1: "文本",
