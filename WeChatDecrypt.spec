@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('main.py', '.'), ('config.py', '.'), ('decrypt_db.py', '.'), ('export_messages.py', '.'), ('voice_to_mp3.py', '.'), ('find_all_keys.py', '.'), ('find_all_keys_windows.py', '.'), ('find_all_keys_linux.py', '.'), ('key_scan_common.py', '.'), ('key_utils.py', '.'), ('decode_image.py', '.'), ('find_image_key.py', '.'), ('find_image_key_monitor.py', '.'), ('monitor.py', '.'), ('monitor_web.py', '.'), ('mcp_server.py', '.'), ('config.example.json', '.')]
+datas = [('main.py', '.'), ('config.py', '.'), ('decrypt_db.py', '.'), ('export_messages.py', '.'), ('voice_to_mp3.py', '.'), ('find_all_keys.py', '.'), ('find_all_keys_windows.py', '.'), ('find_all_keys_linux.py', '.'), ('key_scan_common.py', '.'), ('key_utils.py', '.'), ('decode_image.py', '.'), ('find_image_key.py', '.'), ('find_image_key_monitor.py', '.'), ('decrypt_sns.py', '.'), ('export_sns.py', '.'), ('monitor.py', '.'), ('monitor_web.py', '.'), ('mcp_server.py', '.'), ('config.example.json', '.')]
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('pilk')

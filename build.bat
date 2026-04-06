@@ -29,6 +29,8 @@ pyinstaller --noconfirm --onefile --console --name "WeChatDecrypt" ^
     --add-data "decode_image.py;." ^
     --add-data "find_image_key.py;." ^
     --add-data "find_image_key_monitor.py;." ^
+    --add-data "decrypt_sns.py;." ^
+    --add-data "export_sns.py;." ^
     --add-data "monitor.py;." ^
     --add-data "monitor_web.py;." ^
     --add-data "mcp_server.py;." ^

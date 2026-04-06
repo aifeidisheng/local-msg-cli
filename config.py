@@ -229,8 +229,34 @@ def load_config():
     else:
         cfg["wechat_base_dir"] = db_dir
 
+    # 输出目录：<app_dir>/wechat_files/<wxid>/
+    wxid = os.path.basename(os.path.normpath(cfg["wechat_base_dir"]))
+    cfg["output_base_dir"] = os.path.join(base, "wechat_files", wxid)
+
     # decoded_image_dir 默认值
     if "decoded_image_dir" not in cfg:
         cfg["decoded_image_dir"] = os.path.join(base, "decoded_images")
+
+    # 自动检测 WeChat Files 目录（FileStorage/MsgAttach, FileStorage/Sns/Cache）
+    if not cfg.get("wechat_files_dir"):
+        wechat_files_base = os.path.join(os.path.expanduser("~"), "Documents", "WeChat Files")
+        if os.path.isdir(wechat_files_base):
+            # xwechat_files 的 wxid 可能带后缀如 _1d4c，需要模糊匹配
+            wxid_prefix = wxid.rsplit("_", 1)[0] if "_" in wxid else wxid
+            for d in os.listdir(wechat_files_base):
+                if d == wxid or d == wxid_prefix or wxid.startswith(d):
+                    candidate = os.path.join(wechat_files_base, d)
+                    if os.path.isdir(os.path.join(candidate, "FileStorage")):
+                        cfg["wechat_files_dir"] = candidate
+                        break
+
+    wf_dir = cfg.get("wechat_files_dir", "")
+    cfg["msgattach_dir"] = os.path.join(wf_dir, "FileStorage", "MsgAttach") if wf_dir else ""
+    cfg["sns_cache_dir"] = os.path.join(wf_dir, "FileStorage", "Sns", "Cache") if wf_dir else ""
+
+    # xwechat_files 图片/缓存路径
+    wb = cfg["wechat_base_dir"]
+    cfg["xwechat_attach_dir"] = os.path.join(wb, "msg", "attach") if wb else ""
+    cfg["xwechat_cache_dir"] = os.path.join(wb, "cache") if wb else ""
 
     return cfg

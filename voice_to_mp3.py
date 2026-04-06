@@ -15,7 +15,13 @@ from config import load_config
 _cfg = load_config()
 DB_PATH = os.path.join(_cfg["decrypted_dir"], "message", "media_0.db")
 CONTACT_DB_PATH = os.path.join(_cfg["decrypted_dir"], "contact", "contact.db")
-OUTPUT_DIR = os.path.join(_cfg["wechat_base_dir"], "voice")
+OUTPUT_DIR = _cfg["output_base_dir"]
+
+_CONTACT_FILTER = None
+_filter_raw = os.environ.get("WECHAT_EXPORT_CONTACTS", "").strip()
+if _filter_raw:
+    _CONTACT_FILTER = set(_filter_raw.split(","))
+    print(f"联系人筛选: {len(_CONTACT_FILTER)} 个")
 
 def silk_to_mp3(voice_data, output_path):
     """将微信 SILK 语音数据转换为 MP3"""
@@ -92,15 +98,17 @@ success = 0
 fail = 0
 for chat_name_id, create_time, local_id, voice_data in rows:
     user_name = name_map.get(chat_name_id, f"unknown_{chat_name_id}")
+    if _CONTACT_FILTER and user_name not in _CONTACT_FILTER:
+        continue
     dname = safe_dirname(display_name(user_name))
     dt = datetime.fromtimestamp(create_time)
     filename = dt.strftime("%Y%m%d_%H%M%S") + f"_{local_id}.mp3"
 
-    user_dir = os.path.join(OUTPUT_DIR, dname)
+    user_dir = os.path.join(OUTPUT_DIR, dname, "voice")
     os.makedirs(user_dir, exist_ok=True)
 
-    # 写入 .info 文件（只写一次）
-    info_path = os.path.join(user_dir, ".info")
+    # 写入 .info 文件（只写一次，写到联系人根目录）
+    info_path = os.path.join(OUTPUT_DIR, dname, ".info")
     if not os.path.exists(info_path):
         info = contact_map.get(user_name, {"username": user_name, "alias": "", "remark": "", "nick_name": ""})
         with open(info_path, "w", encoding="utf-8") as f:
