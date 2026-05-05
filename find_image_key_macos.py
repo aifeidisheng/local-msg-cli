@@ -494,6 +494,8 @@ def _find_via_bruteforce(db_dir, attach_dir, templates):
     if not xres:
         print("[!] 方案2: V2 .dat 样本不足 (需 >= 3 个), 无法投票反推 xor_key",
               flush=True)
+        print("    请先在微信中再看 1-2 张图片，让微信生成更多 V2 .dat 文件",
+              flush=True)
         return None
     xor_key, votes, total = xres
     if votes == total:
@@ -607,6 +609,7 @@ def main(config_path=None):
     if not db_dir:
         print("[!] config.json 中未配置 db_dir", file=sys.stderr, flush=True)
         sys.exit(1)
+    db_dir = os.path.expanduser(os.path.expandvars(db_dir))
     print(f"[*] db_dir = {db_dir}", flush=True)
 
     # 短路：如果已有 image_aes_key 且仍能在所有模板上验证通过，直接退出
