@@ -1318,26 +1318,23 @@ class SessionMonitor:
                         'items': items,
                     }
                 elif app_type == 2000:
-                    # 微信转账 — paysubtype 含义为社区共识表，1/3/4 跨版本一致；
-                    # 字段名在不同版本有 snake/camel 漂移，逐个尝试
-                    info = appmsg.find('wcpayinfo')
-                    paysubtype = ''
-                    fee_desc = ''
-                    pay_memo = ''
-                    if info is not None:
-                        paysubtype = (info.findtext('paysubtype') or '').strip()
-                        fee_desc = (info.findtext('feedesc') or info.findtext('feeDesc') or '').strip()
-                        pay_memo = (info.findtext('pay_memo') or info.findtext('paymemo') or '').strip()
-                    direction = {
-                        '1': '发起转账', '3': '已收款', '4': '已退还',
-                        '5': '过期已退还', '7': '待领取', '8': '已领取',
-                    }.get(paysubtype, '')
+                    # 微信转账 — 复用 mcp_server 已有的解析器，单一来源避免字段漂移
+                    # （snake/camel 大小写、未来新 paysubtype 兜底）。
+                    import mcp_server  # 已被 chat_export_helpers 验证 import 安全
+                    info = mcp_server._extract_transfer_info(appmsg) or {}
+                    pay_memo = info.get('pay_memo', '')
+                    paysubtype = info.get('paysubtype', '')
+                    # 已知 paysubtype 显示中文 label；未知用空串而非"未知(paysubtype=N)"，
+                    # 避免 UI 出现内部诊断字串。日志侧若需要可看 chat history。
+                    direction = (info.get('paysubtype_label', '')
+                                 if paysubtype in mcp_server._TRANSFER_PAYSUBTYPE_LABEL
+                                 else '')
                     return {
                         'type': 'transfer',
                         'title': title or '微信转账',
                         'direction': direction,
                         'paysubtype': paysubtype,
-                        'fee_desc': fee_desc,
+                        'fee_desc': info.get('fee_desc', ''),
                         'pay_memo': pay_memo[:200] if pay_memo else '',
                     }
                 else:
