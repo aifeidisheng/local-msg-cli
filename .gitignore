@@ -310,6 +310,15 @@ paket-files/
 # FAKE - F# Make
 .fake/
 
+# Chat export/transcription output files (contain private message data)
+*_export*.json
+*_transcribed*.json
+
+# Hook outputs
+hook_output.txt
+hook_start_output.txt
+hook_stderr.txt
+run_hook.bat
 # CodeRush personal settings
 .cr/personal
 
@@ -380,6 +389,14 @@ docs/.vitepress/dist
 # Temporary build artifacts
 x64/
 
+# OS
+.DS_Store
+Thumbs.db
+
+# Compiled binaries and output
+find_all_keys_macos
+decoded_voices/
+voice_transcriptions.json
 data/
 export/
 build/

@@ -118,7 +118,7 @@ def v2_decrypt_file(dat_path, out_path=None, aes_key=None, xor_key=0x88):
         dat_path: V2 .dat 文件路径
         out_path: 输出路径 (None 则自动命名)
         aes_key: 16 字节 AES key (bytes 或 str)
-        xor_key: XOR key (int, 默认 0x88)
+        xor_key: XOR key (int 或可被 int(_, 0) 解析的 str, 默认 0x88)
 
     Returns:
         (output_path, format) 或 (None, None)
@@ -134,6 +134,10 @@ def v2_decrypt_file(dat_path, out_path=None, aes_key=None, xor_key=0x88):
         aes_key = aes_key.encode('ascii')[:16]
     if len(aes_key) < 16:
         return None, None
+
+    # 与 aes_key 的 str→bytes 处理对称: 允许 config.json 写 "0x88" / "136" 等字符串形式
+    if isinstance(xor_key, str):
+        xor_key = int(xor_key, 0)
 
     with open(dat_path, 'rb') as f:
         data = f.read()
@@ -185,6 +189,22 @@ def v2_decrypt_file(dat_path, out_path=None, aes_key=None, xor_key=0x88):
     # wxgf (HEVC 裸流) 格式
     if decrypted[:4] == b'wxgf':
         fmt = 'hevc'
+    elif fmt == 'bin':
+        # detect_image_format 返回 'bin' = magic 不匹配任何已知图片格式,
+        # 通常说明 AES key 错(解密后产生随机字节)。拒绝写出无意义的 .bin
+        # 垃圾文件,让 caller 知道解密失败。
+        return None, None
+    elif xor_size >= 2:
+        # XOR key 错时 AES/raw 段可能产生合法 magic(看似正常 jpg/png 头),
+        # 但 XOR 段乱码。用尾部 magic 验证 XOR key 正确性:
+        # - JPG 必须以 FF D9 (EOI marker) 收尾
+        # - PNG 末尾 12 字节必须含 IEND chunk
+        # 其他格式 (gif/bmp/tif/webp/hevc) 缺乏强制 trailer signature,
+        # 不做校验以避免误杀。xor_size < 2 时无 XOR 段或样本过小,跳过。
+        if fmt == 'jpg' and decrypted[-2:] != b'\xff\xd9':
+            return None, None
+        if fmt == 'png' and b'IEND' not in decrypted[-12:]:
+            return None, None
 
     if out_path is None:
         base = os.path.splitext(dat_path)[0]
@@ -257,6 +277,140 @@ def decrypt_dat_file(dat_path, out_path=None, aes_key=None, xor_key=0x88):
     return xor_decrypt_file(dat_path, out_path)
 
 
+def decode_all_dats(attach_dir, out_dir, aes_key=None, xor_key=0x88,
+                    force=False, progress_every=200, on_file=None):
+    """批量解密 attach_dir 下所有 .dat 图片到 out_dir 的镜像目录树。
+
+    输入路径形态(微信本地约定):
+        <attach_dir>/<chat_hash>/<YYYY-MM>/Img/<file_md5>[_t|_h].dat
+
+      其中 chat_hash = md5(username).hexdigest(),username 是 wxid 或
+      <id>@chatroom;_t/_h 分别是缩略图 / 高清缩略图后缀。
+
+    输出路径形态(镜像 + 移除 _t/_h 缩略图后缀,平铺到原图 basename):
+        <out_dir>/<chat_hash>/<YYYY-MM>/<file_md5>.<ext>
+
+      其中 <ext> 由 magic 自动检测(jpg / png / gif / webp / hevc 等)。
+      wxgf 容器输出 .hevc;不在 upstream 做 mp4 转换(scope 留给下游)。
+
+    幂等性:目标存在(任何扩展名,基于 basename)时跳过,无需 mtime 比较 ——
+      .dat 是 content-hash 命名,实际上 write-once。force=True 强制重解。
+
+    原子写:解密先写到 <basename>.<ext>.tmp(同目录),`os.replace` 重命名
+      到最终路径,中断不留半文件。
+
+    错误隔离:单文件失败不阻塞批次。V2 文件遇到 aes_key=None 计入
+      skipped_no_key(可恢复:跑 find_image_key_macos.py 提取 key 后重跑)。
+
+    Args:
+      attach_dir:     微信 msg/attach 根目录(含 chat_hash 子目录)
+      out_dir:        输出根目录
+      aes_key:        V2 AES key(16 字节 str/bytes);V1 / 老 XOR 不需要
+      xor_key:        V2 XOR key(默认 0x88)
+      force:          True 时忽略已存在目标重新解密
+      progress_every: 每解 N 个文件打一行进度到 stderr;None 关闭(测试用)
+      on_file:        可选回调 (i, total, dat_path, status, fmt) 每文件调用一次,
+                      status ∈ {"decoded", "skipped", "skipped_no_key", "failed"}
+
+    Returns:
+      dict {decoded, skipped, skipped_no_key, failed, total, formats}
+        formats: dict[ext, count]
+    """
+    pattern = os.path.join(attach_dir, "*", "*", "Img", "*.dat")
+    dat_files = sorted(glob.glob(pattern))
+
+    decoded = 0
+    skipped = 0
+    skipped_no_key = 0
+    failed = 0
+    formats = {}
+
+    for i, dat_path in enumerate(dat_files):
+        rel = os.path.relpath(dat_path, attach_dir)
+        parts = rel.split(os.sep)
+        if len(parts) != 4 or parts[2] != "Img":
+            failed += 1
+            print(f"[WARN] 跳过非标准路径: {rel}", file=sys.stderr)
+            if on_file:
+                on_file(i, len(dat_files), dat_path, "failed", None)
+            continue
+        chat_hash, ym, _img, fname = parts
+        basename = os.path.splitext(fname)[0]  # 去 .dat
+        for suffix in ("_t", "_h"):
+            if basename.endswith(suffix):
+                basename = basename[:-len(suffix)]
+                break
+
+        target_dir = os.path.join(out_dir, chat_hash, ym)
+
+        # 幂等性:目标 basename 已存在(任何 ext,排除 .tmp)
+        if not force:
+            existing = [
+                p for p in glob.glob(os.path.join(target_dir, f"{basename}.*"))
+                if not p.endswith(".tmp")
+            ]
+            if existing:
+                skipped += 1
+                if on_file:
+                    on_file(i, len(dat_files), dat_path, "skipped", None)
+                continue
+
+        # V2 文件需要 key;无 key 时计入 skipped_no_key
+        if is_v2_format(dat_path) and aes_key is None:
+            skipped_no_key += 1
+            if on_file:
+                on_file(i, len(dat_files), dat_path, "skipped_no_key", None)
+            if progress_every and (i + 1) % progress_every == 0:
+                print(
+                    f"  ...扫描 {i+1}/{len(dat_files)} (解码 {decoded}, 跳过 {skipped}, "
+                    f"无 key {skipped_no_key}, 失败 {failed})",
+                    file=sys.stderr,
+                )
+            continue
+
+        os.makedirs(target_dir, exist_ok=True)
+        tmp_path = os.path.join(target_dir, f"{basename}.unknown.tmp")
+        fmt = None
+        try:
+            result_path, fmt = decrypt_dat_file(dat_path, tmp_path, aes_key, xor_key)
+            if result_path is None or fmt is None:
+                failed += 1
+                if os.path.exists(tmp_path):
+                    try: os.remove(tmp_path)
+                    except OSError: pass
+            else:
+                final_path = os.path.join(target_dir, f"{basename}.{fmt}")
+                os.replace(result_path, final_path)
+                decoded += 1
+                formats[fmt] = formats.get(fmt, 0) + 1
+        except Exception as e:
+            failed += 1
+            if os.path.exists(tmp_path):
+                try: os.remove(tmp_path)
+                except OSError: pass
+            print(f"[WARN] {rel}: {e}", file=sys.stderr)
+
+        if on_file:
+            status = "decoded" if fmt else "failed"
+            on_file(i, len(dat_files), dat_path, status, fmt)
+
+        if progress_every and (i + 1) % progress_every == 0:
+            print(
+                f"  ...扫描 {i+1}/{len(dat_files)} (解码 {decoded}, 跳过 {skipped}, "
+                f"无 key {skipped_no_key}, 失败 {failed})",
+                file=sys.stderr,
+            )
+
+    return {
+        "decoded": decoded,
+        "skipped": skipped,
+        "skipped_no_key": skipped_no_key,
+        "failed": failed,
+        "total": len(dat_files),
+        "formats": formats,
+    }
+
+
 def extract_md5_from_packed_info(blob):
     """从 message_resource.db 的 packed_info (protobuf) 中提取文件 MD5
 
@@ -299,34 +453,58 @@ def extract_md5_from_packed_info(blob):
 class ImageResolver:
     """封装从 local_id 到图片文件的完整解析链"""
 
-    def __init__(self, wechat_base_dir, decoded_image_dir, cache):
+    def __init__(self, wechat_base_dir, decoded_image_dir, cache, aes_key=None, xor_key=0x88):
         """
         Args:
             wechat_base_dir: 微信数据根目录 (如 D:\\xwechat_files\\<wxid>)
             decoded_image_dir: 解密图片输出目录
             cache: DBCache 实例，用于解密 message_resource.db
+            aes_key: V2 格式的 AES key (16 字节 str/bytes)，None 表示不支持 V2 文件
+            xor_key: XOR key (int, 默认 0x88)，用于 V2 文件的 XOR 段
         """
         self.base_dir = wechat_base_dir
         self.attach_dir = os.path.join(wechat_base_dir, "msg", "attach")
         self.out_dir = decoded_image_dir
         self.cache = cache
+        self.aes_key = aes_key
+        self.xor_key = xor_key
 
-    def get_image_md5(self, local_id):
-        """通过 local_id 查 message_resource.db 获取图片文件 MD5"""
+    def get_image_md5(self, username, local_id):
+        """通过 (username, local_id) 查 message_resource.db 获取图片 MD5
+
+        message_local_id 在 MessageResourceInfo 中跨 chat 重复 (不全局唯一),
+        必须用 chat_id 缩小范围;同一 chat 内活跃聊天也会复用 local_id
+        (实测最高同 chat 7 条同 local_id 的记录), 默认取最新一条。
+
+        message_local_type 上 32 bit 是版本/会话 flag, 用 % 2^32 取低位匹配
+        图片类型 3, 同 monitor_web.py 里 push 路径的写法。
+        """
         path = self.cache.get("message/message_resource.db")
         if not path:
             return None
 
-        conn = sqlite3.connect(path)
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         try:
+            chat_row = conn.execute(
+                "SELECT rowid FROM ChatName2Id WHERE user_name = ?",
+                (username,)
+            ).fetchone()
+            if not chat_row:
+                return None
+            chat_id = chat_row[0]
+
             row = conn.execute(
-                "SELECT packed_info FROM MessageResourceInfo WHERE local_id = ?",
-                (local_id,)
+                "SELECT packed_info FROM MessageResourceInfo "
+                "WHERE chat_id = ? AND message_local_id = ? "
+                "AND (message_local_type = 3 OR message_local_type % 4294967296 = 3) "
+                "ORDER BY message_create_time DESC LIMIT 1",
+                (chat_id, local_id)
             ).fetchone()
             if row and row[0]:
                 return extract_md5_from_packed_info(row[0])
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[get_image_md5] {type(e).__name__}: {e}",
+                  file=sys.stderr, flush=True)
         finally:
             conn.close()
 
@@ -357,10 +535,10 @@ class ImageResolver:
         Returns:
             dict with keys: success, path, format, md5, error
         """
-        # 1. 获取 MD5
-        file_md5 = self.get_image_md5(local_id)
+        # 1. 获取 MD5 (chat-scoped: 同 local_id 跨 chat 重复)
+        file_md5 = self.get_image_md5(username, local_id)
         if not file_md5:
-            return {'success': False, 'error': f'无法从 message_resource.db 找到 local_id={local_id} 的图片信息'}
+            return {'success': False, 'error': f'无法从 message_resource.db 找到 {username} local_id={local_id} 的图片信息'}
 
         # 2. 找 .dat 文件
         dat_files = self.find_dat_files(username, file_md5)
@@ -379,13 +557,17 @@ class ImageResolver:
                 selected = f
                 break
 
-        # 3. 解密
+        # 3. 解密 (decrypt_dat_file 会按 magic 自动分发 V2 / V1 / 老 XOR)
         out_name = f"{file_md5}"
         out_path_base = os.path.join(self.out_dir, out_name)
 
-        result_path, fmt = xor_decrypt_file(selected, f"{out_path_base}.tmp")
+        # 提前拦截以给出具体错误信息;否则会在 v2_decrypt_file 内 silent-fail 成笼统的"解密失败"
+        if is_v2_format(selected) and not self.aes_key:
+            return {'success': False, 'error': f'V2 格式 .dat 文件需要 AES key (文件: {selected})', 'md5': file_md5}
+
+        result_path, fmt = decrypt_dat_file(selected, f"{out_path_base}.tmp", self.aes_key, self.xor_key)
         if not result_path:
-            return {'success': False, 'error': f'无法检测 XOR key (文件: {selected})', 'md5': file_md5}
+            return {'success': False, 'error': f'解密失败 (文件: {selected})', 'md5': file_md5}
 
         # 重命名为正确扩展名
         final_path = f"{out_path_base}.{fmt}"
@@ -402,17 +584,30 @@ class ImageResolver:
             'size': os.path.getsize(final_path),
         }
 
-    def list_chat_images(self, db_path, table_name, username, limit=20):
-        """列出某个聊天中的所有图片消息"""
+    def list_chat_images(self, db_path, table_name, username, limit=20, start_ts=None, end_ts=None):
+        """列出某个聊天中的所有图片消息
+
+        可选 start_ts / end_ts (unix 秒) 过滤时间范围。
+        """
+        clauses = ['local_type = 3']
+        params = []
+        if start_ts is not None:
+            clauses.append('create_time >= ?')
+            params.append(start_ts)
+        if end_ts is not None:
+            clauses.append('create_time <= ?')
+            params.append(end_ts)
+        params.append(limit)
+        where_sql = ' AND '.join(clauses)
         conn = sqlite3.connect(db_path)
         try:
             rows = conn.execute(f"""
                 SELECT local_id, create_time
                 FROM [{table_name}]
-                WHERE local_type = 3
+                WHERE {where_sql}
                 ORDER BY create_time DESC
                 LIMIT ?
-            """, (limit,)).fetchall()
+            """, params).fetchall()
         except Exception as e:
             conn.close()
             return []
@@ -420,7 +615,7 @@ class ImageResolver:
 
         results = []
         for local_id, create_time in rows:
-            file_md5 = self.get_image_md5(local_id)
+            file_md5 = self.get_image_md5(username, local_id)
             info = {
                 'local_id': local_id,
                 'create_time': create_time,

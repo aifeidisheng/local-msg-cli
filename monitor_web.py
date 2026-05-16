@@ -9,6 +9,7 @@ http://localhost:5678
 import hashlib, struct, os, sys, json, time, sqlite3, io, threading, queue, traceback
 import hmac as hmac_mod
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
@@ -435,16 +436,112 @@ def decrypt_wal_full(wal_path, out_path, enc_key):
     return patched, ms
 
 
-def load_contact_names():
+def load_contact_names(db_path=None):
+    """加载联系人名字字典。
+
+    Args:
+        db_path: 指定的 contact.db 路径。None 则使用 CONTACT_CACHE（静态快照，可能过期）。
+                 实时场景应传入 db_cache.get("contact/contact.db") 返回的路径，确保数据最新。
+    """
     names = {}
     try:
-        conn = sqlite3.connect(CONTACT_CACHE)
+        conn = sqlite3.connect(db_path or CONTACT_CACHE)
         for r in conn.execute("SELECT username, nick_name, remark FROM contact").fetchall():
             names[r[0]] = r[2] if r[2] else r[1] if r[1] else r[0]
         conn.close()
     except:
         pass
     return names
+
+
+def _extract_pb_field_30(data):
+    """从 extra_buffer (protobuf) 中提取 Field #30 的字符串值（联系人标签ID）"""
+    if not data:
+        return None
+    pos = 0
+    n = len(data)
+    while pos < n:
+        tag = 0
+        shift = 0
+        while pos < n:
+            b = data[pos]; pos += 1
+            tag |= (b & 0x7f) << shift
+            if not (b & 0x80):
+                break
+            shift += 7
+        field_num = tag >> 3
+        wire_type = tag & 0x07
+        if wire_type == 0:
+            while pos < n and data[pos] & 0x80:
+                pos += 1
+            pos += 1
+        elif wire_type == 2:
+            length = 0; shift = 0
+            while pos < n:
+                b = data[pos]; pos += 1
+                length |= (b & 0x7f) << shift
+                if not (b & 0x80):
+                    break
+                shift += 7
+            if field_num == 30:
+                try:
+                    return data[pos:pos + length].decode('utf-8')
+                except Exception:
+                    return None
+            pos += length
+        elif wire_type == 1:
+            pos += 8
+        elif wire_type == 5:
+            pos += 4
+        else:
+            break
+    return None
+
+
+def load_contact_tags():
+    """加载联系人标签及其成员"""
+    try:
+        conn = sqlite3.connect(CONTACT_CACHE)
+        try:
+            label_rows = conn.execute(
+                "SELECT label_id_, label_name_, sort_order_ FROM contact_label ORDER BY sort_order_"
+            ).fetchall()
+        except Exception:
+            conn.close()
+            return []
+        if not label_rows:
+            conn.close()
+            return []
+
+        labels = {}
+        for lid, lname, sort_order in label_rows:
+            labels[lid] = {'id': lid, 'name': lname, 'sort_order': sort_order, 'members': []}
+
+        names = load_contact_names()
+        rows = conn.execute(
+            "SELECT username, extra_buffer FROM contact WHERE extra_buffer IS NOT NULL"
+        ).fetchall()
+        conn.close()
+
+        for username, buf in rows:
+            label_str = _extract_pb_field_30(buf)
+            if not label_str:
+                continue
+            display = names.get(username, username)
+            for lid_s in label_str.split(','):
+                try:
+                    lid = int(lid_s.strip())
+                except (ValueError, AttributeError):
+                    continue
+                if lid in labels:
+                    labels[lid]['members'].append({'username': username, 'display_name': display})
+
+        result = sorted(labels.values(), key=lambda t: t['sort_order'])
+        for t in result:
+            t['member_count'] = len(t['members'])
+        return result
+    except Exception:
+        return []
 
 
 def format_msg_type(t):
@@ -531,6 +628,10 @@ def _convert_hevc_to_jpeg(hevc_path, jpeg_path):
 # ============ 监听器 ============
 
 class SessionMonitor:
+    # 改名/备注变更场景的刷新最小间隔（秒）。低于此间隔的 mtime 变化不触发
+    # 全量 reload，避免微信高频写 contact.db 时 CPU 抖动。30s 是经验值。
+    CONTACT_REFRESH_COOLDOWN = 30
+
     def __init__(self, enc_key, session_db, contact_names, db_cache=None, username_db_map=None):
         self.enc_key = enc_key
         self.session_db = session_db
@@ -543,6 +644,43 @@ class SessionMonitor:
         self.patched_pages = 0
         # 已显示消息去重: {(username, timestamp, base_msg_type), ...}
         self._shown_keys = set()
+        # contact.db mtime + 上次刷新时间，用于检测改名/备注变更
+        self._contact_db_mtime = 0
+        self._last_contact_refresh = 0
+
+    def _maybe_refresh_contacts(self):
+        """检测 contact.db mtime 变化时全量 reload 联系人缓存。
+
+        覆盖三种变更场景:
+        - 新增联系人（之前 commit e86e00d 只覆盖了这种）
+        - 修改备注名（issue #67）
+        - 修改群名
+
+        受 CONTACT_REFRESH_COOLDOWN 节流，避免 contact.db 高频变更时反复 reload。
+        """
+        if not self.db_cache:
+            return
+        try:
+            contact_path = self.db_cache.get(os.path.join("contact", "contact.db"))
+        except Exception as e:
+            print(f"  [contact] 实时解密 contact.db 失败: {e}", flush=True)
+            return
+        if not contact_path:
+            return
+        try:
+            curr_mtime = os.path.getmtime(contact_path)
+        except OSError:
+            return
+        now = time.time()
+        if curr_mtime <= self._contact_db_mtime:
+            return  # mtime 没变，跳过
+        if now - self._last_contact_refresh < self.CONTACT_REFRESH_COOLDOWN:
+            return  # cooldown 中，等下次
+        refreshed = load_contact_names(contact_path)
+        if refreshed:
+            self.contact_names.update(refreshed)
+        self._contact_db_mtime = curr_mtime
+        self._last_contact_refresh = now
 
     def resolve_image(self, username, timestamp):
         """解密图片: username+timestamp → 解密后的图片文件名，失败返回 None"""
@@ -797,6 +935,38 @@ class SessionMonitor:
             except OSError:
                 pass
 
+    def _lookup_latest_local_id(self, username, timestamp):
+        """从 message_N.db 查指定 username 在 timestamp 的最大 local_id。
+
+        SessionTable 触发推送时调用此方法拿到对应 local_id，加到 _shown_keys 后
+        `_check_hidden_messages` 路径能用 (username, local_id) 精确去重，避免 issue #79
+        的"同秒同类型多条消息 10 丢 4"。
+
+        时机风险：SessionTable 写入比 message DB 早几毫秒，可能查不到。查不到时返回 None，
+        调用方应选择跳过加 key（让 hidden 路径稍后补救并自己加 key）。
+        """
+        if not self.db_cache or not self.username_db_map:
+            return None
+        db_keys = self.username_db_map.get(username, [])
+        if not db_keys:
+            return None
+        table_name = f"Msg_{hashlib.md5(username.encode()).hexdigest()}"
+        for db_key in db_keys:
+            dec_path = self.db_cache.get(db_key)
+            if not dec_path:
+                continue
+            try:
+                with closing(sqlite3.connect(f"file:{dec_path}?mode=ro&immutable=1", uri=True)) as conn:
+                    row = conn.execute(
+                        f"SELECT MAX(local_id) FROM [{table_name}] WHERE create_time = ?",
+                        (timestamp,),
+                    ).fetchone()
+                    if row and row[0]:
+                        return row[0]
+            except Exception:
+                continue
+        return None
+
     def _check_hidden_messages(self, username, prev_ts, curr_ts, curr_msg_type, display, is_group, sender):
         """检查时间窗口内是否有被 session 摘要覆盖的消息（文字、图片、表情等）
 
@@ -827,10 +997,10 @@ class SessionMonitor:
                     try:
                         conn = sqlite3.connect(f"file:{dec_path}?mode=ro", uri=True)
                         rows = conn.execute(f"""
-                            SELECT create_time, local_type, message_content, WCDB_CT_message_content
+                            SELECT local_id, create_time, local_type, message_content, WCDB_CT_message_content
                             FROM [{table_name}]
                             WHERE create_time >= ? AND create_time <= ?
-                            ORDER BY create_time ASC
+                            ORDER BY create_time ASC, local_id ASC
                         """, (prev_ts, curr_ts)).fetchall()
                         conn.close()
                         all_rows.extend(rows)
@@ -839,7 +1009,8 @@ class SessionMonitor:
                         cache_failed = True
                         break
             # 检查是否找到了 curr_ts 的消息（说明缓存是最新的）
-            has_curr = any(r[0] == curr_ts for r in all_rows)
+            # 注: r[1] 是 create_time（新 schema：local_id, create_time, local_type, ...）
+            has_curr = any(r[1] == curr_ts for r in all_rows)
             if has_curr or cache_failed:
                 break
             # 缓存可能还没更新到最新数据，短暂等待后重试
@@ -860,11 +1031,13 @@ class SessionMonitor:
             print(f"  [hidden] 缓存查到 {len(all_rows)} 条", flush=True)
 
         # 过滤出隐藏消息
+        # 去重 key 用 local_id（之前用 (username, ts, base) 太粗，同秒同类型多条会被
+        # 误判为重复，导致 issue #79 的 "10 丢 4"）
         hidden_msgs = []
-        for ts, lt, mc, ct in all_rows:
+        for local_id, ts, lt, mc, ct in all_rows:
             base = lt % 4294967296 if lt > 4294967296 else lt
-            # 跳过已显示的消息（精确匹配 username+timestamp+type）
-            if (username, ts, base) in self._shown_keys:
+            # 跳过已显示的消息（按 local_id 精确去重）
+            if (username, local_id) in self._shown_keys:
                 continue
             # 解压 zstd
             if isinstance(mc, bytes) and ct == 4:
@@ -874,7 +1047,7 @@ class SessionMonitor:
                     mc = mc.decode('utf-8', errors='replace') if isinstance(mc, bytes) else ''
             elif isinstance(mc, bytes):
                 mc = mc.decode('utf-8', errors='replace')
-            hidden_msgs.append((ts, base, mc or ''))
+            hidden_msgs.append((local_id, ts, base, mc or ''))
 
         print(f"  [hidden] 找到 {len(hidden_msgs)} 条隐藏消息", flush=True)
 
@@ -882,8 +1055,8 @@ class SessionMonitor:
             return
 
         global messages_log
-        for ts, base, mc in hidden_msgs:
-            self._shown_keys.add((username, ts, base))
+        for local_id, ts, base, mc in hidden_msgs:
+            self._shown_keys.add((username, local_id))
             msg_data = {
                 'time': datetime.fromtimestamp(ts).strftime('%H:%M:%S'),
                 'timestamp': ts,
@@ -1144,6 +1317,26 @@ class SessionMonitor:
                         'des': des[:200] if des else '',
                         'items': items,
                     }
+                elif app_type == 2000:
+                    # 微信转账 — 复用 mcp_server 已有的解析器，单一来源避免字段漂移
+                    # （snake/camel 大小写、未来新 paysubtype 兜底）。
+                    import mcp_server  # 已被 chat_export_helpers 验证 import 安全
+                    info = mcp_server._extract_transfer_info(appmsg) or {}
+                    pay_memo = info.get('pay_memo', '')
+                    paysubtype = info.get('paysubtype', '')
+                    # 已知 paysubtype 显示中文 label；未知用空串而非"未知(paysubtype=N)"，
+                    # 避免 UI 出现内部诊断字串。日志侧若需要可看 chat history。
+                    direction = (info.get('paysubtype_label', '')
+                                 if paysubtype in mcp_server._TRANSFER_PAYSUBTYPE_LABEL
+                                 else '')
+                    return {
+                        'type': 'transfer',
+                        'title': title or '微信转账',
+                        'direction': direction,
+                        'paysubtype': paysubtype,
+                        'fee_desc': info.get('fee_desc', ''),
+                        'pay_memo': pay_memo[:200] if pay_memo else '',
+                    }
                 else:
                     # 其他子类型: 用 title 显示
                     if title:
@@ -1273,13 +1466,11 @@ class SessionMonitor:
             is_new = prev and (curr['timestamp'] > prev['timestamp'] or
                                (curr['timestamp'] == prev['timestamp'] and curr['msg_type'] != prev.get('msg_type')))
             if is_new:
+                # contact.db mtime 变化时刷新缓存：覆盖新增联系人、改名、改备注、群名
+                # 修改等场景（issue #46, #67）。受 cooldown 节流。
+                self._maybe_refresh_contacts()
                 display = self.contact_names.get(username, username)
                 is_group = '@chatroom' in username
-                # 新群/新联系人不在缓存中时，重新加载联系人
-                if display == username and username not in self.contact_names:
-                    refreshed = load_contact_names()
-                    self.contact_names.update(refreshed)
-                    display = self.contact_names.get(username, username)
                 sender = ''
                 if is_group:
                     sender = self.contact_names.get(curr['sender'], curr['sender_name'] or curr['sender'])
@@ -1309,7 +1500,13 @@ class SessionMonitor:
                 }
 
                 new_msgs.append(msg_data)
-                self._shown_keys.add((username, curr['timestamp'], curr['msg_type']))
+                # _shown_keys 改用 (username, local_id) 精确去重（issue #79）。
+                # SessionTable 不带 local_id，去 message_N.db 查 max(local_id) WHERE create_time=curr_ts。
+                # 查不到时（message DB 写入滞后于 SessionTable）跳过加 key，让 _check_hidden_messages
+                # 1 秒后查到时自己 emit 并加 key。这种情况下偶发轻微重复，但比丢消息好。
+                latest_local_id = self._lookup_latest_local_id(username, curr['timestamp'])
+                if latest_local_id is not None:
+                    self._shown_keys.add((username, latest_local_id))
 
                 # 图片消息: 后台异步解密（不阻塞轮询）
                 if curr['msg_type'] == 3:
@@ -1360,9 +1557,12 @@ class SessionMonitor:
 
         self.prev_state = curr_state
 
-        # 清理过期的去重 key（保留最近 5 分钟）
-        cutoff = int(time.time()) - 300
-        self._shown_keys = {k for k in self._shown_keys if k[1] > cutoff}
+        # 清理 _shown_keys（按数量上限）：local_id 不是时间戳不能按时间 prune。
+        # 超过 10000 时保留 local_id 最大的 5000 条（最新消息优先）。
+        # 实际触发频率：~几小时一次，set lookup 仍是 O(1)。
+        if len(self._shown_keys) > 10000:
+            by_local_id = sorted(self._shown_keys, key=lambda k: k[1], reverse=True)
+            self._shown_keys = set(by_local_id[:5000])
 
 def monitor_thread(enc_key, session_db, contact_names, db_cache=None, username_db_map=None):
     mon = SessionMonitor(enc_key, session_db, contact_names, db_cache, username_db_map)
@@ -1477,6 +1677,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 .chatlog-item{font-size:12px;color:#999;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .chatlog-item b{color:#bbb;font-weight:500}
 .chatlog-more{font-size:11px;color:#555;margin-top:4px}
+.msg-transfer{display:inline-block;background:rgba(255,170,60,.1);border:1px solid rgba(255,170,60,.25);border-radius:8px;padding:8px 14px;margin-top:4px;min-width:180px}
+.msg-transfer-head{font-size:13px;color:#ffb84d;font-weight:500}
+.msg-transfer-amount{font-size:18px;color:#ffd28a;font-weight:600;margin-top:4px}
+.msg-transfer-memo{font-size:11px;color:#999;margin-top:4px}
 a.msg-link{text-decoration:none;color:inherit}
 #lightbox{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.92);z-index:1000;cursor:zoom-out;justify-content:center;align-items:center}
 #lightbox.show{display:flex}
@@ -1591,6 +1795,12 @@ function renderRich(r){
       body = '<div class="msg-link-des">'+esc(r.des)+'</div>';
     }
     return `<div class="msg-chatlog"><div class="msg-link-title">📋 ${esc(r.title)}</div>${body}</div>`;
+  }
+  if(r.type==='transfer') {
+    let dirLabel = r.direction || '微信转账';
+    let amount = r.fee_desc ? '<div class="msg-transfer-amount">'+esc(r.fee_desc)+'</div>' : '';
+    let memo = r.pay_memo ? '<div class="msg-transfer-memo">备注: '+esc(r.pay_memo)+'</div>' : '';
+    return `<div class="msg-transfer"><div class="msg-transfer-head">💸 ${esc(dirLabel)}</div>${amount}${memo}</div>`;
   }
   if(r.type==='voice') return `<div class="msg-voice">🎤 语音 ${r.duration}s</div>`;
   if(r.type==='video') return `<div class="msg-video">🎬 视频${r.duration?' '+r.duration+'s':''}</div>`;
@@ -1815,9 +2025,31 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(HTML_PAGE.encode('utf-8'))
 
-        elif self.path == '/api/history':
+        elif self.path.startswith('/api/history'):
+            parsed = urllib.parse.urlparse(self.path)
+            params = urllib.parse.parse_qs(parsed.query)
+            filter_chat = params.get('chat', [''])[0].strip().lower()
+            since_ts = 0
+            try:
+                since_ts = int(params.get('since', ['0'])[0])
+            except (ValueError, TypeError):
+                pass
+            limit_val = 500
+            try:
+                limit_val = min(int(params.get('limit', ['500'])[0]), 2000)
+            except (ValueError, TypeError):
+                pass
+
             with messages_lock:
                 data = sorted(messages_log, key=lambda m: m.get('timestamp', 0))
+
+            if since_ts:
+                data = [m for m in data if m.get('timestamp', 0) > since_ts]
+            if filter_chat:
+                data = [m for m in data if filter_chat in m.get('chat', '').lower()
+                        or filter_chat in m.get('username', '').lower()]
+            data = data[-limit_val:]
+
             self.send_response(200)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
             self.end_headers()
@@ -1848,6 +2080,20 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Cache-Control', 'public, max-age=86400')
             self.end_headers()
             self.wfile.write(data)
+
+        elif self.path.startswith('/api/tags'):
+            parsed = urllib.parse.urlparse(self.path)
+            params = urllib.parse.parse_qs(parsed.query)
+            name_filter = params.get('name', [''])[0].strip().lower()
+
+            tags = load_contact_tags()
+            if name_filter:
+                tags = [t for t in tags if name_filter in t['name'].lower()]
+
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(json.dumps(tags, ensure_ascii=False).encode('utf-8'))
 
         elif self.path == '/stream':
             self.send_response(200)
@@ -1955,7 +2201,8 @@ def main():
     print("Ctrl+C 停止\n", flush=True)
 
     try:
-        os.system(f'cmd.exe /c start http://localhost:{PORT}')
+        import webbrowser
+        webbrowser.open(f'http://localhost:{PORT}')
     except Exception:
         pass
 

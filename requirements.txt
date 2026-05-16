@@ -3,3 +3,4 @@ zstandard>=0.22,<1
 mcp>=1.0,<2
 pilk>=0.2
 pyinstaller>=6.0
+# 可选：进度条 (pip install tqdm)
