@@ -140,6 +140,35 @@ def get_wxwork_pids():
 
 # ── WXWork 数据目录自动检测 ──────────────────────────────────────────
 
+def _wxwork_data_dir_mtime(data_dir):
+    """返回企业微信 Data 目录最近活跃时间，用于多账号自动选择。"""
+    latest = 0
+    for root, dirs, files in os.walk(data_dir):
+        dirs[:] = [d for d in dirs if d not in ("-journal",)]
+        for name in files:
+            if not name.endswith((".db", ".db-wal", ".db-shm")):
+                continue
+            path = os.path.join(root, name)
+            try:
+                latest = max(latest, os.path.getmtime(path))
+            except OSError:
+                pass
+    try:
+        latest = max(latest, os.path.getmtime(data_dir))
+    except OSError:
+        pass
+    return latest
+
+
+def _is_noninteractive_mode():
+    return (
+        os.environ.get("WECHAT_DECRYPT_NONINTERACTIVE") == "1"
+        or os.environ.get("WXWORK_AUTO_SELECT_DB") == "1"
+        or os.environ.get("WECHAT_DECRYPT_GUI") == "1"
+        or not sys.stdin.isatty()
+    )
+
+
 def auto_detect_wxwork_db_dir():
     """扫描 %USERPROFILE%\\Documents\\WXWork\\*\\Data 寻找包含加密DB的目录"""
     docs = os.path.join(os.environ.get("USERPROFILE", ""), "Documents", "WXWork")
@@ -168,11 +197,18 @@ def auto_detect_wxwork_db_dir():
 
     if not candidates:
         return None
+    candidates.sort(key=_wxwork_data_dir_mtime, reverse=True)
     if len(candidates) == 1:
         return candidates[0]
 
-    if not sys.stdin.isatty():
+    if _is_noninteractive_mode():
+        selected = candidates[0]
+        print("[!] 检测到多个企业微信数据目录，非交互模式下自动选择最近活跃目录:")
+        for i, c in enumerate(candidates, 1):
+            marker = " *" if c == selected else "  "
+            print(f"   {marker} {i}. {c}")
         return candidates[0]
+
     print("[!] 检测到多个企业微信数据目录:")
     for i, c in enumerate(candidates, 1):
         print(f"    {i}. {c}")

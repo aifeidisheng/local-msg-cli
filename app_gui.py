@@ -780,6 +780,8 @@ class App(tk.Tk):
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
         env["WECHAT_DECRYPT_APP_DIR"] = BASE_DIR
+        env["WECHAT_DECRYPT_GUI"] = "1"
+        env["WECHAT_DECRYPT_NONINTERACTIVE"] = "1"
 
         if self._selected_contacts:
             env["WECHAT_EXPORT_CONTACTS"] = ",".join(self._selected_contacts)

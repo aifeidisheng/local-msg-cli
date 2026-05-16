@@ -54,7 +54,11 @@ def _choose_candidate(candidates):
     if len(candidates) == 1:
         return candidates[0]
     if len(candidates) > 1:
-        if not sys.stdin.isatty():
+        if (
+            os.environ.get("WECHAT_DECRYPT_NONINTERACTIVE") == "1"
+            or os.environ.get("WECHAT_DECRYPT_GUI") == "1"
+            or not sys.stdin.isatty()
+        ):
             return candidates[0]
         print("[!] 检测到多个微信数据目录（请选择当前正在运行的微信账号）:")
         for i, c in enumerate(candidates, 1):
