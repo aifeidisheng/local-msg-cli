@@ -43,6 +43,8 @@ _DEFAULT = {
     "wechat_process": _DEFAULT_PROCESS,
     "wxwork_db_dir": "",
     "wxwork_keys_file": "wxwork_keys.json",
+    "wxwork_decrypted_dir": "wxwork_decrypted",
+    "wxwork_export_dir": "wxwork_export",
     "wxwork_process": "WXWork.exe",
 }
 
@@ -216,7 +218,10 @@ def load_config():
 
     # 将相对路径转为绝对路径
     base = _app_base_dir()
-    for key in ("keys_file", "decrypted_dir", "decoded_image_dir", "wxwork_keys_file"):
+    for key in (
+        "keys_file", "decrypted_dir", "decoded_image_dir",
+        "wxwork_keys_file", "wxwork_decrypted_dir", "wxwork_export_dir",
+    ):
         if key in cfg and cfg[key] and not os.path.isabs(cfg[key]):
             cfg[key] = os.path.join(base, cfg[key])
 

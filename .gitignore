@@ -386,4 +386,7 @@ build/
 dist/
 decrypted/
 all_keys.json
+wxwork_decrypted/
+wxwork_export/
+wxwork_keys.json
 config.json

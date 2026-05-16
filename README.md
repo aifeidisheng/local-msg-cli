@@ -184,6 +184,9 @@ python find_image_key.py
 | `find_all_keys_windows.py` | Windows 版内存扫描提 key |
 | `find_all_keys_linux.py` | Linux 版内存扫描提 key |
 | `decrypt_db.py` | 全量解密所有数据库 |
+| `find_wxwork_keys.py` | 企业微信 Windows 版内存扫描提 key |
+| `decrypt_wxwork_db.py` | 企业微信 wxSQLite3 AES-128 数据库解密 |
+| `export_wxwork_messages.py` | 企业微信聊天记录导出（按个人/群筛选，CSV / HTML / JSON） |
 | `mcp_server.py` | MCP Server，让 Claude AI 查询微信数据 |
 | `monitor_web.py` | 实时消息监听 (Web UI + SSE + 图片预览) |
 | `monitor.py` | 实时消息监听 (命令行) |
@@ -197,11 +200,13 @@ python find_image_key.py
 
 ### GUI 工具箱 & 单 exe 打包
 
-提供 tkinter 图形界面 (`app_gui.py`)，集成三个核心功能：
+提供 tkinter 图形界面 (`app_gui.py`)，集成核心功能：
 
 1. **解密数据库** — 调用 `main.py decrypt`
 2. **导出消息** — 调用 `export_messages.py`，输出 CSV / HTML / JSON
 3. **转换音频** — 调用 `voice_to_mp3.py`，SILK_V3 → MP3
+4. **企业微信解密** — 调用 `find_wxwork_keys.py` + `decrypt_wxwork_db.py`
+5. **企业微信导出** — 调用 `export_wxwork_messages.py`，按个人/群导出 CSV / HTML / JSON
 
 #### 直接运行
 
@@ -240,6 +245,40 @@ build.bat
 | V2 | 2025-08+ | `07 08 V2 08 07` | AES-128-ECB + XOR | 从进程内存提取 |
 
 V2 文件结构: `[6B signature] [4B aes_size LE] [4B xor_size LE] [1B padding]` + `[AES-ECB encrypted] [raw unencrypted] [XOR encrypted]`
+
+### 企业微信数据库解密 (实验)
+
+企业微信 Windows 5.x 的本地数据库不是普通微信 SQLCipher 4 格式，而是 wxSQLite3 AES-128-CBC：
+
+- 16 字节 raw key
+- 每页按 page index + `sAlT` 派生 AES key
+- 每页 IV 由 page index 派生
+- 无 SQLCipher HMAC / reserve 区
+
+提取并解密：
+
+```bash
+python find_wxwork_keys.py
+python decrypt_wxwork_db.py
+python export_wxwork_messages.py
+```
+
+如果自动提取失败但你已有 raw key，也可以直接传入 32 位 hex key：
+
+```bash
+python decrypt_wxwork_db.py --key 00112233445566778899aabbccddeeff
+```
+
+配置项：
+
+```json
+{
+    "wxwork_db_dir": "C:\\Users\\<用户>\\Documents\\WXWork\\<account_id>\\Data",
+    "wxwork_keys_file": "wxwork_keys.json",
+    "wxwork_decrypted_dir": "wxwork_decrypted",
+    "wxwork_export_dir": "wxwork_export"
+}
+```
 
 ### 数据库结构
 

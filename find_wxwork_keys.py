@@ -1,14 +1,13 @@
 """
 从企业微信(WXWork)进程内存中提取所有数据库的缓存raw key
 
-企业微信使用 WCDB/SQLCipher 加密，但与个人微信参数不同：
-- 个人微信: AES-256-CBC, 32字节密钥, HMAC-SHA512
-- 企业微信: AES-128-CBC, 16字节密钥, 每页根据page index重新派生IV/key
-
-密钥在内存中的缓存格式仍为 x'<hex>'，但 key 为16字节(32 hex chars)
+企业微信的本地数据库与个人微信不同。实测 Windows 版使用 wxSQLite3
+AES-128-CBC 页面加密：16 字节 raw key，每页按 page index 派生 AES key
+和 IV；页面没有 SQLCipher HMAC/reserve 区。
 """
 import ctypes
 import ctypes.wintypes as wt
+import bisect
 import functools
 import hashlib
 import hmac as hmac_mod
@@ -21,6 +20,11 @@ import sys
 import time
 
 from key_scan_common import collect_db_files
+from wxwork_crypto import (
+    is_plain_sqlite_page,
+    is_wxsqlite3_aes128_page1,
+    verify_wxsqlite3_aes128_key,
+)
 
 print = functools.partial(print, flush=True)
 
@@ -67,12 +71,11 @@ def enum_regions(h):
 # ── 常量 ─────────────────────────────────────────────────────────────
 
 WXWORK_PROCESS = "WXWork.exe"
-SQLITE_HEADER_HEX = b"SQLite format 3\x00".hex()
 
 PAGE_SZ = 4096
 SALT_SZ = 16
 
-# 企业微信可能的加密参数组合 (按可能性排序)
+# 旧版本/其他平台可能回落到 SQLCipher 参数，保留作兼容验证。
 # (key_sz, hmac_hash_name, hmac_sz, pbkdf2_iter, reserve_sz)
 VERIFY_CONFIGS = [
     # WCDB optimized cipher with AES-128, HMAC-SHA512 (最可能)
@@ -89,6 +92,9 @@ VERIFY_CONFIGS = [
 
 def verify_enc_key_wxwork(enc_key, db_page1):
     """尝试多种参数组合验证密钥，返回 (成功?, 使用的配置描述)"""
+    if len(enc_key) == 16 and verify_wxsqlite3_aes128_key(enc_key, db_page1):
+        return True, "wxSQLite3 AES-128-CBC, per-page MD5 key/IV, no HMAC"
+
     key_sz = len(enc_key)
     for cfg_key_sz, hmac_hash, hmac_sz, iterations, reserve_sz in VERIFY_CONFIGS:
         if key_sz != cfg_key_sz:
@@ -185,16 +191,20 @@ def auto_detect_wxwork_db_dir():
 
 
 def filter_encrypted_dbs(db_files, salt_to_dbs):
-    """过滤掉未加密的数据库（salt 等于 SQLite header 的）"""
+    """过滤掉未加密的数据库。"""
     filtered_files = [
-        entry for entry in db_files if entry[3] != SQLITE_HEADER_HEX
+        entry for entry in db_files if not is_plain_sqlite_page(entry[4])
     ]
     filtered_salts = {
-        s: dbs for s, dbs in salt_to_dbs.items() if s != SQLITE_HEADER_HEX
+        s: dbs for s, dbs in salt_to_dbs.items()
+        if any(entry[3] == s and not is_plain_sqlite_page(entry[4]) for entry in db_files)
     }
     removed = len(db_files) - len(filtered_files)
     if removed:
         print(f"[*] 跳过 {removed} 个未加密数据库")
+    wxsqlite3_count = sum(1 for entry in filtered_files if is_wxsqlite3_aes128_page1(entry[4]))
+    if wxsqlite3_count:
+        print(f"[*] 检测到 {wxsqlite3_count} 个 wxSQLite3 AES-128 格式数据库")
     return filtered_files, filtered_salts
 
 
@@ -280,6 +290,137 @@ def scan_memory_for_wxwork_keys(data, hex_re, db_files, salt_to_dbs, key_map,
                 break
 
     return matches
+
+
+def _find_region(memory_regions, starts, addr, length=4):
+    idx = bisect.bisect_right(starts, addr) - 1
+    if idx < 0:
+        return None
+    base, end, data = memory_regions[idx]
+    if base <= addr and addr + length <= end:
+        return base, end, data
+    return None
+
+
+def _read_u32(memory_regions, starts, addr):
+    region = _find_region(memory_regions, starts, addr, 4)
+    if not region:
+        return None
+    base, _end, data = region
+    return struct.unpack_from("<I", data, addr - base)[0]
+
+
+def _valid_ptr(memory_regions, starts, addr, length=4):
+    return _find_region(memory_regions, starts, addr, length) is not None
+
+
+def _wxwork_page_size_chain(memory_regions, starts, cipher_addr):
+    """Validate the AES cipher object by following the page-size pointer chain.
+
+    In WXWork 5.x's inlined wxSQLite3 AES-128 code, the decrypt path uses:
+      raw_key = cipher + 0x08
+      aes_ctx = *(cipher + 0x2c)
+      page_size = *(*(*(cipher + 0x30) + 0x04) + 0x24)
+    """
+    page_size_holder = _read_u32(memory_regions, starts, cipher_addr + 0x30)
+    if page_size_holder is None or not _valid_ptr(memory_regions, starts, page_size_holder, 8):
+        return None
+    page_size_obj = _read_u32(memory_regions, starts, page_size_holder + 4)
+    if page_size_obj is None or not _valid_ptr(memory_regions, starts, page_size_obj + 0x24, 4):
+        return None
+    return _read_u32(memory_regions, starts, page_size_obj + 0x24)
+
+
+def _record_candidate_key(enc_key, db_files, salt_to_dbs, key_map,
+                          remaining_salts, pid, addr, desc, print_fn):
+    matched = []
+    params_desc = desc
+    for rel, path, sz, salt_hex, page1 in db_files:
+        if salt_hex not in remaining_salts:
+            continue
+        ok, verified_desc = verify_enc_key_wxwork(enc_key, page1)
+        if ok:
+            key_map[salt_hex] = enc_key.hex()
+            remaining_salts.discard(salt_hex)
+            params_desc = verified_desc or params_desc
+            matched.extend(salt_to_dbs[salt_hex])
+
+    if matched:
+        print_fn(f"\n  [FOUND-STRUCT] enc_key={enc_key.hex()}")
+        print_fn(f"    params: {params_desc}")
+        print_fn(f"    PID={pid} cipher对象地址: 0x{addr:08X}")
+        print_fn(f"    数据库: {', '.join(sorted(set(matched)))}")
+    return bool(matched)
+
+
+def scan_memory_for_wxwork_cipher_structs(h, regions, db_files, salt_to_dbs,
+                                          key_map, remaining_salts, pid,
+                                          print_fn, max_seconds=120):
+    """Scan WXWork heap objects for the in-memory wxSQLite3 AES-128 cipher.
+
+    This is intentionally targeted: instead of brute-forcing every 16-byte
+    window as a key, it looks for the cipher object layout used by WXWork 5.x.
+    """
+    t0 = time.time()
+    memory_regions = []
+    total_bytes = 0
+    for base, size in regions:
+        data = read_mem(h, base, size)
+        if data:
+            memory_regions.append((int(base), int(base) + len(data), data))
+            total_bytes += len(data)
+
+    memory_regions.sort(key=lambda item: item[0])
+    starts = [item[0] for item in memory_regions]
+    print_fn(f"[*] 结构体扫描内存: {total_bytes / 1024 / 1024:.0f}MB, {len(memory_regions)} 区域")
+
+    checked = 0
+    ptr_hits = 0
+    chain_hits = 0
+    key_tests = 0
+    page_sizes = {512, 1024, 2048, 4096, 8192, 16384, 32768, 65536}
+
+    for base, end, data in memory_regions:
+        max_off = len(data) - 0x40
+        off = 0
+        while off >= 0 and off < max_off:
+            if time.time() - t0 > max_seconds:
+                print_fn(
+                    f"[WARN] 结构体扫描超时: checked={checked}, "
+                    f"ptr_hits={ptr_hits}, chain_hits={chain_hits}, key_tests={key_tests}"
+                )
+                return key_tests
+
+            # The AES-128 decrypt branch checks two non-zero flags at +0 and +4.
+            flag0, flag4 = struct.unpack_from("<II", data, off)
+            if flag0 in (1, 2) and flag4 in (1, 2, 4096, 8192, 16384):
+                cipher_addr = base + off
+                aes_ctx = struct.unpack_from("<I", data, off + 0x2C)[0]
+                if _valid_ptr(memory_regions, starts, aes_ctx, 0x40):
+                    ptr_hits += 1
+                    page_size = _wxwork_page_size_chain(memory_regions, starts, cipher_addr)
+                    if page_size in page_sizes:
+                        chain_hits += 1
+                        enc_key = data[off + 8 : off + 24]
+                        if enc_key != b"\x00" * 16 and len(set(enc_key)) >= 6:
+                            key_tests += 1
+                            if _record_candidate_key(
+                                enc_key, db_files, salt_to_dbs, key_map,
+                                remaining_salts, pid, cipher_addr,
+                                f"wxSQLite3 AES-128-CBC, page_size={page_size}",
+                                print_fn,
+                            ):
+                                if not remaining_salts:
+                                    return key_tests
+
+            checked += 1
+            off += 4
+
+    print_fn(
+        f"[*] 结构体扫描完成: checked={checked}, ptr_hits={ptr_hits}, "
+        f"chain_hits={chain_hits}, key_tests={key_tests}"
+    )
+    return key_tests
 
 
 def cross_verify_wxwork_keys(db_files, salt_to_dbs, key_map, print_fn):
@@ -395,11 +536,17 @@ def main():
     # 2. 打开所有企业微信进程
     pids = get_wxwork_pids()
 
-    # 宽松正则：匹配 32+ hex chars (16字节key起)
+    # Some versions do not keep the key as SQL literal x'...'. Bare ASCII
+    # hex scanning is much slower, so keep it behind an explicit switch.
     hex_re = re.compile(b"x'([0-9a-fA-F]{32,192})'")
+    scan_bare_hex = "--scan-bare-hex" in sys.argv
+    bare_hex_re = re.compile(b"(?<![0-9a-fA-F])([0-9a-fA-F]{32})(?![0-9a-fA-F])")
+    if scan_bare_hex:
+        print("[*] 已启用裸 32-hex key 扫描，速度会明显变慢")
     key_map = {}
     remaining_salts = set(salt_to_dbs.keys())
     all_hex_matches = 0
+    all_bare_hex_matches = 0
     t0 = time.time()
 
     for pid, mem_kb in pids:
@@ -425,14 +572,27 @@ def main():
                     data, hex_re, db_files, salt_to_dbs,
                     key_map, remaining_salts, base, pid, print,
                 )
+                if scan_bare_hex and remaining_salts:
+                    all_bare_hex_matches += scan_memory_for_wxwork_keys(
+                        data, bare_hex_re, db_files, salt_to_dbs,
+                        key_map, remaining_salts, base, pid, print,
+                    )
 
                 if (reg_idx + 1) % 200 == 0:
                     elapsed = time.time() - t0
                     progress = scanned_bytes / total_bytes * 100 if total_bytes else 100
                     print(
                         f"  [{progress:.1f}%] {len(key_map)}/{len(salt_to_dbs)} salts matched, "
-                        f"{all_hex_matches} hex patterns, {elapsed:.1f}s"
+                        f"{all_hex_matches} x'...' patterns, "
+                        f"{all_bare_hex_matches} bare hex patterns, {elapsed:.1f}s"
                     )
+
+            if remaining_salts:
+                print("\n[*] 未找到 x'...' 形式 key，尝试 WXWork 5.x cipher 结构体扫描...")
+                scan_memory_for_wxwork_cipher_structs(
+                    h, regions, db_files, salt_to_dbs,
+                    key_map, remaining_salts, pid, print,
+                )
         finally:
             kernel32.CloseHandle(h)
 
@@ -441,7 +601,10 @@ def main():
             break
 
     elapsed = time.time() - t0
-    print(f"\n扫描完成: {elapsed:.1f}s, {len(pids)} 个进程, {all_hex_matches} hex模式")
+    print(
+        f"\n扫描完成: {elapsed:.1f}s, {len(pids)} 个进程, "
+        f"{all_hex_matches} x'...' 模式, {all_bare_hex_matches} bare hex 模式"
+    )
 
     cross_verify_wxwork_keys(db_files, salt_to_dbs, key_map, print)
     save_wxwork_results(db_files, salt_to_dbs, key_map, db_dir, out_file, print)

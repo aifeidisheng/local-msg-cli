@@ -24,6 +24,10 @@ pyinstaller --noconfirm --onefile --console --name "WeChatDecrypt" ^
     --add-data "find_all_keys.py;." ^
     --add-data "find_all_keys_windows.py;." ^
     --add-data "find_all_keys_linux.py;." ^
+    --add-data "find_wxwork_keys.py;." ^
+    --add-data "decrypt_wxwork_db.py;." ^
+    --add-data "export_wxwork_messages.py;." ^
+    --add-data "wxwork_crypto.py;." ^
     --add-data "key_scan_common.py;." ^
     --add-data "key_utils.py;." ^
     --add-data "decode_image.py;." ^

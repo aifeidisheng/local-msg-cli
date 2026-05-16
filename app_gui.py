@@ -30,6 +30,8 @@ if False:  # noqa: never executed, only for PyInstaller dependency detection
     import zstandard  # noqa: F401
     import pilk  # noqa: F401
     import Crypto, Crypto.Cipher, Crypto.Cipher.AES, Crypto.Util.Padding  # noqa: F401
+    import wxwork_crypto  # noqa: F401
+    import export_wxwork_messages  # noqa: F401
 
 
 def _run_subtask(task: str):
@@ -59,6 +61,9 @@ def _run_subtask(task: str):
         "find_image_key": "find_image_key.py",
         "decrypt_sns": "decrypt_sns.py",
         "export_sns": "export_sns.py",
+        "find_wxwork_keys": "find_wxwork_keys.py",
+        "decrypt_wxwork": "decrypt_wxwork_db.py",
+        "export_wxwork": "export_wxwork_messages.py",
     }
     script = mapping.get(task)
     if not script:
@@ -78,6 +83,12 @@ def _run_subtask(task: str):
         sys.argv = ["main.py", "decrypt"]
     elif task == "find_image_key":
         sys.argv = ["find_image_key.py"]
+    elif task == "find_wxwork_keys":
+        sys.argv = ["find_wxwork_keys.py"]
+    elif task == "decrypt_wxwork":
+        sys.argv = ["decrypt_wxwork_db.py"]
+    elif task == "export_wxwork":
+        sys.argv = ["export_wxwork_messages.py"]
     else:
         sys.argv = [script]
 
@@ -360,11 +371,140 @@ class ExportOptionsDialog(tk.Toplevel):
         self.destroy()
 
 
+class WxworkExportOptionsDialog(tk.Toplevel):
+    def __init__(self, parent, conversations):
+        """conversations: [{conversation_id, display_name, kind, message_count, last_time}, ...]"""
+        super().__init__(parent)
+        self.title("企业微信导出选项")
+        self.geometry("560x620")
+        self.transient(parent)
+        self.grab_set()
+        self.result = None
+        self.configure(bg="#f0f0f0")
+        self._conversations = conversations
+        self._vars = {}
+
+        fmt_frame = ttk.LabelFrame(self, text="导出格式", padding=6)
+        fmt_frame.pack(fill="x", padx=12, pady=(10, 4))
+
+        self._fmt_csv = tk.BooleanVar(value=True)
+        self._fmt_html = tk.BooleanVar(value=False)
+        self._fmt_json = tk.BooleanVar(value=False)
+
+        ttk.Checkbutton(fmt_frame, text="CSV（默认）", variable=self._fmt_csv).pack(side="left", padx=10)
+        ttk.Checkbutton(fmt_frame, text="HTML", variable=self._fmt_html).pack(side="left", padx=10)
+        ttk.Checkbutton(fmt_frame, text="JSON", variable=self._fmt_json).pack(side="left", padx=10)
+
+        top = ttk.Frame(self)
+        top.pack(fill="x", padx=12, pady=(4, 4))
+        ttk.Label(top, text=f"共 {len(conversations)} 个企业微信会话",
+                  font=("Microsoft YaHei UI", 10)).pack(side="left")
+
+        self._all_selected = True
+        self._toggle_btn = ttk.Button(top, text="取消全选", command=self._toggle_all)
+        self._toggle_btn.pack(side="right")
+
+        search_frame = ttk.Frame(self)
+        search_frame.pack(fill="x", padx=12, pady=(0, 4))
+        self._search_var = tk.StringVar()
+        self._search_var.trace_add("write", lambda *_: self._filter_list())
+        ttk.Entry(search_frame, textvariable=self._search_var,
+                  font=("Microsoft YaHei UI", 10)).pack(fill="x")
+
+        container = ttk.Frame(self)
+        container.pack(fill="both", expand=True, padx=12, pady=4)
+
+        self._canvas = tk.Canvas(container, bg="#ffffff", highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=self._canvas.yview)
+        self._inner = ttk.Frame(self._canvas)
+        self._inner.bind("<Configure>",
+                         lambda e: self._canvas.configure(scrollregion=self._canvas.bbox("all")))
+        self._canvas.create_window((0, 0), window=self._inner, anchor="nw")
+        self._canvas.configure(yscrollcommand=scrollbar.set)
+        self._canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        self._canvas.bind("<Enter>", lambda e: self._bind_mousewheel())
+        self._canvas.bind("<Leave>", lambda e: self._unbind_mousewheel())
+
+        self._cb_widgets = []
+        for conv in conversations:
+            cid = conv["conversation_id"]
+            var = tk.BooleanVar(value=True)
+            self._vars[cid] = var
+            last_time = self._format_time(conv.get("last_time"))
+            suffix = f" · {last_time}" if last_time else ""
+            label = (
+                f"[{conv.get('kind', '会话')}] {conv.get('display_name') or cid}"
+                f" · {conv.get('message_count', 0)} 条{suffix}"
+            )
+            cb = ttk.Checkbutton(self._inner, text=label, variable=var)
+            cb.pack(anchor="w", padx=6, pady=1)
+            self._cb_widgets.append((cid, label.lower(), cb))
+
+        bottom = ttk.Frame(self)
+        bottom.pack(fill="x", padx=12, pady=(4, 10))
+        ttk.Button(bottom, text="确定", command=self._on_ok).pack(side="right", padx=4)
+        ttk.Button(bottom, text="取消", command=self._on_cancel).pack(side="right", padx=4)
+
+    def _format_time(self, value):
+        if not value:
+            return ""
+        try:
+            from datetime import datetime
+            return datetime.fromtimestamp(int(value)).strftime("%Y-%m-%d")
+        except Exception:
+            return ""
+
+    def _bind_mousewheel(self):
+        self._canvas.bind_all("<MouseWheel>",
+                              lambda e: self._canvas.yview_scroll(-1 * (e.delta // 120), "units"))
+
+    def _unbind_mousewheel(self):
+        self._canvas.unbind_all("<MouseWheel>")
+
+    def _toggle_all(self):
+        self._all_selected = not self._all_selected
+        for var in self._vars.values():
+            var.set(self._all_selected)
+        self._toggle_btn.configure(text="取消全选" if self._all_selected else "全选")
+
+    def _filter_list(self):
+        keyword = self._search_var.get().strip().lower()
+        for _cid, label, cb in self._cb_widgets:
+            if not keyword or keyword in label:
+                cb.pack(anchor="w", padx=6, pady=1)
+            else:
+                cb.pack_forget()
+
+    def _on_ok(self):
+        formats = []
+        if self._fmt_csv.get():
+            formats.append("csv")
+        if self._fmt_html.get():
+            formats.append("html")
+        if self._fmt_json.get():
+            formats.append("json")
+        if not formats:
+            from tkinter import messagebox
+            messagebox.showwarning("提示", "请至少选择一种导出格式", parent=self)
+            return
+        self.result = {
+            "conversations": [cid for cid, var in self._vars.items() if var.get()],
+            "formats": formats,
+        }
+        self.destroy()
+
+    def _on_cancel(self):
+        self.result = None
+        self.destroy()
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("WeChat Decrypt 工具箱")
-        self.geometry("750x520")
+        self.geometry("820x600")
         self.resizable(True, True)
         self.configure(bg="#f0f0f0")
         self._running = False
@@ -375,6 +515,8 @@ class App(tk.Tk):
         self._include_images = True
         self._include_sns = False
         self._include_sns_media = False
+        self._selected_wxwork_conversations = None
+        self._wxwork_export_formats = None
 
         self._build_ui()
 
@@ -394,13 +536,13 @@ class App(tk.Tk):
         btn_frame.pack(fill="x", padx=20, pady=(4, 4))
 
         self.btn_decrypt = ttk.Button(
-            btn_frame, text="① 解密数据库", style="Big.TButton",
+            btn_frame, text="① 微信解密", style="Big.TButton",
             command=lambda: self._run_task("decrypt")
         )
         self.btn_decrypt.pack(side="left", expand=True, fill="x", padx=4)
 
         self.btn_imgkey = ttk.Button(
-            btn_frame, text="② 查找图片密钥", style="Big.TButton",
+            btn_frame, text="② 图片密钥", style="Big.TButton",
             command=lambda: self._run_task("find_image_key")
         )
         self.btn_imgkey.pack(side="left", expand=True, fill="x", padx=4)
@@ -417,17 +559,34 @@ class App(tk.Tk):
         )
         self.btn_sns.pack(side="left", expand=True, fill="x", padx=4)
 
+        wxwork_frame = ttk.Frame(self)
+        wxwork_frame.pack(fill="x", padx=20, pady=(0, 6))
+
+        self.btn_wxwork = ttk.Button(
+            wxwork_frame, text="⑤ 企业微信解密", style="Big.TButton",
+            command=lambda: self._run_task("wxwork_decrypt")
+        )
+        self.btn_wxwork.pack(side="left", expand=True, fill="x", padx=4)
+
+        self.btn_wxwork_export = ttk.Button(
+            wxwork_frame, text="⑥ 企业微信导出", style="Big.TButton",
+            command=lambda: self._run_task("wxwork_export")
+        )
+        self.btn_wxwork_export.pack(side="left", expand=True, fill="x", padx=4)
+
         # 提示信息
         tips_frame = ttk.LabelFrame(self, text="使用提示", padding=6)
         tips_frame.pack(fill="x", padx=20, pady=(0, 4))
         tips_text = (
-            "• 解密数据库：需要微信正在运行中，会自动提取密钥并解密\n"
+            "• 微信解密：需要微信正在运行中，会自动提取密钥并解密\n"
             "• 查找图片密钥：先在微信中打开 2-3 张图片查看，然后立即运行\n"
             "• 导出数据：选择联系人和格式，可同时导出消息/图片/语音\n"
-            "• 朋友圈图片：解密朋友圈缓存图片（_t缩略图自动跳过）"
+            "• 朋友圈图片：解密朋友圈缓存图片（_t缩略图自动跳过）\n"
+            "• 企业微信解密：需要企业微信正在运行中，输出到 wxwork_decrypted/\n"
+            "• 企业微信导出：选择某个人或群，输出 CSV / HTML / JSON 到 wxwork_export/"
         )
         ttk.Label(tips_frame, text=tips_text, font=("Microsoft YaHei UI", 9),
-                  wraplength=680, justify="left").pack(anchor="w")
+                  wraplength=760, justify="left").pack(anchor="w")
 
         # 进度条
         self.progress = ttk.Progressbar(self, mode="indeterminate")
@@ -468,6 +627,8 @@ class App(tk.Tk):
         self.btn_imgkey.configure(state=state)
         self.btn_export.configure(state=state)
         self.btn_sns.configure(state=state)
+        self.btn_wxwork.configure(state=state)
+        self.btn_wxwork_export.configure(state=state)
 
     # ── 任务调度 ───────────────────────────────────────────────────────────
     def _run_task(self, task: str):
@@ -479,6 +640,8 @@ class App(tk.Tk):
         self._include_voice = False
         self._include_sns = False
         self._include_sns_media = False
+        self._selected_wxwork_conversations = None
+        self._wxwork_export_formats = None
         self._clear_log()
         self._set_buttons(False)
 
@@ -496,6 +659,14 @@ class App(tk.Tk):
             self.progress.start(15)
             self.status_var.set("正在解密朋友圈图片...")
             threading.Thread(target=self._exec_task, args=(task,), daemon=True).start()
+        elif task == "wxwork_decrypt":
+            self.progress.start(15)
+            self.status_var.set("正在解密企业微信数据库...")
+            threading.Thread(target=self._exec_wxwork_decrypt, daemon=True).start()
+        elif task == "wxwork_export":
+            self.progress.start(15)
+            self.status_var.set("正在扫描企业微信会话...")
+            threading.Thread(target=self._discover_wxwork_and_select, daemon=True).start()
         else:
             self.progress.start(15)
             labels = {"decrypt": "解密数据库"}
@@ -555,6 +726,51 @@ class App(tk.Tk):
         self.status_var.set(f"正在{action}...（{n_sel}/{len(contacts)} 个联系人）")
         threading.Thread(target=self._exec_combined, daemon=True).start()
 
+    def _discover_wxwork_and_select(self):
+        """后台扫描企业微信会话，然后在主线程弹出选择对话框"""
+        try:
+            from export_wxwork_messages import discover_conversations
+            conversations = discover_conversations()
+        except Exception as e:
+            self.after(0, self._log, f"扫描企业微信会话失败: {e}\n")
+            self.after(0, self._on_task_done)
+            return
+
+        if not conversations:
+            self.after(0, self._log, "未找到任何企业微信会话，请先运行「企业微信解密」\n")
+            self.after(0, self._on_task_done)
+            return
+
+        self.after(0, self._show_wxwork_dialog, conversations)
+
+    def _show_wxwork_dialog(self, conversations):
+        self.progress.stop()
+        self.status_var.set(f"请选择企业微信导出选项 ({len(conversations)} 个会话)")
+
+        dlg = WxworkExportOptionsDialog(self, conversations)
+        self.wait_window(dlg)
+
+        if dlg.result is None:
+            self._on_task_done()
+            return
+
+        if not dlg.result["conversations"]:
+            self._log("未选择任何企业微信会话\n")
+            self._on_task_done()
+            return
+
+        self._selected_wxwork_conversations = dlg.result["conversations"]
+        self._wxwork_export_formats = dlg.result["formats"]
+
+        self._clear_log()
+        self.progress.start(15)
+        n_sel = len(dlg.result["conversations"])
+        self.status_var.set(
+            f"正在导出企业微信 {'/'.join(f.upper() for f in self._wxwork_export_formats)}..."
+            f"（{n_sel}/{len(conversations)} 个会话）"
+        )
+        threading.Thread(target=self._exec_wxwork_export, daemon=True).start()
+
     # ── 子进程执行 ─────────────────────────────────────────────────────────
     def _run_subprocess(self, task: str) -> int:
         """运行子进程，返回退出码"""
@@ -572,6 +788,10 @@ class App(tk.Tk):
         env["WECHAT_EXPORT_IMAGES"] = "1" if getattr(self, '_include_images', True) else "0"
         if getattr(self, '_include_sns_media', False):
             env["WECHAT_SNS_DOWNLOAD_MEDIA"] = "1"
+        if self._selected_wxwork_conversations:
+            env["WXWORK_EXPORT_CONVERSATIONS"] = ",".join(self._selected_wxwork_conversations)
+        if self._wxwork_export_formats:
+            env["WXWORK_EXPORT_FORMATS"] = ",".join(self._wxwork_export_formats)
 
         proc = subprocess.Popen(
             cmd,
@@ -629,6 +849,49 @@ class App(tk.Tk):
             self._include_images = True
             self._include_sns = False
             self._include_sns_media = False
+            self.after(0, self._on_task_done)
+
+    def _exec_wxwork_decrypt(self):
+        """执行企业微信 key 提取 + 数据库解密。"""
+        try:
+            self.after(0, self._log, "━━━ 开始提取企业微信密钥 ━━━\n\n")
+            rc = self._run_subprocess("find_wxwork_keys")
+            if rc != 0:
+                self.after(0, self._log, f"\n❌ 企业微信密钥提取失败 (返回码 {rc})\n")
+                self.after(0, self.status_var.set, f"企业微信密钥提取失败 (返回码 {rc})")
+                return
+
+            self.after(0, self._log, "\n\n━━━ 开始解密企业微信数据库 ━━━\n\n")
+            rc = self._run_subprocess("decrypt_wxwork")
+            if rc != 0:
+                self.after(0, self._log, f"\n❌ 企业微信数据库解密失败 (返回码 {rc})\n")
+                self.after(0, self.status_var.set, f"企业微信解密失败 (返回码 {rc})")
+                return
+
+            self.after(0, self._log, "\n✅ 企业微信解密完成！输出目录: wxwork_decrypted\n")
+            self.after(0, self.status_var.set, "企业微信解密完成")
+        except Exception as e:
+            self.after(0, self._log, f"\n❌ 异常: {e}\n")
+            self.after(0, self.status_var.set, "异常")
+        finally:
+            self.after(0, self._on_task_done)
+
+    def _exec_wxwork_export(self):
+        """执行企业微信消息导出。"""
+        try:
+            rc = self._run_subprocess("export_wxwork")
+            if rc != 0:
+                self.after(0, self._log, f"\n❌ 企业微信导出失败 (返回码 {rc})\n")
+                self.after(0, self.status_var.set, f"企业微信导出失败 (返回码 {rc})")
+                return
+            self.after(0, self._log, "\n✅ 企业微信导出完成！输出目录: wxwork_export\n")
+            self.after(0, self.status_var.set, "企业微信导出完成")
+        except Exception as e:
+            self.after(0, self._log, f"\n❌ 异常: {e}\n")
+            self.after(0, self.status_var.set, "异常")
+        finally:
+            self._selected_wxwork_conversations = None
+            self._wxwork_export_formats = None
             self.after(0, self._on_task_done)
 
     def _exec_task(self, task: str):

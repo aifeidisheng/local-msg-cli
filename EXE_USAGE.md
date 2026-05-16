@@ -2,17 +2,21 @@
 
 ## 快速开始
 
-1. **启动微信**并登录账号
+1. **启动微信**并登录账号；如果要解密企业微信，也请先启动企业微信
 2. 双击 `WeChatDecrypt.exe` 打开工具箱
-3. 按顺序点击三个按钮：
-   - **① 解密数据库** → 从微信进程提取密钥并解密数据库到 `decrypted/` 目录
-   - **② 导出消息** → 将聊天记录导出为 CSV / HTML / JSON 到 `export/` 目录
-   - **③ 转换音频** → 将语音消息从 SILK 格式转为 MP3 到 `data/` 目录
+3. 根据需要点击按钮：
+   - **① 微信解密** → 从微信进程提取密钥并解密数据库到 `decrypted/` 目录
+   - **② 图片密钥** → 从微信进程提取新版图片 AES 密钥
+   - **③ 导出数据** → 将聊天记录导出为 CSV / HTML / JSON 到 `export/` 目录
+   - **④ 朋友圈图片** → 解密朋友圈缓存图片
+   - **⑤ 企业微信解密** → 从企业微信进程提取密钥并解密数据库到 `wxwork_decrypted/` 目录
+   - **⑥ 企业微信导出** → 选择某个人或群，导出 CSV / HTML / JSON 到 `wxwork_export/` 目录
 
 ## 前置要求
 
 - Windows 10 / 11
-- 微信 PC 版已登录（解密时需要微信进程运行）
+- 微信 PC 版已登录（解密微信时需要微信进程运行）
+- 企业微信 PC 版已登录（解密企业微信时需要企业微信进程运行）
 - [FFmpeg](https://ffmpeg.org/download.html) 已安装并加入 PATH（转换音频需要）
 
 ### 检查 FFmpeg
@@ -31,7 +35,14 @@ ffmpeg -version
 WeChatDecrypt.exe
 config.json          ← 首次运行自动生成的配置文件
 decrypted/           ← ① 解密后的数据库文件
-export/              ← ② 导出的聊天记录
+wxwork_decrypted/    ← ⑤ 解密后的企业微信数据库文件
+wxwork_export/       ← ⑥ 导出的企业微信聊天记录
+  群名_R_123/
+    .info
+    messages.csv
+    messages.html
+    messages.json
+export/              ← ③ 导出的聊天记录
   张三/
     .info            ← 联系人信息（username/alias/remark/nick_name）
     message_0.db.csv ← CSV 格式（Excel 可直接打开）
@@ -39,7 +50,7 @@ export/              ← ② 导出的聊天记录
     message_0.db.json← JSON 格式（程序处理用）
   李四/
     ...
-data/                ← ③ 语音 MP3 文件
+data/                ← 导出时选择“同时转换语音为 MP3”后的输出
   张三/
     .info
     20250101_120000_1.mp3
@@ -70,7 +81,11 @@ data/                ← ③ 语音 MP3 文件
     "db_dir": "D:\\xwechat_files\\wxid_xxx\\db_storage",
     "keys_file": "all_keys.json",
     "decrypted_dir": "decrypted",
-    "wechat_process": "Weixin.exe"
+    "wechat_process": "Weixin.exe",
+    "wxwork_db_dir": "C:\\Users\\<用户>\\Documents\\WXWork\\<account_id>\\Data",
+    "wxwork_keys_file": "wxwork_keys.json",
+    "wxwork_decrypted_dir": "wxwork_decrypted",
+    "wxwork_export_dir": "wxwork_export"
 }
 ```
 
@@ -84,6 +99,12 @@ A: 请确保微信 PC 版已启动并登录，然后重试。
 
 **Q: 解密失败 / 密钥提取失败**
 A: 检查 `config.json` 中的 `db_dir` 是否与当前登录的微信账号匹配。切换账号后需要删除 `all_keys.json` 重新提取。
+
+**Q: 企业微信解密失败 / 找不到企业微信数据目录**
+A: 确认企业微信 PC 版已启动并登录。若自动检测失败，请在 `config.json` 中设置 `wxwork_db_dir`，路径通常类似 `C:\Users\<用户>\Documents\WXWork\<account_id>\Data`。切换企业微信账号后删除 `wxwork_keys.json` 重新提取。
+
+**Q: 企业微信导出为空 / 找不到会话**
+A: 先执行"⑤ 企业微信解密"，确认 `wxwork_decrypted/message.db` 和 `wxwork_decrypted/session.db` 存在，然后再执行"⑥ 企业微信导出"。
 
 **Q: 转换音频没有输出**
 A: 确认已安装 FFmpeg 并加入系统 PATH。确认已先执行"① 解密数据库"。
