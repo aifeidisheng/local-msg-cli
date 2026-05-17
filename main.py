@@ -261,6 +261,16 @@ def print_usage():
     print("  python main.py status         显示当前状态和磁盘用量")
 
 
+def _call_with_argv(func, argv):
+    """调用子命令 main() 时临时隔离 sys.argv，避免 argparse 读到外层命令。"""
+    old_argv = sys.argv[:]
+    try:
+        sys.argv = argv
+        return func()
+    finally:
+        sys.argv = old_argv
+
+
 def main():
     print("=" * 60)
     print("  WeChat Decrypt")
@@ -301,19 +311,19 @@ def main():
         print("[*] 开始解密全部数据库...")
         print()
         from decrypt_db import main as decrypt_all
-        decrypt_all()
+        _call_with_argv(decrypt_all, ["decrypt_db.py", *sys.argv[2:]])
 
     elif cmd in ("export", "all"):
         print("[*] 开始解密全部数据库...")
         print()
         from decrypt_db import main as decrypt_all
-        decrypt_all()
+        _call_with_argv(decrypt_all, ["decrypt_db.py"])
         print()
         print("[*] 开始批量导出聊天记录...")
         print()
         from export_all_chats import main as export_all
         try:
-            export_all()
+            _call_with_argv(export_all, ["export_all_chats.py"])
         except SystemExit:
             pass
 
