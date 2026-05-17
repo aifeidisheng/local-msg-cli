@@ -1,6 +1,18 @@
 # WeChat 4.x Database Decryptor
 
-微信 4.0 (Windows / macOS / Linux) 本地数据库解密工具。从运行中的微信进程内存提取加密密钥，解密所有 SQLCipher 4 加密数据库，并提供实时消息监听、MCP Server、批量导出和语音转录。
+**微信 / 企业微信本地数据库解密 + 数据工具集** (Windows / macOS / Linux)
+
+从运行中的进程内存提取加密密钥,解密 SQLite 加密数据库,衍生出一整套实用工具:
+
+| 能力 | 支持范围 |
+|---|---|
+| 🔓 **数据库解密** | 个人微信 4.0 (SQLCipher 4) + 企业微信 5.x (wxSQLite3 AES-128) |
+| 📡 **实时消息监听** | Web UI (SSE) / 命令行 / MCP Server (Claude AI 集成) |
+| 📦 **批量导出** | 全部聊天 → JSON / CSV / HTML, 含增量 + 日期范围 + dry-run |
+| 🖼️ **图片解密** | V1 / V2 / wxgf 三种 .dat 格式 + 朋友圈缓存 |
+| 🎙️ **语音转录** | SILK → WAV → 文本 (local Whisper / OpenAI / whisper.cpp 三种 backend) |
+| 🪧 **朋友圈** | SnsTimeLine 解析 + 缓存图片解密 + HTML 时间线 |
+| 🖱️ **Windows GUI** | tkinter 界面整合所有功能 + PyInstaller 单 exe 打包 |
 
 ---
 
@@ -33,7 +45,7 @@ make all
 </details>
 
 <details>
-<summary>Windows — 最小路径</summary>
+<summary>Windows — 最小路径 (CLI)</summary>
 
 ```bash
 # 1. 以管理员身份打开终端
@@ -46,6 +58,38 @@ python main.py decrypt
 # 4. 批量导出
 python export_all_chats.py
 ```
+
+</details>
+
+<details>
+<summary>Windows — GUI / EXE (推荐非技术用户)</summary>
+
+```bash
+# 直接跑 GUI (开发模式)
+python app_gui.py
+
+# 或打包成单 exe 分发给别人
+build.bat                    # 输出 dist/WeChatDecrypt.exe
+```
+
+按钮覆盖: 解密 / 导出 / 朋友圈 / 企业微信 / 语音转 MP3。详见 [EXE_USAGE.md](./EXE_USAGE.md)。
+
+</details>
+
+<details>
+<summary>Windows — 企业微信 (实验)</summary>
+
+```bash
+# 1. 启动企业微信并登录
+# 2. 提取企微 keys + 解密
+python find_wxwork_keys.py    # 自动检测 Documents\WXWork\<id>\Data
+python decrypt_wxwork_db.py   # 解密到 wxwork_decrypted/
+
+# 3. (可选) 导出聊天记录
+python export_wxwork_messages.py
+```
+
+仅 Windows 5.x 实测可用。详见技术细节里的「企业微信数据库解密」章节。
 
 </details>
 
@@ -272,35 +316,113 @@ make help       # 列出所有命令
 
 ## 文件说明
 
+文件按功能分组,方便定位。
+
+<details open>
+<summary><b>① 入口 / 一键脚本</b></summary>
+
 | 文件 | 说明 |
-|------|------|
-| `main.py` | **一键启动入口** — 自动配置、提取密钥、启动服务 |
-| `app_gui.py` | **GUI 工具箱** — tkinter 界面，整合解密/导出/音频转换 |
-| `export_messages.py` | 聊天记录导出（CSV / HTML / JSON） |
-| `voice_to_mp3.py` | 语音消息 SILK 转 MP3 |
-| `build.bat` | 一键打包为单 exe（PyInstaller） |
-| `config.py` | 配置加载器（自动检测微信数据目录） |
-| `find_all_keys.py` | 平台分发入口（Windows / Linux） |
-| `find_all_keys_windows.py` | Windows 版内存扫描提 key |
-| `find_all_keys_linux.py` | Linux 版内存扫描提 key |
-| `decrypt_db.py` | 全量解密所有数据库 |
-| `export_all_chats.py` | 批量导出所有聊天为 JSON（支持 `-t` 附带语音转录） |
-| `export_chat.py` | 单会话导出（供 export_all_chats.py 内部调用） |
-| `chat_export_helpers.py` | 导出格式化共享函数（两脚本共用，避免代码漂移） |
-| `transcribe_chat.py` | 语音消息转录（共享 config.json 配置的 backend） |
-| `find_wxwork_keys.py` | 企业微信 Windows 版内存扫描提 key |
-| `decrypt_wxwork_db.py` | 企业微信 wxSQLite3 AES-128 数据库解密 |
-| `export_wxwork_messages.py` | 企业微信聊天记录导出（按个人/群筛选，CSV / HTML / JSON） |
-| `mcp_server.py` | MCP Server，让 Claude AI 查询微信数据 |
-| `monitor_web.py` | 实时消息监听 (Web UI + SSE) |
-| `monitor.py` | 实时消息监听 (命令行) |
-| `find_all_keys.py` | 平台分发入口（Windows / Linux） |
-| `find_all_keys_macos.c` | macOS 版内存密钥扫描器 (C, Mach VM API) |
-| `find_image_key.py` | 从进程内存提取图片 AES 密钥（Windows / Linux） |
-| `find_image_key_macos.py` | macOS 版图片密钥派生（从磁盘 kvcomm 缓存推算） |
-| `decode_image.py` | 图片 .dat 文件解密模块 (XOR / V1 / V2) |
-| `config.json` | 配置文件（自动生成，手动编辑） |
-| `setup.sh` | 一键安装脚本 |
+|---|---|
+| `main.py` | **CLI 总入口** — 子命令 `decrypt` / `export` / `all` / `status` / `decode-images` / `help` |
+| `app_gui.py` | **Windows GUI** — tkinter 界面整合所有功能 (PR #107) |
+| `setup.sh` | 一键安装依赖 (macOS / Linux / Windows Git Bash) |
+| `setup.py` | 交互式配置向导 (`python setup.py --check` 仅检查环境) |
+| `cleanup.py` | 磁盘清理工具 (`status` 查看用量 / `--dry-run` 预览) |
+
+</details>
+
+<details>
+<summary><b>② 密钥提取 (从进程内存)</b></summary>
+
+| 文件 | 说明 |
+|---|---|
+| `find_all_keys.py` | 平台分发入口 (Windows / Linux) |
+| `find_all_keys_windows.py` | Windows: 扫 Weixin.exe 内存找 SQLCipher raw key |
+| `find_all_keys_linux.py` | Linux: 同上, 走 /proc/<pid>/mem |
+| `find_all_keys_macos.c` | macOS: C + Mach VM API (需 codesign + 重签 WeChat.app) |
+| `find_image_key.py` | 从进程内存提取图片 AES 密钥 (Windows / Linux) |
+| `find_image_key_macos.py` | macOS: 从磁盘 kvcomm 缓存推算 (无需进程在线) |
+| `find_image_key_monitor.py` | 持续监控模式 (Windows) |
+| `find_wxwork_keys.py` | **企业微信 5.x** wxSQLite3 raw key 提取 (cipher 结构体扫描) |
+| `key_scan_common.py` / `key_utils.py` | 扫描器共用工具 |
+
+</details>
+
+<details>
+<summary><b>③ 数据库 / 图片 / 语音解密</b></summary>
+
+| 文件 | 说明 |
+|---|---|
+| `decrypt_db.py` | 全量解密 SQLCipher 4 数据库 (支持 `-i` 增量) |
+| `decode_image.py` | 图片 `.dat` 解密 (V1 / V2 / 旧 XOR), 含 `aligned_aes_block_size` 公共 helper |
+| `decrypt_wxwork_db.py` | **企业微信** wxSQLite3 AES-128 数据库解密 |
+| `decrypt_sns.py` | **朋友圈缓存图片**解密 (V1 / V2 / XOR) |
+| `wxwork_crypto.py` | 企业微信 wxSQLite3 per-page 加密原语 (MD5 派生 + AES-128-CBC) |
+| `batch_decrypt_images.py` | CLI: 任意目录递归批量解 .dat |
+
+</details>
+
+<details>
+<summary><b>④ 导出 (JSON / CSV / HTML)</b></summary>
+
+| 文件 | 说明 |
+|---|---|
+| `export_all_chats.py` | 批量导出全部聊天为 JSON (含 `-t` 转录 / `-i` 增量 / 日期范围 / `--dry-run`) |
+| `export_chat.py` | 单会话 JSON 导出 (供 `export_all_chats` 调用) |
+| `chat_export_helpers.py` | JSON 导出共享格式化函数 (避免漂移) |
+| `export_messages.py` | CSV / HTML / JSON 三种格式导出, 图片可内联 (PR #107) |
+| `export_wxwork_messages.py` | 企业微信版导出 (CSV / HTML / JSON) |
+| `export_sns.py` | 朋友圈 SnsTimeLine 导出 (JSON + HTML 时间线) |
+
+</details>
+
+<details>
+<summary><b>⑤ 实时监听 / 服务</b></summary>
+
+| 文件 | 说明 |
+|---|---|
+| `monitor_web.py` | Web UI (浏览器实时收消息, SSE 推送, http://localhost:5678) |
+| `monitor.py` | 命令行实时监听 |
+| `mcp_server.py` | **MCP Server** — Claude AI 查询微信数据 (含 `get_chat_history` / `decode_voice` / `decode_refer` 等 20+ 工具) |
+| `decode_transfer.py` | CLI: 查单条转账消息 (mcp_server `decode_transfer` 工具的命令行包装) |
+
+</details>
+
+<details>
+<summary><b>⑥ 语音 / 音频</b></summary>
+
+| 文件 | 说明 |
+|---|---|
+| `transcribe_chat.py` | 语音转文本 (local Whisper / OpenAI / whisper.cpp 三 backend) |
+| `voice_to_mp3.py` | SILK_V3 → MP3 (需要 ffmpeg in PATH) |
+
+</details>
+
+<details>
+<summary><b>⑦ 打包 / 配置 / 文档</b></summary>
+
+| 文件 | 说明 |
+|---|---|
+| `config.py` | 配置加载器 (自动检测微信数据目录, 支持打包后 exe 路径) |
+| `config.json` | 配置文件 (首次运行自动生成) |
+| `WeChatDecrypt.spec` | PyInstaller 打包描述 |
+| `build.bat` | Windows 一键打包为单 exe |
+| `requirements.txt` | Python 依赖 |
+| `EXE_USAGE.md` | GUI / EXE 使用说明 |
+| `Makefile` | 常用命令快捷方式 (`make all` / `make clean` / `make status`) |
+
+</details>
+
+<details>
+<summary><b>⑧ 测试 / 文档</b></summary>
+
+| 路径 | 说明 |
+|---|---|
+| `tests/` | 单元测试 (185+ 用例, 含 wxsqlite3 / image v2 / msg types / pagination 等) |
+| `docs/` | 部署 / 排错指南 + 字段研究报告 |
+| `latency_test.py` | 开发工具: 测量消息从 WeChat 写入到我们检测的延迟 |
+
+</details>
 
 ---
 
