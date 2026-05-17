@@ -1,5 +1,7 @@
 # WeChat 4.x Database Decryptor
 
+> 💬 **交流群 / 防失联**: [Telegram - t.me/wechat_decrypt](https://t.me/wechat_decrypt)
+
 **微信 / 企业微信本地数据库解密 + 数据工具集** (Windows / macOS / Linux)
 
 从运行中的进程内存提取加密密钥,解密 SQLite 加密数据库,衍生出一整套实用工具:
@@ -608,4 +610,4 @@ sudo ./find_all_keys_macos
 
 本工具仅用于学习和研究目的，用于解密**自己的**微信数据。请遵守相关法律法规，不要用于未经授权的数据访问。
 
-防失联 TG: https://t.me/wechat_decrypt
+> 💬 交流 / 防失联: [t.me/wechat_decrypt](https://t.me/wechat_decrypt) (顶部也有)
