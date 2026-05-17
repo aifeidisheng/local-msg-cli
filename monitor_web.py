@@ -1782,6 +1782,45 @@ a.msg-link{text-decoration:none;color:inherit}
 .add-rule-btn:hover{background:rgba(79,195,247,.2)}
 /* 通知高亮 */
 .msg.notify-hl{border-left:3px solid #ffd54f;background:rgba(255,213,79,.08);box-shadow:0 0 12px rgba(255,213,79,.1)}
+/* 导出筛选模态框 */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);backdrop-filter:blur(4px);z-index:1100;align-items:center;justify-content:center}
+.modal-overlay.show{display:flex;animation:fadeIn .15s ease-out}
+.modal{background:var(--bg-elev);border:1px solid var(--border);border-radius:var(--r3);width:560px;max-width:90vw;max-height:85vh;display:flex;flex-direction:column;box-shadow:var(--shadow-2);overflow:hidden}
+.modal-h{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+.modal-h h2{font-size:var(--t4);color:var(--text);font-weight:600}
+.modal-close{background:none;border:none;color:var(--text-faint);font-size:20px;cursor:pointer;padding:4px 10px;border-radius:var(--r1);transition:all .15s}
+.modal-close:hover{color:var(--text);background:var(--surface)}
+.modal-b{padding:16px 20px;overflow-y:auto;flex:1}
+.modal-f{padding:14px 20px;border-top:1px solid var(--border);display:flex;justify-content:space-between;gap:8px;align-items:center;flex-shrink:0;background:rgba(0,0,0,.2)}
+.modal-search{width:100%;background:var(--surface);border:1px solid var(--border);border-radius:var(--r1);padding:8px 12px;color:var(--text);font-size:var(--t3);outline:none;font-family:inherit;margin-bottom:var(--s3)}
+.modal-search:focus{border-color:var(--accent)}
+.modal-search::placeholder{color:var(--text-faint)}
+.session-list{max-height:280px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--r1);background:rgba(0,0,0,.2)}
+.session-item{display:flex;align-items:center;gap:var(--s2);padding:8px 12px;cursor:pointer;border-bottom:1px solid rgba(255,255,255,.03);transition:background .1s;font-size:var(--t3)}
+.session-item:hover{background:var(--surface-hover)}
+.session-item:last-child{border-bottom:none}
+.session-item input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px;cursor:pointer;margin:0}
+.session-type{font-size:10px;padding:2px 6px;border-radius:var(--r-pill);color:var(--text-dim);background:var(--surface);min-width:28px;text-align:center;flex-shrink:0}
+.session-type.grp{background:rgba(206,147,216,.12);color:#ce93d8}
+.session-type.single{background:rgba(79,195,247,.12);color:var(--accent)}
+.session-name{flex:1;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.session-ts{font-size:var(--t1);color:var(--text-faint);flex-shrink:0;font-family:Consolas,monospace}
+.modal-selctrl{display:flex;gap:var(--s2);margin:var(--s3) 0;flex-wrap:wrap}
+.modal-selctrl button{background:var(--surface);border:1px solid var(--border);color:var(--text-dim);padding:5px 10px;border-radius:var(--r1);font-size:var(--t1);cursor:pointer;transition:all .15s;font-family:inherit}
+.modal-selctrl button:hover{background:var(--surface-hover);color:var(--text)}
+.modal-section{margin-top:var(--s4)}
+.modal-section-label{font-size:var(--t1);color:var(--text-faint);margin-bottom:var(--s2);text-transform:uppercase;letter-spacing:1.2px;font-weight:600}
+.modal-fmt{display:flex;gap:var(--s4);flex-wrap:wrap}
+.modal-fmt label{display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:var(--t3);color:var(--text)}
+.modal-fmt input{accent-color:var(--accent);width:14px;height:14px;cursor:pointer}
+.modal-selcount{color:var(--text-dim);font-size:var(--t2)}
+.modal-btn{padding:8px 18px;border-radius:var(--r1);font-size:var(--t3);cursor:pointer;border:none;font-family:inherit;font-weight:500;transition:all .15s}
+.modal-btn.secondary{background:var(--surface);color:var(--text-dim);border:1px solid var(--border)}
+.modal-btn.secondary:hover{background:var(--surface-hover);color:var(--text)}
+.modal-btn.primary{background:linear-gradient(135deg,#4fc3f7,#29b6f6);color:#001528;font-weight:600;box-shadow:0 4px 14px rgba(79,195,247,.35)}
+.modal-btn.primary:hover:not(:disabled){background:linear-gradient(135deg,#5fd0ff,#3fc4ff);transform:translateY(-1px)}
+.modal-btn:disabled{opacity:.4;cursor:not-allowed;transform:none!important}
+.modal-loading{text-align:center;color:var(--text-faint);padding:30px;font-size:var(--t3)}
 /* Icon 通用样式 (替代 emoji) */
 .i{width:16px;height:16px;display:inline-block;vertical-align:-3px;flex-shrink:0;color:inherit}
 .i-sm{width:13px;height:13px;vertical-align:-2px}
@@ -1957,6 +1996,39 @@ a.msg-link{text-decoration:none;color:inherit}
 </div>
 </div>
 <div id="lightbox" onclick="this.classList.remove('show')"><img id="lb-img" /></div>
+<!-- 导出筛选模态框 -->
+<div class="modal-overlay" id="exportModal">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-h">
+      <h2 id="exportModalTitle">导出聊天</h2>
+      <button class="modal-close" onclick="closeExportModal()">&times;</button>
+    </div>
+    <div class="modal-b">
+      <input type="text" class="modal-search" id="exportSearch" placeholder="🔍 按名字 / wxid 搜索..." oninput="filterSessions()">
+      <div class="session-list" id="exportSessionList">
+        <div class="modal-loading">加载中...</div>
+      </div>
+      <div class="modal-selctrl">
+        <button onclick="selectAllSessions(true)">全选</button>
+        <button onclick="selectAllSessions(false)">清空</button>
+        <button onclick="selectRecentSessions(30)">选最近 30 天活跃</button>
+        <span class="modal-selcount" id="exportSelCount" style="margin-left:auto">已选 0 个</span>
+      </div>
+      <div class="modal-section" id="exportFmtSection">
+        <div class="modal-section-label">格式</div>
+        <div class="modal-fmt">
+          <label><input type="checkbox" value="csv" checked> CSV</label>
+          <label><input type="checkbox" value="html"> HTML</label>
+          <label><input type="checkbox" value="json"> JSON</label>
+        </div>
+      </div>
+    </div>
+    <div class="modal-f">
+      <button class="modal-btn secondary" onclick="closeExportModal()">取消</button>
+      <button class="modal-btn primary" id="exportConfirmBtn" onclick="confirmExport()" disabled>确认导出 →</button>
+    </div>
+  </div>
+</div>
 <div class="messages" id="msgs">
 <div class="empty" id="empty"><svg class="i i-xl" style="opacity:.4;margin-bottom:12px"><use href="#i-radio"/></svg><p>等待新消息...</p><p style="margin-top:6px;font-size:11px;color:#333">WAL增量解密 · SSE推送</p></div>
 </div>
@@ -2090,16 +2162,111 @@ async function cancelTool(){
     await fetch('/api/tool/cancel',{method:'POST'});
   }catch(e){}
 }
+
+// —— 导出筛选模态框 ——
+window.__exportCtx = { source: null, task: null, btn: null, sessions: [] };
+
+async function openExportModal(modalKind, task, btn){
+  const source = modalKind === 'export_wxwork' ? 'wxwork' : 'wechat';
+  window.__exportCtx = { source, task, btn, sessions: [] };
+  document.getElementById('exportModalTitle').textContent =
+    source === 'wxwork' ? '导出企业微信聊天' : '导出个人微信聊天';
+  document.getElementById('exportSearch').value = '';
+  // 企微脚本支持 --formats, 个人微信脚本目前只 JSON; 隐藏个人微信的格式选项
+  document.getElementById('exportFmtSection').style.display = source === 'wxwork' ? 'block' : 'none';
+  document.getElementById('exportConfirmBtn').disabled = true;
+  document.getElementById('exportSelCount').textContent = '已选 0 个';
+  document.getElementById('exportSessionList').innerHTML = '<div class="modal-loading">加载会话列表...</div>';
+  document.getElementById('exportModal').classList.add('show');
+  try{
+    const r = await fetch('/api/sessions?source=' + source);
+    const sessions = await r.json();
+    if(sessions.error) throw new Error(sessions.error);
+    window.__exportCtx.sessions = sessions;
+    renderSessions(sessions, '');
+  }catch(e){
+    document.getElementById('exportSessionList').innerHTML =
+      '<div class="modal-loading" style="color:var(--danger)">加载失败: ' + esc(e.message) + '</div>';
+  }
+}
+function closeExportModal(){
+  document.getElementById('exportModal').classList.remove('show');
+}
+function renderSessions(sessions, filter){
+  const list = document.getElementById('exportSessionList');
+  const lo = filter.toLowerCase();
+  const filtered = sessions.filter(s =>
+    !lo || s.name.toLowerCase().includes(lo) || (s.username||'').toLowerCase().includes(lo)
+  );
+  if(!filtered.length){
+    list.innerHTML = '<div class="modal-loading">没匹配的会话</div>';
+    return;
+  }
+  list.innerHTML = filtered.map((s, idx) => {
+    const tsLabel = s.last_ts ? new Date(s.last_ts*1000).toISOString().slice(0,10) : '';
+    const typeCls = s.type === '群' ? 'grp' : (s.type === '单聊' ? 'single' : '');
+    return `<label class="session-item">
+      <input type="checkbox" data-username="${esc(s.username)}" onchange="updateSelCount()">
+      <span class="session-type ${typeCls}">${esc(s.type)}</span>
+      <span class="session-name" title="${esc(s.username)}">${esc(s.name)}</span>
+      <span class="session-ts">${tsLabel}</span>
+    </label>`;
+  }).join('');
+}
+function filterSessions(){
+  renderSessions(window.__exportCtx.sessions, document.getElementById('exportSearch').value);
+  updateSelCount();  // refilter 后保留 selection 但 count 重新统计当前可见的
+}
+function updateSelCount(){
+  const checked = document.querySelectorAll('#exportSessionList input[type=checkbox]:checked');
+  document.getElementById('exportSelCount').textContent = '已选 ' + checked.length + ' 个';
+  document.getElementById('exportConfirmBtn').disabled = checked.length === 0;
+}
+function selectAllSessions(yes){
+  document.querySelectorAll('#exportSessionList input[type=checkbox]').forEach(c => c.checked = yes);
+  updateSelCount();
+}
+function selectRecentSessions(days){
+  const cutoff = Date.now()/1000 - days*86400;
+  const list = window.__exportCtx.sessions;
+  document.querySelectorAll('#exportSessionList input[type=checkbox]').forEach(c => {
+    const u = c.dataset.username;
+    const s = list.find(x => x.username === u);
+    c.checked = s && s.last_ts >= cutoff;
+  });
+  updateSelCount();
+}
+function confirmExport(){
+  const users = [...document.querySelectorAll('#exportSessionList input[type=checkbox]:checked')]
+    .map(c => c.dataset.username);
+  const formats = [...document.querySelectorAll('#exportFmtSection input[type=checkbox]:checked')]
+    .map(c => c.value);
+  closeExportModal();
+  // 实际触发任务,带 args
+  const { task, btn } = window.__exportCtx;
+  runToolWithArgs(task, btn, { users, formats });
+}
+// 需要弹模态框先筛选会话的任务
+const NEEDS_MODAL = { 'export_all': 'export_wechat', 'wxwork_export': 'export_wxwork' };
+
 async function runTool(task, btn){
-  // 如果已经在运行 (按钮变成 cancel) → 取消
+  // 取消已运行任务
   if(btn.classList.contains('cancel')){
     btn.disabled = true;
     btn.textContent = '终止中...';
     cancelTool();
     return;
   }
+  // 导出类任务先弹模态框
+  if(NEEDS_MODAL[task]){
+    openExportModal(NEEDS_MODAL[task], task, btn);
+    return;
+  }
+  runToolWithArgs(task, btn, null);
+}
+
+async function runToolWithArgs(task, btn, args){
   const s=document.getElementById('toolStatus');
-  // 禁用其他按钮, 当前按钮改成"终止"
   document.querySelectorAll('.tool-task-btn').forEach(b=>{
     if(b!==btn) b.disabled=true;
   });
@@ -2108,22 +2275,22 @@ async function runTool(task, btn){
   btn.innerHTML = '<svg class="i"><use href="#i-stop"/></svg> 终止';
   btn.classList.add('cancel');
   window.__runningBtn = btn;
-  // 清当前 pane 的日志框
   const L=document.getElementById('toolLog_'+window.__activeToolPane);
   if(L) L.textContent='';
   s.style.display='inline-block';
   s.className='tool-status running';
   s.innerHTML='<svg class="i i-sm spin"><use href="#i-loader"/></svg> 运行中: '+esc(btn.dataset.origText.trim());
   try{
-    const r=await fetch('/api/tool',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({task:task})});
+    const payload = { task: task };
+    if(args) payload.args = args;
+    const r=await fetch('/api/tool',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     const d=await r.json();
     if(!r.ok){
       s.className='tool-status err';
       s.textContent='✗ '+(d.error||'启动失败');
-      // 启动失败立刻还原
       document.querySelectorAll('.tool-task-btn').forEach(b=>{
         b.disabled=false;
-        if(b.dataset.origText){b.textContent = b.dataset.origText; b.dataset.origText='';}
+        if(b.dataset.origHtml){b.innerHTML = b.dataset.origHtml; b.dataset.origHtml=''; b.dataset.origText='';}
         b.classList.remove('cancel');
       });
     }
@@ -2335,6 +2502,30 @@ fetch('/api/history').then(r=>r.json()).then(ms=>{
 # 前端在 HTML_PAGE 顶部加一个折叠区,点按钮 POST /api/tool {task: "..."}。
 # SSE 事件用 event=tool_log / tool_done 跟原 message 事件区分。
 
+def _build_export_steps(users, formats):
+    """根据用户选择的会话 + 格式拼 export_all_chats.py argv"""
+    cmd = [sys.executable, "export_all_chats.py"]
+    if users:
+        cmd += ["--users", ",".join(users)]
+    # export_all_chats 当前只输出 JSON, formats 暂时忽略
+    # (export_messages.py 有 CSV/HTML/JSON, 但走的是另一条路径, 不在 v1 范围)
+    return [cmd]
+
+
+def _build_wxwork_export_steps(users, formats):
+    """根据用户选择拼 export_wxwork_messages.py argv (--conversation 可重复)"""
+    cmd = [sys.executable, "export_wxwork_messages.py"]
+    for u in (users or []):
+        cmd += ["--conversation", u]
+    if formats:
+        cmd += ["--formats", ",".join(formats)]
+    return [cmd]
+
+
+# task 配置:
+#   steps         — 固定 cmd 列表 (无参任务)
+#   build_steps   — fn(args)->[cmd, ...] 动态构造 (需要用户选会话/格式的导出任务)
+#   needs_modal   — 前端点这个 task 时要弹模态框 ('export_wechat' | 'export_wxwork')
 TOOL_TASKS = {
     # —— 个人微信 ——
     "wechat_decrypt": {
@@ -2346,8 +2537,9 @@ TOOL_TASKS = {
         "steps": [[sys.executable, "find_image_key.py"]],
     },
     "export_all": {
-        "name": "③ 导出全部聊天 (JSON)",
-        "steps": [[sys.executable, "export_all_chats.py"]],
+        "name": "③ 导出聊天",
+        "build_steps": _build_export_steps,
+        "needs_modal": "export_wechat",
     },
     "decode_images": {
         "name": "④ 批量解密图片",
@@ -2371,7 +2563,8 @@ TOOL_TASKS = {
     },
     "wxwork_export": {
         "name": "⑦ 企业微信导出",
-        "steps": [[sys.executable, "export_wxwork_messages.py"]],
+        "build_steps": _build_wxwork_export_steps,
+        "needs_modal": "export_wxwork",
     },
     # —— 工具 ——
     "voice_mp3": {
@@ -2384,13 +2577,87 @@ _tool_lock = threading.Lock()
 _tool_running = {"job": None, "proc": None, "cancelled": False}  # 同时只允许一个任务
 
 
+def _list_sessions(source):
+    """列会话, 供导出筛选模态框消费。返回 [{name, username, type, last_ts}]
+    按 last_ts 降序。
+
+    source:
+      wechat — 个人微信, 从 decrypted/session/session.db 读 SessionTable
+      wxwork — 企业微信, 从 wxwork_decrypted/session.db 读 conversation_table
+    """
+    out = []
+    if source == "wechat":
+        if not os.path.exists(DECRYPTED_SESSION):
+            return []
+        # 复用 load_contact_names (静态快照即可, 模态框开时调一次性 OK)
+        names = load_contact_names()
+        try:
+            with closing(sqlite3.connect(f"file:{DECRYPTED_SESSION}?mode=ro&immutable=1", uri=True)) as conn:
+                for r in conn.execute(
+                    "SELECT username, type, last_timestamp, last_sender_display_name, summary "
+                    "FROM SessionTable WHERE username IS NOT NULL AND username != '' "
+                    "ORDER BY last_timestamp DESC"
+                ):
+                    username, type_, ts, sender, summary = r
+                    is_group = username.endswith("@chatroom") if username else False
+                    is_public = username.startswith("gh_") if username else False
+                    type_label = "群" if is_group else ("公众号" if is_public else "单聊")
+                    name = names.get(username) or sender or username
+                    out.append({
+                        "username": username,
+                        "name": name,
+                        "type": type_label,
+                        "last_ts": ts or 0,
+                        "summary": (summary or "")[:60],
+                    })
+        except Exception:
+            pass
+    elif source == "wxwork":
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.join(script_dir, "wxwork_decrypted", "session.db")
+        if not os.path.exists(path):
+            return []
+        try:
+            with closing(sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)) as conn:
+                conn.text_factory = lambda b: b.decode("utf-8", errors="replace") if isinstance(b, bytes) else b
+                for r in conn.execute(
+                    "SELECT id, name, last_message_time FROM conversation_table "
+                    "WHERE id IS NOT NULL AND id != '' "
+                    "ORDER BY last_message_time DESC"
+                ):
+                    cid, name, ts = r
+                    # id 前缀: R=群 / S=单聊 / E=外部/系统 / Y=其他
+                    if cid.startswith("R:"):
+                        type_label = "群"
+                    elif cid.startswith("S:"):
+                        type_label = "单聊"
+                    elif cid.startswith("E:"):
+                        type_label = "外部"
+                    else:
+                        type_label = "其他"
+                    out.append({
+                        "username": cid,
+                        "name": name or cid,
+                        "type": type_label,
+                        "last_ts": ts or 0,
+                        "summary": "",
+                    })
+        except Exception:
+            pass
+    return out
+
+
 def _broadcast_tool_event(event, **fields):
     payload = {"event": event, **fields}
     broadcast_sse(payload)
 
 
-def _run_tool_task(job_id, task_name):
-    """后台线程: 顺序跑 TOOL_TASKS[task_name].steps 的每条命令,实时推 SSE。"""
+def _run_tool_task(job_id, task_name, args=None):
+    """后台线程: 顺序跑 TOOL_TASKS[task_name].steps 的每条命令,实时推 SSE。
+
+    args 含用户在前端模态框选的参数 (users / formats 等), 由 build_steps
+    动态构造 cmd。固定任务 (无 build_steps) 直接用 steps。
+    """
     task = TOOL_TASKS.get(task_name)
     if not task:
         _broadcast_tool_event("tool_done", job_id=job_id, ok=False,
@@ -2399,12 +2666,19 @@ def _run_tool_task(job_id, task_name):
             _tool_running["job"] = None
         return
 
+    # 动态构造 steps (导出类) 或用固定 steps
+    if "build_steps" in task:
+        a = args or {}
+        steps = task["build_steps"](a.get("users", []), a.get("formats", []))
+    else:
+        steps = task["steps"]
+
     _broadcast_tool_event("tool_log", job_id=job_id,
                           line=f"━━━ 开始: {task['name']} ━━━\n")
 
     exit_code = 0
     cancelled = False
-    for step in task["steps"]:
+    for step in steps:
         cmd_str = " ".join(step)
         _broadcast_tool_event("tool_log", job_id=job_id,
                               line=f"\n>>> {cmd_str}\n\n")
@@ -2575,6 +2849,23 @@ class Handler(BaseHTTPRequestHandler):
                 with sse_lock:
                     if q in sse_clients:
                         sse_clients.remove(q)
+        elif self.path == "/api/sessions" or self.path.startswith("/api/sessions?"):
+            # 列会话(用于导出筛选模态框)
+            parsed = urllib.parse.urlparse(self.path)
+            params = urllib.parse.parse_qs(parsed.query)
+            source = params.get("source", ["wechat"])[0]
+            try:
+                sessions = _list_sessions(source)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps(sessions, ensure_ascii=False).encode())
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode())
+
         else:
             self.send_error(404)
 
@@ -2585,6 +2876,7 @@ class Handler(BaseHTTPRequestHandler):
                 body = self.rfile.read(length).decode("utf-8") if length else "{}"
                 req = json.loads(body)
                 task_name = req.get("task", "")
+                task_args = req.get("args", {}) or {}
             except Exception as e:
                 self.send_response(400)
                 self.send_header("Content-Type", "application/json")
@@ -2613,7 +2905,8 @@ class Handler(BaseHTTPRequestHandler):
                 job_id = "j_" + uuid.uuid4().hex[:8]
                 _tool_running["job"] = job_id
 
-            threading.Thread(target=_run_tool_task, args=(job_id, task_name),
+            threading.Thread(target=_run_tool_task,
+                             args=(job_id, task_name, task_args),
                              daemon=True).start()
 
             self.send_response(200)
