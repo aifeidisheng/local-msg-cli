@@ -1782,6 +1782,13 @@ a.msg-link{text-decoration:none;color:inherit}
 .add-rule-btn:hover{background:rgba(79,195,247,.2)}
 /* 通知高亮 */
 .msg.notify-hl{border-left:3px solid #ffd54f;background:rgba(255,213,79,.08);box-shadow:0 0 12px rgba(255,213,79,.1)}
+/* Icon 通用样式 (替代 emoji) */
+.i{width:16px;height:16px;display:inline-block;vertical-align:-3px;flex-shrink:0;color:inherit}
+.i-sm{width:13px;height:13px;vertical-align:-2px}
+.i-lg{width:20px;height:20px;vertical-align:-5px}
+.i-xl{width:32px;height:32px;vertical-align:middle}
+.spin{animation:spin 1s linear infinite;transform-origin:center}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 /* 工具面板 (Web 版替代 tkinter app_gui.py) */
 .tools-btn{background:none;border:1px solid var(--border-strong);color:var(--text-dim);font-size:var(--t3);cursor:pointer;padding:6px 12px;border-radius:var(--r1);transition:all .2s;margin-left:var(--s2);flex-shrink:0;font-weight:500}
 .tools-btn:hover{color:var(--accent);border-color:var(--accent);background:var(--accent-bg)}
@@ -1798,8 +1805,8 @@ a.msg-link{text-decoration:none;color:inherit}
 .tool-pane.active{display:block;animation:fadeIn .2s ease-out}
 @keyframes fadeIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
 /* 前置条件 → 紧凑 chip (不再像 form error) */
-.tool-prereq{display:inline-flex;align-items:center;gap:var(--s1);background:rgba(255,213,79,.08);color:var(--warn);font-size:var(--t1);padding:6px 12px;border-radius:var(--r-pill);border:none;margin-bottom:var(--s4);font-weight:500;letter-spacing:.2px}
-.tool-prereq::before{content:'●';color:var(--warn);font-size:8px}
+.tool-prereq{display:inline-flex;align-items:center;gap:var(--s2);background:rgba(255,213,79,.08);color:var(--warn);font-size:var(--t1);padding:6px 12px;border-radius:var(--r-pill);border:none;margin-bottom:var(--s4);font-weight:500;letter-spacing:.2px}
+.tool-prereq.info{background:rgba(79,195,247,.08);color:var(--accent)}
 .tool-step{margin-bottom:var(--s4)}
 .tool-step-label{font-size:var(--t1);color:var(--text-faint);margin-bottom:var(--s2);text-transform:uppercase;letter-spacing:1.2px;font-weight:600}
 .tools-row{display:flex;flex-wrap:wrap;gap:var(--s2);align-items:center}
@@ -1856,23 +1863,37 @@ a.msg-link{text-decoration:none;color:inherit}
 </style>
 </head>
 <body>
+<!-- SVG icon library (Lucide-style, stroke 2, viewBox 24x24). 一次性内嵌 ~1KB,
+     用 <svg class="i"><use href="#i-xxx"/></svg> 引用, currentColor 自动跟文字色。 -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-wrench" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></symbol>
+  <symbol id="i-briefcase" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></symbol>
+  <symbol id="i-radio" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="6" width="12" height="12" rx="1"/></symbol>
+  <symbol id="i-loader" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></symbol>
+</svg>
 <div class="header">
 <h1>WeChat Monitor</h1>
 <div class="status ok" id="st">SSE 实时</div>
 <div class="stats"><span id="cnt">0 消息</span><span id="perf"></span></div>
-<button class="tools-btn" onclick="toggleTools()" title="工具箱 (解密 / 导出 / 企业微信)">🛠️ 工具</button>
-<button class="settings-btn" onclick="toggleSettings()" title="通知设置">⚙️</button>
+<button class="tools-btn" onclick="toggleTools()" title="工具箱 (解密 / 导出 / 企业微信)"><svg class="i"><use href="#i-wrench"/></svg> 工具</button>
+<button class="settings-btn" onclick="toggleSettings()" title="通知设置"><svg class="i"><use href="#i-settings"/></svg></button>
 </div>
 <div id="toolsPanel" class="show">
   <div class="tool-tabs">
-    <button class="tool-tab active" data-pane="wechat">📱 个人微信</button>
-    <button class="tool-tab" data-pane="wxwork">🏢 企业微信</button>
-    <button class="tool-tab" data-pane="misc">🔧 工具</button>
+    <button class="tool-tab active" data-pane="wechat"><svg class="i"><use href="#i-chat"/></svg> 个人微信</button>
+    <button class="tool-tab" data-pane="wxwork"><svg class="i"><use href="#i-briefcase"/></svg> 企业微信</button>
+    <button class="tool-tab" data-pane="misc"><svg class="i"><use href="#i-sliders"/></svg> 工具</button>
     <span id="toolStatus" class="tool-status" style="display:none;margin-left:auto;align-self:center;margin-right:24px"></span>
   </div>
 
   <div class="tool-pane active" data-pane="wechat">
-    <div class="tool-prereq">⚠️ 前置：微信 PC 版正在运行且已登录</div>
+    <div class="tool-prereq"><svg class="i i-sm"><use href="#i-alert"/></svg> 前置：微信 PC 版正在运行且已登录</div>
     <div class="tool-step">
       <div class="tool-step-label">Step 1 — 解密</div>
       <div class="tools-row">
@@ -1892,7 +1913,7 @@ a.msg-link{text-decoration:none;color:inherit}
   </div>
 
   <div class="tool-pane" data-pane="wxwork">
-    <div class="tool-prereq">⚠️ 前置：企业微信 PC 版正在运行且已登录（独立于个人微信）</div>
+    <div class="tool-prereq"><svg class="i i-sm"><use href="#i-alert"/></svg> 前置：企业微信 PC 版正在运行且已登录（独立于个人微信）</div>
     <div class="tool-step">
       <div class="tool-step-label">Step 1 — 解密</div>
       <div class="tools-row">
@@ -1909,7 +1930,7 @@ a.msg-link{text-decoration:none;color:inherit}
   </div>
 
   <div class="tool-pane" data-pane="misc">
-    <div class="tool-prereq">💡 跟微信/企微进程无关，只读已解密产物</div>
+    <div class="tool-prereq info"><svg class="i i-sm"><use href="#i-info"/></svg> 跟微信/企微进程无关，只读已解密产物</div>
     <div class="tool-step">
       <div class="tool-step-label">语音 / 转码</div>
       <div class="tools-row">
@@ -1937,7 +1958,7 @@ a.msg-link{text-decoration:none;color:inherit}
 </div>
 <div id="lightbox" onclick="this.classList.remove('show')"><img id="lb-img" /></div>
 <div class="messages" id="msgs">
-<div class="empty" id="empty"><div class="icon">📡</div><p>等待新消息...</p><p style="margin-top:6px;font-size:11px;color:#333">WAL增量解密 · SSE推送</p></div>
+<div class="empty" id="empty"><svg class="i i-xl" style="opacity:.4;margin-bottom:12px"><use href="#i-radio"/></svg><p>等待新消息...</p><p style="margin-top:6px;font-size:11px;color:#333">WAL增量解密 · SSE推送</p></div>
 </div>
 <script>
 let n=0;
@@ -2083,7 +2104,8 @@ async function runTool(task, btn){
     if(b!==btn) b.disabled=true;
   });
   btn.dataset.origText = btn.textContent;
-  btn.textContent = '🛑 终止';
+  btn.dataset.origHtml = btn.innerHTML;
+  btn.innerHTML = '<svg class="i"><use href="#i-stop"/></svg> 终止';
   btn.classList.add('cancel');
   window.__runningBtn = btn;
   // 清当前 pane 的日志框
@@ -2091,7 +2113,7 @@ async function runTool(task, btn){
   if(L) L.textContent='';
   s.style.display='inline-block';
   s.className='tool-status running';
-  s.textContent='⏳ 运行中: '+btn.dataset.origText.trim();
+  s.innerHTML='<svg class="i i-sm spin"><use href="#i-loader"/></svg> 运行中: '+esc(btn.dataset.origText.trim());
   try{
     const r=await fetch('/api/tool',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({task:task})});
     const d=await r.json();
@@ -2110,7 +2132,7 @@ async function runTool(task, btn){
     s.textContent='✗ 网络错误: '+e.message;
     document.querySelectorAll('.tool-task-btn').forEach(b=>{
       b.disabled=false;
-      if(b.dataset.origText){b.textContent = b.dataset.origText; b.dataset.origText='';}
+      if(b.dataset.origHtml){b.innerHTML = b.dataset.origHtml; b.dataset.origHtml=''; b.dataset.origText='';}
       b.classList.remove('cancel');
     });
   }
@@ -2265,7 +2287,7 @@ function connectSSE(){
     // 还原所有按钮 + 把"终止"按钮还原成原文本
     document.querySelectorAll('.tool-task-btn').forEach(b=>{
       b.disabled=false;
-      if(b.dataset.origText){b.textContent = b.dataset.origText; b.dataset.origText='';}
+      if(b.dataset.origHtml){b.innerHTML = b.dataset.origHtml; b.dataset.origHtml=''; b.dataset.origText='';}
       b.classList.remove('cancel');
     });
     window.__runningBtn = null;
