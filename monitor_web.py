@@ -1750,15 +1750,27 @@ a.msg-link{text-decoration:none;color:inherit}
 /* 工具面板 (Web 版替代 tkinter app_gui.py) */
 .tools-btn{background:none;border:1px solid rgba(255,255,255,.15);color:#888;font-size:13px;cursor:pointer;padding:4px 10px;border-radius:6px;transition:all .2s;margin-left:6px}
 .tools-btn:hover{color:#4fc3f7;border-color:rgba(79,195,247,.4)}
-#toolsPanel{display:none;background:#0f0f17;border-top:1px solid rgba(255,255,255,.08);padding:14px 24px;flex-shrink:0;max-height:50vh;overflow:auto}
-#toolsPanel.show{display:flex;flex-direction:column;gap:10px}
-.tools-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-.tool-task-btn{background:linear-gradient(135deg,#1e293b,#0f172a);border:1px solid rgba(79,195,247,.3);color:#bdd4ff;padding:8px 16px;border-radius:8px;font-size:13px;cursor:pointer;transition:all .2s}
+#toolsPanel{display:none;background:#0f0f17;border-top:1px solid rgba(255,255,255,.08);padding:0;flex-shrink:0;max-height:60vh;overflow:hidden;flex-direction:column}
+#toolsPanel.show{display:flex}
+/* Tab 头 */
+.tool-tabs{display:flex;background:#0a0a0f;border-bottom:1px solid rgba(255,255,255,.06);padding:0 24px;gap:2px;flex-shrink:0}
+.tool-tab{background:none;border:none;color:#666;font-size:13px;padding:12px 20px;cursor:pointer;border-bottom:2px solid transparent;transition:all .2s;font-family:inherit}
+.tool-tab:hover{color:#aaa}
+.tool-tab.active{color:#4fc3f7;border-bottom-color:#4fc3f7;font-weight:600}
+/* Tab 内容 */
+.tool-pane{display:none;padding:16px 24px;overflow:auto;flex:1}
+.tool-pane.active{display:block}
+.tool-prereq{font-size:11px;color:#777;margin-bottom:10px;padding:6px 10px;background:rgba(255,170,60,.06);border-left:2px solid rgba(255,170,60,.4);border-radius:0 4px 4px 0}
+.tool-step{margin-bottom:12px}
+.tool-step-label{font-size:11px;color:#666;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px}
+.tools-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:4px}
+.tool-task-btn{background:linear-gradient(135deg,#1e293b,#0f172a);border:1px solid rgba(79,195,247,.3);color:#bdd4ff;padding:8px 16px;border-radius:8px;font-size:13px;cursor:pointer;transition:all .2s;font-family:inherit}
 .tool-task-btn:hover:not(:disabled){background:linear-gradient(135deg,#2a3a5a,#1a2540);transform:translateY(-1px)}
 .tool-task-btn:disabled{opacity:.5;cursor:not-allowed}
-.tool-log-wrap{background:#000;border:1px solid rgba(255,255,255,.08);border-radius:6px;padding:10px 12px;font-family:Consolas,"Courier New",monospace;font-size:12px;color:#cfd8dc;line-height:1.4;max-height:300px;overflow:auto;white-space:pre-wrap;word-break:break-all}
+.tool-task-btn.primary{background:linear-gradient(135deg,#1e3a5a,#0f2540);border-color:rgba(79,195,247,.5)}
+.tool-log-wrap{background:#000;border:1px solid rgba(255,255,255,.08);border-radius:6px;padding:10px 12px;font-family:Consolas,"Courier New",monospace;font-size:12px;color:#cfd8dc;line-height:1.4;max-height:240px;overflow:auto;white-space:pre-wrap;word-break:break-all;margin-top:12px}
 .tool-log-wrap:empty::before{content:"点击上方按钮开始任务，日志会实时显示";color:#555;font-style:italic}
-.tool-status{display:inline-block;font-size:12px;padding:3px 10px;border-radius:10px;margin-left:8px}
+.tool-status{display:inline-block;font-size:12px;padding:3px 10px;border-radius:10px;margin-left:8px;vertical-align:middle}
 .tool-status.running{background:rgba(79,195,247,.15);color:#4fc3f7;border:1px solid rgba(79,195,247,.3)}
 .tool-status.ok{background:rgba(76,175,80,.15);color:#81c784;border:1px solid rgba(76,175,80,.3)}
 .tool-status.err{background:rgba(244,67,54,.15);color:#ef9a9a;border:1px solid rgba(244,67,54,.3)}
@@ -1773,22 +1785,60 @@ a.msg-link{text-decoration:none;color:inherit}
 <button class="settings-btn" onclick="toggleSettings()" title="通知设置">⚙️</button>
 </div>
 <div id="toolsPanel">
-  <div class="tools-row">
-    <div style="color:#888;font-size:11px;margin-right:6px">个人微信:</div>
-    <button class="tool-task-btn" data-task="wechat_decrypt">① 解密</button>
-    <button class="tool-task-btn" data-task="image_key">② 图片密钥</button>
-    <button class="tool-task-btn" data-task="export_all">③ 导出聊天</button>
-    <button class="tool-task-btn" data-task="decode_images">④ 批量解图片</button>
+  <div class="tool-tabs">
+    <button class="tool-tab active" data-pane="wechat">📱 个人微信</button>
+    <button class="tool-tab" data-pane="wxwork">🏢 企业微信</button>
+    <button class="tool-tab" data-pane="misc">🔧 工具</button>
+    <span id="toolStatus" class="tool-status" style="display:none;margin-left:auto;align-self:center;margin-right:24px"></span>
   </div>
-  <div class="tools-row">
-    <div style="color:#888;font-size:11px;margin-right:6px">朋友圈/企微:</div>
-    <button class="tool-task-btn" data-task="sns_decrypt">⑤ 朋友圈</button>
-    <button class="tool-task-btn" data-task="wxwork_decrypt">⑥ 企微解密</button>
-    <button class="tool-task-btn" data-task="wxwork_export">⑦ 企微导出</button>
-    <button class="tool-task-btn" data-task="voice_mp3">⑧ 语音转 MP3</button>
-    <span id="toolStatus" class="tool-status" style="display:none"></span>
+
+  <div class="tool-pane active" data-pane="wechat">
+    <div class="tool-prereq">⚠️ 前置：微信 PC 版正在运行且已登录</div>
+    <div class="tool-step">
+      <div class="tool-step-label">Step 1 — 解密</div>
+      <div class="tools-row">
+        <button class="tool-task-btn primary" data-task="wechat_decrypt">① 提取密钥 + 解密数据库</button>
+        <button class="tool-task-btn" data-task="image_key">② 提取图片密钥</button>
+      </div>
+    </div>
+    <div class="tool-step">
+      <div class="tool-step-label">Step 2 — 导出/解码（可独立运行，需先 Step 1）</div>
+      <div class="tools-row">
+        <button class="tool-task-btn" data-task="export_all">③ 导出全部聊天 (JSON)</button>
+        <button class="tool-task-btn" data-task="decode_images">④ 批量解密 .dat 图片</button>
+        <button class="tool-task-btn" data-task="sns_decrypt">⑤ 朋友圈解密 + 导出</button>
+      </div>
+    </div>
+    <div class="tool-log-wrap" id="toolLog_wechat"></div>
   </div>
-  <div class="tool-log-wrap" id="toolLog"></div>
+
+  <div class="tool-pane" data-pane="wxwork">
+    <div class="tool-prereq">⚠️ 前置：企业微信 PC 版正在运行且已登录（独立于个人微信）</div>
+    <div class="tool-step">
+      <div class="tool-step-label">Step 1 — 解密</div>
+      <div class="tools-row">
+        <button class="tool-task-btn primary" data-task="wxwork_decrypt">① 提取密钥 + 解密数据库</button>
+      </div>
+    </div>
+    <div class="tool-step">
+      <div class="tool-step-label">Step 2 — 导出</div>
+      <div class="tools-row">
+        <button class="tool-task-btn" data-task="wxwork_export">② 导出聊天 (CSV/HTML/JSON)</button>
+      </div>
+    </div>
+    <div class="tool-log-wrap" id="toolLog_wxwork"></div>
+  </div>
+
+  <div class="tool-pane" data-pane="misc">
+    <div class="tool-prereq">💡 跟微信/企微进程无关，只读已解密产物</div>
+    <div class="tool-step">
+      <div class="tool-step-label">语音 / 转码</div>
+      <div class="tools-row">
+        <button class="tool-task-btn" data-task="voice_mp3">语音转 MP3（需 ffmpeg in PATH）</button>
+      </div>
+    </div>
+    <div class="tool-log-wrap" id="toolLog_misc"></div>
+  </div>
 </div>
 <div class="settings-overlay" id="settingsOverlay" onclick="toggleSettings()"></div>
 <div class="settings-panel" id="settingsPanel">
@@ -1929,13 +1979,21 @@ function toggleTools(){
   const p=document.getElementById('toolsPanel');
   p.classList.toggle('show');
 }
+window.__activeToolPane='wechat';
+function switchToolTab(name){
+  window.__activeToolPane=name;
+  document.querySelectorAll('.tool-tab').forEach(t=>t.classList.toggle('active', t.dataset.pane===name));
+  document.querySelectorAll('.tool-pane').forEach(p=>p.classList.toggle('active', p.dataset.pane===name));
+}
 async function runTool(task, btn){
   const s=document.getElementById('toolStatus');
   document.querySelectorAll('.tool-task-btn').forEach(b=>b.disabled=true);
-  document.getElementById('toolLog').textContent='';
+  // 清当前 pane 的日志框
+  const L=document.getElementById('toolLog_'+window.__activeToolPane);
+  if(L) L.textContent='';
   s.style.display='inline-block';
   s.className='tool-status running';
-  s.textContent='⏳ 运行中...';
+  s.textContent='⏳ 运行中: '+btn.textContent.trim();
   try{
     const r=await fetch('/api/tool',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({task:task})});
     const d=await r.json();
@@ -1950,10 +2008,13 @@ async function runTool(task, btn){
     document.querySelectorAll('.tool-task-btn').forEach(b=>b.disabled=false);
   }
 }
-// 工具按钮 click handler 绑定
+// 工具按钮 + tab 切换 click handler 绑定
 document.addEventListener('DOMContentLoaded',()=>{
   document.querySelectorAll('.tool-task-btn').forEach(b=>{
     b.addEventListener('click',()=>runTool(b.dataset.task, b));
+  });
+  document.querySelectorAll('.tool-tab').forEach(t=>{
+    t.addEventListener('click',()=>switchToolTab(t.dataset.pane));
   });
 });
 function beep(){
@@ -2079,9 +2140,10 @@ function connectSSE(){
   });
   es.addEventListener('tool_log', ev=>{
     const d=JSON.parse(ev.data);
-    const L=document.getElementById('toolLog');
-    L.textContent += d.line;
-    L.scrollTop = L.scrollHeight;
+    // 写到当前激活 pane 的日志框
+    const pane=window.__activeToolPane||'wechat';
+    const L=document.getElementById('toolLog_'+pane);
+    if(L){L.textContent += d.line; L.scrollTop = L.scrollHeight;}
   });
   es.addEventListener('tool_done', ev=>{
     const d=JSON.parse(ev.data);
