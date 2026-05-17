@@ -1680,10 +1680,11 @@ body{
   height:100vh;display:flex;flex-direction:column;
   -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
 }
-/* 顶部 header: 玻璃质感 + sticky + 防按钮被挤掉 */
+/* 顶部 header: sticky + 防按钮被挤掉
+   原本用 backdrop-filter:blur(20px) 但每次 SSE 推消息触发 reflow 都要 GPU
+   重绘整个 header, 在低端机 / 高频消息时拖慢渲染。改用纯渐变背景。 */
 .header{
-  background:linear-gradient(135deg,rgba(26,26,46,.85),rgba(22,33,62,.85));
-  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  background:linear-gradient(135deg,#1a1a2e,#16213e);
   padding:14px 24px;
   border-bottom:1px solid var(--border);
   display:flex;align-items:center;gap:12px;
@@ -1923,7 +1924,7 @@ a.msg-link{text-decoration:none;color:inherit}
 <button class="tools-btn" onclick="toggleTools()" title="工具箱 (解密 / 导出 / 企业微信)"><svg class="i"><use href="#i-wrench"/></svg> 工具</button>
 <button class="settings-btn" onclick="toggleSettings()" title="通知设置"><svg class="i"><use href="#i-settings"/></svg></button>
 </div>
-<div id="toolsPanel" class="show">
+<div id="toolsPanel">
   <div class="tool-tabs">
     <button class="tool-tab active" data-pane="wechat"><svg class="i"><use href="#i-chat"/></svg> 个人微信</button>
     <button class="tool-tab" data-pane="wxwork"><svg class="i"><use href="#i-briefcase"/></svg> 企业微信</button>
