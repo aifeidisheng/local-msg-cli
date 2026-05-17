@@ -1653,15 +1653,50 @@ HTML_PAGE = '''<!DOCTYPE html>
 <title>微信消息监听</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0a0a0f;color:#e0e0e0;height:100vh;display:flex;flex-direction:column}
-.header{background:linear-gradient(135deg,#1a1a2e,#16213e);padding:14px 24px;border-bottom:1px solid rgba(255,255,255,.08);display:flex;align-items:center;gap:12px;flex-shrink:0}
+:root{
+  /* 颜色 */
+  --bg:#0a0a0f;--bg-elev:#12121a;
+  --surface:rgba(255,255,255,.04);--surface-hover:rgba(255,255,255,.07);
+  --border:rgba(255,255,255,.08);--border-strong:rgba(255,255,255,.16);
+  --text:#e8eaed;--text-dim:#9aa0a6;--text-faint:#5f6368;
+  --accent:#4fc3f7;--accent-bg:rgba(79,195,247,.12);
+  --success:#81c784;--warn:#ffd54f;--danger:#ef9a9a;
+  /* 4-step 间距 */
+  --s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:24px;--s6:32px;
+  /* 4-step 字号 */
+  --t1:11px;--t2:12px;--t3:13px;--t4:15px;--t5:18px;--t6:24px;
+  /* 圆角 */
+  --r1:6px;--r2:10px;--r3:14px;--r-pill:999px;
+  /* 阴影 */
+  --shadow-1:0 1px 2px rgba(0,0,0,.3);
+  --shadow-2:0 8px 24px rgba(0,0,0,.4);
+  --shadow-glow:0 0 0 1px var(--border),0 4px 14px rgba(79,195,247,.18);
+}
+/* 字体: 中文优先用苹方 / 思源, 避免 Segoe UI 把中文渲染糊 */
+body{
+  font-family:"PingFang SC","HarmonyOS Sans","Source Han Sans CN","Microsoft YaHei UI",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  background:radial-gradient(ellipse at top,#14142a 0%,#0a0a0f 60%) fixed;
+  color:var(--text);
+  height:100vh;display:flex;flex-direction:column;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+}
+/* 顶部 header: 玻璃质感 + sticky + 防按钮被挤掉 */
+.header{
+  background:linear-gradient(135deg,rgba(26,26,46,.85),rgba(22,33,62,.85));
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  padding:14px 24px;
+  border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:12px;
+  flex-shrink:0;flex-wrap:wrap;row-gap:8px;
+  position:sticky;top:0;z-index:50;
+}
 .header h1{font-size:18px;font-weight:600;background:linear-gradient(90deg,#4fc3f7,#81c784);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
 .status{font-size:12px;padding:4px 10px;border-radius:12px;transition:all .3s}
 .status.ok{background:rgba(76,175,80,.15);color:#81c784;border:1px solid rgba(76,175,80,.3)}
 .status.ok::before{content:'';display:inline-block;width:6px;height:6px;border-radius:50%;background:#4caf50;margin-right:6px;animation:pulse 2s infinite}
 .status.err{background:rgba(244,67,54,.15);color:#ef9a9a;border:1px solid rgba(244,67,54,.3)}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
-.stats{margin-left:auto;font-size:12px;color:#666;display:flex;gap:16px}
+.stats{margin-left:auto;font-size:var(--t2);color:var(--text-faint);display:flex;gap:var(--s4);min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .messages{flex:1;overflow-y:auto;padding:12px}
 .msg{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:10px;padding:10px 14px;margin-bottom:5px;transition:transform .3s ease}
 .msg:hover{background:rgba(255,255,255,.05)}
@@ -1712,8 +1747,8 @@ a.msg-link{text-decoration:none;color:inherit}
 ::-webkit-scrollbar{width:4px}
 ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.08);border-radius:2px}
 /* 设置面板 */
-.settings-btn{background:none;border:1px solid rgba(255,255,255,.15);color:#888;font-size:16px;cursor:pointer;padding:4px 8px;border-radius:6px;transition:all .2s}
-.settings-btn:hover{color:#ccc;border-color:rgba(255,255,255,.3)}
+.settings-btn{background:none;border:1px solid var(--border-strong);color:var(--text-dim);font-size:16px;cursor:pointer;padding:6px 10px;border-radius:var(--r1);transition:all .2s;flex-shrink:0}
+.settings-btn:hover{color:var(--text);border-color:var(--accent);background:var(--accent-bg)}
 .settings-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:900}
 .settings-overlay.show{display:block}
 .settings-panel{position:fixed;top:0;right:-420px;width:400px;height:100%;background:#12121a;border-left:1px solid rgba(255,255,255,.1);z-index:901;transition:right .3s ease;display:flex;flex-direction:column;overflow:hidden}
@@ -1748,32 +1783,64 @@ a.msg-link{text-decoration:none;color:inherit}
 /* 通知高亮 */
 .msg.notify-hl{border-left:3px solid #ffd54f;background:rgba(255,213,79,.08);box-shadow:0 0 12px rgba(255,213,79,.1)}
 /* 工具面板 (Web 版替代 tkinter app_gui.py) */
-.tools-btn{background:none;border:1px solid rgba(255,255,255,.15);color:#888;font-size:13px;cursor:pointer;padding:4px 10px;border-radius:6px;transition:all .2s;margin-left:6px}
-.tools-btn:hover{color:#4fc3f7;border-color:rgba(79,195,247,.4)}
-#toolsPanel{display:none;background:#0f0f17;border-top:1px solid rgba(255,255,255,.08);padding:0;flex-shrink:0;max-height:60vh;overflow:hidden;flex-direction:column}
+.tools-btn{background:none;border:1px solid var(--border-strong);color:var(--text-dim);font-size:var(--t3);cursor:pointer;padding:6px 12px;border-radius:var(--r1);transition:all .2s;margin-left:var(--s2);flex-shrink:0;font-weight:500}
+.tools-btn:hover{color:var(--accent);border-color:var(--accent);background:var(--accent-bg)}
+#toolsPanel{display:none;background:var(--bg-elev);border-top:1px solid var(--border);padding:0;flex-shrink:0;max-height:60vh;overflow:hidden;flex-direction:column;box-shadow:inset 0 8px 16px -8px rgba(0,0,0,.4)}
 #toolsPanel.show{display:flex}
-/* Tab 头 */
-.tool-tabs{display:flex;background:#0a0a0f;border-bottom:1px solid rgba(255,255,255,.06);padding:0 24px;gap:2px;flex-shrink:0}
-.tool-tab{background:none;border:none;color:#666;font-size:13px;padding:12px 20px;cursor:pointer;border-bottom:2px solid transparent;transition:all .2s;font-family:inherit}
-.tool-tab:hover{color:#aaa}
-.tool-tab.active{color:#4fc3f7;border-bottom-color:#4fc3f7;font-weight:600}
+/* Tab 头 — 加 hover 浮起 + active 渐变 + 顶部 strip */
+.tool-tabs{display:flex;background:rgba(0,0,0,.3);border-bottom:1px solid var(--border);padding:0 var(--s5);gap:0;flex-shrink:0;position:relative}
+.tool-tab{position:relative;background:none;border:none;color:var(--text-faint);font-size:var(--t3);padding:14px 22px;cursor:pointer;transition:all .2s;font-family:inherit;font-weight:500;letter-spacing:.3px}
+.tool-tab:hover{color:var(--text);background:rgba(255,255,255,.03)}
+.tool-tab.active{color:var(--accent);background:linear-gradient(180deg,transparent,var(--accent-bg))}
+.tool-tab.active::after{content:'';position:absolute;left:22px;right:22px;bottom:0;height:2px;background:var(--accent);border-radius:2px 2px 0 0;box-shadow:0 0 8px rgba(79,195,247,.5)}
 /* Tab 内容 */
-.tool-pane{display:none;padding:16px 24px;overflow:auto;flex:1}
-.tool-pane.active{display:block}
-.tool-prereq{font-size:11px;color:#777;margin-bottom:10px;padding:6px 10px;background:rgba(255,170,60,.06);border-left:2px solid rgba(255,170,60,.4);border-radius:0 4px 4px 0}
-.tool-step{margin-bottom:12px}
-.tool-step-label{font-size:11px;color:#666;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px}
-.tools-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:4px}
-.tool-task-btn{background:linear-gradient(135deg,#1e293b,#0f172a);border:1px solid rgba(79,195,247,.3);color:#bdd4ff;padding:8px 16px;border-radius:8px;font-size:13px;cursor:pointer;transition:all .2s;font-family:inherit}
-.tool-task-btn:hover:not(:disabled){background:linear-gradient(135deg,#2a3a5a,#1a2540);transform:translateY(-1px)}
-.tool-task-btn:disabled{opacity:.5;cursor:not-allowed}
-.tool-task-btn.primary{background:linear-gradient(135deg,#1e3a5a,#0f2540);border-color:rgba(79,195,247,.5)}
-.tool-log-wrap{background:#000;border:1px solid rgba(255,255,255,.08);border-radius:6px;padding:10px 12px;font-family:Consolas,"Courier New",monospace;font-size:12px;color:#cfd8dc;line-height:1.4;max-height:240px;overflow:auto;white-space:pre-wrap;word-break:break-all;margin-top:12px}
-.tool-log-wrap:empty::before{content:"点击上方按钮开始任务，日志会实时显示";color:#555;font-style:italic}
-.tool-status{display:inline-block;font-size:12px;padding:3px 10px;border-radius:10px;margin-left:8px;vertical-align:middle}
-.tool-status.running{background:rgba(79,195,247,.15);color:#4fc3f7;border:1px solid rgba(79,195,247,.3)}
-.tool-status.ok{background:rgba(76,175,80,.15);color:#81c784;border:1px solid rgba(76,175,80,.3)}
-.tool-status.err{background:rgba(244,67,54,.15);color:#ef9a9a;border:1px solid rgba(244,67,54,.3)}
+.tool-pane{display:none;padding:var(--s5);overflow:auto;flex:1}
+.tool-pane.active{display:block;animation:fadeIn .2s ease-out}
+@keyframes fadeIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
+/* 前置条件 → 紧凑 chip (不再像 form error) */
+.tool-prereq{display:inline-flex;align-items:center;gap:var(--s1);background:rgba(255,213,79,.08);color:var(--warn);font-size:var(--t1);padding:6px 12px;border-radius:var(--r-pill);border:none;margin-bottom:var(--s4);font-weight:500;letter-spacing:.2px}
+.tool-prereq::before{content:'●';color:var(--warn);font-size:8px}
+.tool-step{margin-bottom:var(--s4)}
+.tool-step-label{font-size:var(--t1);color:var(--text-faint);margin-bottom:var(--s2);text-transform:uppercase;letter-spacing:1.2px;font-weight:600}
+.tools-row{display:flex;flex-wrap:wrap;gap:var(--s2);align-items:center}
+/* 默认按钮 — 安静 */
+.tool-task-btn{
+  background:var(--surface);border:1px solid var(--border);
+  color:var(--text);padding:10px 18px;border-radius:var(--r2);
+  font-size:var(--t3);cursor:pointer;transition:all .15s ease;
+  font-family:inherit;font-weight:500;
+}
+.tool-task-btn:hover:not(:disabled){background:var(--surface-hover);border-color:var(--border-strong);transform:translateY(-1px);box-shadow:var(--shadow-1)}
+.tool-task-btn:active:not(:disabled){transform:translateY(0)}
+.tool-task-btn:disabled{opacity:.4;cursor:not-allowed}
+/* primary 按钮 — 真 primary, 实心渐变 + 阴影 */
+.tool-task-btn.primary{
+  background:linear-gradient(135deg,#4fc3f7,#29b6f6);
+  border:none;color:#001528;font-weight:600;
+  box-shadow:0 4px 14px rgba(79,195,247,.35),inset 0 1px 0 rgba(255,255,255,.25);
+  padding:10px 22px;
+}
+.tool-task-btn.primary:hover:not(:disabled){
+  background:linear-gradient(135deg,#5fd0ff,#3fc4ff);
+  transform:translateY(-2px);
+  box-shadow:0 6px 20px rgba(79,195,247,.5),inset 0 1px 0 rgba(255,255,255,.3)
+}
+.tool-task-btn.primary:active:not(:disabled){transform:translateY(0);box-shadow:0 2px 8px rgba(79,195,247,.4)}
+/* 日志框 */
+.tool-log-wrap{
+  background:#05060a;border:1px solid var(--border);border-radius:var(--r2);
+  padding:var(--s3) var(--s4);
+  font-family:"JetBrains Mono","SF Mono",Consolas,"Courier New",monospace;
+  font-size:var(--t2);color:#cfd8dc;line-height:1.55;
+  max-height:240px;overflow:auto;white-space:pre-wrap;word-break:break-all;
+  margin-top:var(--s4);
+  box-shadow:inset 0 1px 3px rgba(0,0,0,.4);
+}
+.tool-log-wrap:empty::before{content:"点击上方按钮开始任务,日志会实时显示";color:var(--text-faint);font-style:italic}
+.tool-status{display:inline-block;font-size:var(--t2);padding:4px 12px;border-radius:var(--r-pill);margin-left:var(--s2);vertical-align:middle;font-weight:500}
+.tool-status.running{background:var(--accent-bg);color:var(--accent);border:1px solid rgba(79,195,247,.3)}
+.tool-status.ok{background:rgba(76,175,80,.15);color:var(--success);border:1px solid rgba(76,175,80,.3)}
+.tool-status.err{background:rgba(244,67,54,.15);color:var(--danger);border:1px solid rgba(244,67,54,.3)}
 </style>
 </head>
 <body>
@@ -1784,7 +1851,7 @@ a.msg-link{text-decoration:none;color:inherit}
 <button class="tools-btn" onclick="toggleTools()" title="工具箱 (解密 / 导出 / 企业微信)">🛠️ 工具</button>
 <button class="settings-btn" onclick="toggleSettings()" title="通知设置">⚙️</button>
 </div>
-<div id="toolsPanel">
+<div id="toolsPanel" class="show">
   <div class="tool-tabs">
     <button class="tool-tab active" data-pane="wechat">📱 个人微信</button>
     <button class="tool-tab" data-pane="wxwork">🏢 企业微信</button>
