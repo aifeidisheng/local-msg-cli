@@ -255,6 +255,25 @@ class MonitorDBCache:
         with lock:
             self._state.pop(rel_key, None)
 
+    def peek(self, rel_key):
+        """返回当前已解密文件路径,**不触发**重新解密 (即使源 mtime 变了)。
+
+        给主循环 hot path (check_updates → _lookup_latest_message) 用,
+        避免每次新消息都同步等待整个 message_N.db 重新全量解密 (10s+),
+        把主循环延迟从亚秒级飙到 8-125s。
+
+        返回的路径可能 stale (滞后 1 个 mtime 周期)。调用方应能容忍 stale
+        (比如查不到 latest_local_id 时跳过加 _shown_keys, 让 hidden 路径
+        异步兜底)。
+
+        get() 仍保留同步行为给真正需要最新的调用方 (hidden 路径异步线程)。
+        """
+        if not get_key_info(self.keys, rel_key):
+            return None
+        out_name = rel_key.replace('\\', '_').replace('/', '_')
+        out_path = os.path.join(self.tmp_dir, out_name)
+        return out_path if os.path.exists(out_path) else None
+
     def get(self, rel_key):
         """返回解密后的临时文件路径，mtime 变化时自动重新解密"""
         key_info = get_key_info(self.keys, rel_key)
@@ -956,7 +975,10 @@ class SessionMonitor:
             return None, None
         table_name = f"Msg_{hashlib.md5(username.encode()).hexdigest()}"
         for db_key in db_keys:
-            dec_path = self.db_cache.get(db_key)
+            # 用 peek 不触发同步解密 (主线程 hot path)。如果缓存还 stale
+            # 没 latest_local_id, 让 hidden 异步路径稍后兜底加 _shown_keys。
+            # 见 MonitorDBCache.peek 注释关于为什么这里不能用 .get。
+            dec_path = self.db_cache.peek(db_key)
             if not dec_path:
                 continue
             try:
