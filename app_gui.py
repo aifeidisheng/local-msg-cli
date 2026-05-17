@@ -773,8 +773,18 @@ class App(tk.Tk):
 
     # ── 子进程执行 ─────────────────────────────────────────────────────────
     def _run_subprocess(self, task: str) -> int:
-        """运行子进程，返回退出码"""
-        cmd = [sys.executable, "--task", task]
+        """运行子进程，返回退出码
+
+        打包成 exe (`sys.frozen=True`) 时 sys.executable 就是 exe 本身,
+        `--task` 是它的子命令,直接走 [exe, --task, ...] 即可。
+        开发模式 (python app_gui.py) 时 sys.executable 是 python 解释器,
+        需要把当前脚本路径 __file__ 加上,否则 `python --task` 会被解释器
+        误判为 `python --task` (报 unknown option)。
+        """
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable, "--task", task]
+        else:
+            cmd = [sys.executable, os.path.abspath(__file__), "--task", task]
         self.after(0, self._log, f">>> {' '.join(cmd)}\n\n")
 
         env = os.environ.copy()
