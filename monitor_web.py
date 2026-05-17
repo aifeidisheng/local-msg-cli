@@ -6,7 +6,8 @@ http://localhost:5678
 - 检测到变化后：全量解密DB + 全量WAL patch
 - SSE 服务器推送
 """
-import hashlib, struct, os, sys, json, time, sqlite3, io, threading, queue, traceback
+import hashlib, struct, os, sys, json, time, sqlite3, io, threading, queue, traceback, subprocess
+import uuid
 import hmac as hmac_mod
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
@@ -1746,6 +1747,21 @@ a.msg-link{text-decoration:none;color:inherit}
 .add-rule-btn:hover{background:rgba(79,195,247,.2)}
 /* 通知高亮 */
 .msg.notify-hl{border-left:3px solid #ffd54f;background:rgba(255,213,79,.08);box-shadow:0 0 12px rgba(255,213,79,.1)}
+/* 工具面板 (Web 版替代 tkinter app_gui.py) */
+.tools-btn{background:none;border:1px solid rgba(255,255,255,.15);color:#888;font-size:13px;cursor:pointer;padding:4px 10px;border-radius:6px;transition:all .2s;margin-left:6px}
+.tools-btn:hover{color:#4fc3f7;border-color:rgba(79,195,247,.4)}
+#toolsPanel{display:none;background:#0f0f17;border-top:1px solid rgba(255,255,255,.08);padding:14px 24px;flex-shrink:0;max-height:50vh;overflow:auto}
+#toolsPanel.show{display:flex;flex-direction:column;gap:10px}
+.tools-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.tool-task-btn{background:linear-gradient(135deg,#1e293b,#0f172a);border:1px solid rgba(79,195,247,.3);color:#bdd4ff;padding:8px 16px;border-radius:8px;font-size:13px;cursor:pointer;transition:all .2s}
+.tool-task-btn:hover:not(:disabled){background:linear-gradient(135deg,#2a3a5a,#1a2540);transform:translateY(-1px)}
+.tool-task-btn:disabled{opacity:.5;cursor:not-allowed}
+.tool-log-wrap{background:#000;border:1px solid rgba(255,255,255,.08);border-radius:6px;padding:10px 12px;font-family:Consolas,"Courier New",monospace;font-size:12px;color:#cfd8dc;line-height:1.4;max-height:300px;overflow:auto;white-space:pre-wrap;word-break:break-all}
+.tool-log-wrap:empty::before{content:"点击上方按钮开始任务，日志会实时显示";color:#555;font-style:italic}
+.tool-status{display:inline-block;font-size:12px;padding:3px 10px;border-radius:10px;margin-left:8px}
+.tool-status.running{background:rgba(79,195,247,.15);color:#4fc3f7;border:1px solid rgba(79,195,247,.3)}
+.tool-status.ok{background:rgba(76,175,80,.15);color:#81c784;border:1px solid rgba(76,175,80,.3)}
+.tool-status.err{background:rgba(244,67,54,.15);color:#ef9a9a;border:1px solid rgba(244,67,54,.3)}
 </style>
 </head>
 <body>
@@ -1753,7 +1769,26 @@ a.msg-link{text-decoration:none;color:inherit}
 <h1>WeChat Monitor</h1>
 <div class="status ok" id="st">SSE 实时</div>
 <div class="stats"><span id="cnt">0 消息</span><span id="perf"></span></div>
+<button class="tools-btn" onclick="toggleTools()" title="工具箱 (解密 / 导出 / 企业微信)">🛠️ 工具</button>
 <button class="settings-btn" onclick="toggleSettings()" title="通知设置">⚙️</button>
+</div>
+<div id="toolsPanel">
+  <div class="tools-row">
+    <div style="color:#888;font-size:11px;margin-right:6px">个人微信:</div>
+    <button class="tool-task-btn" data-task="wechat_decrypt">① 解密</button>
+    <button class="tool-task-btn" data-task="image_key">② 图片密钥</button>
+    <button class="tool-task-btn" data-task="export_all">③ 导出聊天</button>
+    <button class="tool-task-btn" data-task="decode_images">④ 批量解图片</button>
+  </div>
+  <div class="tools-row">
+    <div style="color:#888;font-size:11px;margin-right:6px">朋友圈/企微:</div>
+    <button class="tool-task-btn" data-task="sns_decrypt">⑤ 朋友圈</button>
+    <button class="tool-task-btn" data-task="wxwork_decrypt">⑥ 企微解密</button>
+    <button class="tool-task-btn" data-task="wxwork_export">⑦ 企微导出</button>
+    <button class="tool-task-btn" data-task="voice_mp3">⑧ 语音转 MP3</button>
+    <span id="toolStatus" class="tool-status" style="display:none"></span>
+  </div>
+  <div class="tool-log-wrap" id="toolLog"></div>
 </div>
 <div class="settings-overlay" id="settingsOverlay" onclick="toggleSettings()"></div>
 <div class="settings-panel" id="settingsPanel">
@@ -1890,6 +1925,37 @@ function toggleSettings(){
   o.classList.toggle('show',show);
   if(show) renderRules();
 }
+function toggleTools(){
+  const p=document.getElementById('toolsPanel');
+  p.classList.toggle('show');
+}
+async function runTool(task, btn){
+  const s=document.getElementById('toolStatus');
+  document.querySelectorAll('.tool-task-btn').forEach(b=>b.disabled=true);
+  document.getElementById('toolLog').textContent='';
+  s.style.display='inline-block';
+  s.className='tool-status running';
+  s.textContent='⏳ 运行中...';
+  try{
+    const r=await fetch('/api/tool',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({task:task})});
+    const d=await r.json();
+    if(!r.ok){
+      s.className='tool-status err';
+      s.textContent='✗ '+(d.error||'启动失败');
+      document.querySelectorAll('.tool-task-btn').forEach(b=>b.disabled=false);
+    }
+  }catch(e){
+    s.className='tool-status err';
+    s.textContent='✗ 网络错误: '+e.message;
+    document.querySelectorAll('.tool-task-btn').forEach(b=>b.disabled=false);
+  }
+}
+// 工具按钮 click handler 绑定
+document.addEventListener('DOMContentLoaded',()=>{
+  document.querySelectorAll('.tool-task-btn').forEach(b=>{
+    b.addEventListener('click',()=>runTool(b.dataset.task, b));
+  });
+});
 function beep(){
   try{
     const ctx=new(window.AudioContext||window.webkitAudioContext)();
@@ -2011,6 +2077,19 @@ function connectSSE(){
       }
     }
   });
+  es.addEventListener('tool_log', ev=>{
+    const d=JSON.parse(ev.data);
+    const L=document.getElementById('toolLog');
+    L.textContent += d.line;
+    L.scrollTop = L.scrollHeight;
+  });
+  es.addEventListener('tool_done', ev=>{
+    const d=JSON.parse(ev.data);
+    const s=document.getElementById('toolStatus');
+    s.textContent = d.ok ? '✓ 完成' : ('✗ 失败 (code ' + d.exit_code + ')');
+    s.className = 'tool-status ' + (d.ok ? 'ok' : 'err');
+    document.querySelectorAll('.tool-task-btn').forEach(b=>b.disabled=false);
+  });
   es.onerror=()=>{
     S.textContent='重连...';
     S.className='status err';
@@ -2029,6 +2108,123 @@ fetch('/api/history').then(r=>r.json()).then(ms=>{
 </script>
 </body>
 </html>'''
+
+
+# ────────────── 工具任务 (Web GUI 替代 tkinter app_gui.py 的入口) ────────────
+#
+# 复用现有 SSE 通道 (broadcast_sse + sse_clients), 后端跑子进程, 实时把 stdout
+# 推到浏览器。架构原则: 一次只允许 1 个工具任务运行 (避免两个解密同时挤内存)。
+#
+# 前端在 HTML_PAGE 顶部加一个折叠区,点按钮 POST /api/tool {task: "..."}。
+# SSE 事件用 event=tool_log / tool_done 跟原 message 事件区分。
+
+TOOL_TASKS = {
+    # —— 个人微信 ——
+    "wechat_decrypt": {
+        "name": "① 微信解密",
+        "steps": [[sys.executable, "main.py", "decrypt"]],
+    },
+    "image_key": {
+        "name": "② 图片密钥",
+        "steps": [[sys.executable, "find_image_key.py"]],
+    },
+    "export_all": {
+        "name": "③ 导出全部聊天 (JSON)",
+        "steps": [[sys.executable, "export_all_chats.py"]],
+    },
+    "decode_images": {
+        "name": "④ 批量解密图片",
+        "steps": [[sys.executable, "main.py", "decode-images"]],
+    },
+    # —— 朋友圈 ——
+    "sns_decrypt": {
+        "name": "⑤ 朋友圈解密",
+        "steps": [
+            [sys.executable, "decrypt_sns.py"],
+            [sys.executable, "export_sns.py"],
+        ],
+    },
+    # —— 企业微信 ——
+    "wxwork_decrypt": {
+        "name": "⑥ 企业微信解密",
+        "steps": [
+            [sys.executable, "find_wxwork_keys.py"],
+            [sys.executable, "decrypt_wxwork_db.py"],
+        ],
+    },
+    "wxwork_export": {
+        "name": "⑦ 企业微信导出",
+        "steps": [[sys.executable, "export_wxwork_messages.py"]],
+    },
+    # —— 工具 ——
+    "voice_mp3": {
+        "name": "⑧ 语音转 MP3",
+        "steps": [[sys.executable, "voice_to_mp3.py"]],
+    },
+}
+
+_tool_lock = threading.Lock()
+_tool_running = {"job": None}  # 同时只允许一个任务
+
+
+def _broadcast_tool_event(event, **fields):
+    payload = {"event": event, **fields}
+    broadcast_sse(payload)
+
+
+def _run_tool_task(job_id, task_name):
+    """后台线程: 顺序跑 TOOL_TASKS[task_name].steps 的每条命令,实时推 SSE。"""
+    task = TOOL_TASKS.get(task_name)
+    if not task:
+        _broadcast_tool_event("tool_done", job_id=job_id, ok=False,
+                              error=f"未知任务: {task_name}")
+        with _tool_lock:
+            _tool_running["job"] = None
+        return
+
+    _broadcast_tool_event("tool_log", job_id=job_id,
+                          line=f"━━━ 开始: {task['name']} ━━━\n")
+
+    exit_code = 0
+    for step in task["steps"]:
+        cmd_str = " ".join(step)
+        _broadcast_tool_event("tool_log", job_id=job_id,
+                              line=f"\n>>> {cmd_str}\n\n")
+        try:
+            proc = subprocess.Popen(
+                step,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                env={**os.environ,
+                     "PYTHONIOENCODING": "utf-8",
+                     "WECHAT_DECRYPT_NONINTERACTIVE": "1"},
+                bufsize=1,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                              if sys.platform == "win32" else 0,
+            )
+        except Exception as e:
+            _broadcast_tool_event("tool_log", job_id=job_id,
+                                  line=f"[ERROR] 启动失败: {e}\n")
+            exit_code = -1
+            break
+
+        for line in proc.stdout:
+            _broadcast_tool_event("tool_log", job_id=job_id, line=line)
+        proc.wait()
+        if proc.returncode != 0:
+            _broadcast_tool_event("tool_log", job_id=job_id,
+                                  line=f"\n[FAIL] 返回码 {proc.returncode}\n")
+            exit_code = proc.returncode
+            break
+
+    _broadcast_tool_event("tool_done", job_id=job_id, ok=(exit_code == 0),
+                          exit_code=exit_code)
+    with _tool_lock:
+        _tool_running["job"] = None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -2141,6 +2337,55 @@ class Handler(BaseHTTPRequestHandler):
                 with sse_lock:
                     if q in sse_clients:
                         sse_clients.remove(q)
+        else:
+            self.send_error(404)
+
+    def do_POST(self):
+        if self.path == "/api/tool":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length).decode("utf-8") if length else "{}"
+                req = json.loads(body)
+                task_name = req.get("task", "")
+            except Exception as e:
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": f"bad request: {e}"}).encode())
+                return
+
+            if task_name not in TOOL_TASKS:
+                self.send_response(404)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": f"未知任务: {task_name}",
+                                             "available": list(TOOL_TASKS)}).encode())
+                return
+
+            with _tool_lock:
+                if _tool_running["job"]:
+                    self.send_response(409)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({
+                        "error": "已有任务在跑",
+                        "running_job": _tool_running["job"],
+                    }).encode())
+                    return
+                job_id = "j_" + uuid.uuid4().hex[:8]
+                _tool_running["job"] = job_id
+
+            threading.Thread(target=_run_tool_task, args=(job_id, task_name),
+                             daemon=True).start()
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "job_id": job_id,
+                "task": task_name,
+                "name": TOOL_TASKS[task_name]["name"],
+            }).encode())
         else:
             self.send_error(404)
 
