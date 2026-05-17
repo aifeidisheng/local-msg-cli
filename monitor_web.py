@@ -2204,6 +2204,7 @@ function addMsg(m, animate){
   let contentHtml = renderContent(m);
 
   const dk=m.timestamp+'|'+(m.username||m.chat);
+  d.dataset.ts = m.timestamp || 0;  // 用于按 timestamp 排序定位
   d.innerHTML=`<div class="msg-header"><span class="msg-time">${m.time}</span><span class="${cc}">${esc(m.chat)}</span>${sn}<div class="msg-r"><span class="msg-type">${m.type_icon} ${m.type}</span>${ur}</div></div><div class="msg-content" data-key="${dk}">${contentHtml}</div>`;
 
   // 通知匹配检查
@@ -2213,7 +2214,21 @@ function addMsg(m, animate){
     setTimeout(()=>d.classList.remove('notify-hl'), 10000);
   }
 
-  M.insertBefore(d, M.firstChild);
+  // 按 timestamp 找正确插入位置 (降序: 大 ts 在顶, 小 ts 在底)
+  // 之前的 bug: insertBefore(d, M.firstChild) 永远插最前面,
+  // 导致 SSE 实时消息 + hidden 路径补抓的旧消息混在一起时顺序乱。
+  const ts = +d.dataset.ts;
+  const kids = M.children;
+  let inserted = false;
+  for(let i=0; i<kids.length; i++){
+    const existingTs = +(kids[i].dataset.ts || 0);
+    if(ts > existingTs){
+      M.insertBefore(d, kids[i]);
+      inserted = true;
+      break;
+    }
+  }
+  if(!inserted) M.appendChild(d);  // 比所有现有都早, 放最底
 
   if(animate){
     setTimeout(()=>d.classList.remove('hl'), 3000);
