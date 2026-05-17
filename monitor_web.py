@@ -1826,6 +1826,18 @@ a.msg-link{text-decoration:none;color:inherit}
   box-shadow:0 6px 20px rgba(79,195,247,.5),inset 0 1px 0 rgba(255,255,255,.3)
 }
 .tool-task-btn.primary:active:not(:disabled){transform:translateY(0);box-shadow:0 2px 8px rgba(79,195,247,.4)}
+/* 终止按钮 — 红色警示 */
+.tool-task-btn.cancel{
+  background:linear-gradient(135deg,#ef5350,#e53935)!important;
+  border:none!important;color:#fff!important;font-weight:600;
+  box-shadow:0 4px 14px rgba(239,83,80,.4),inset 0 1px 0 rgba(255,255,255,.2)!important;
+  animation:pulseRed 1.5s infinite;
+}
+.tool-task-btn.cancel:hover:not(:disabled){
+  background:linear-gradient(135deg,#f44336,#d32f2f)!important;
+  box-shadow:0 6px 20px rgba(239,83,80,.6)!important;
+}
+@keyframes pulseRed{0%,100%{box-shadow:0 4px 14px rgba(239,83,80,.4)}50%{box-shadow:0 4px 20px rgba(239,83,80,.7)}}
 /* 日志框 */
 .tool-log-wrap{
   background:#05060a;border:1px solid var(--border);border-radius:var(--r2);
@@ -2052,27 +2064,55 @@ function switchToolTab(name){
   document.querySelectorAll('.tool-tab').forEach(t=>t.classList.toggle('active', t.dataset.pane===name));
   document.querySelectorAll('.tool-pane').forEach(p=>p.classList.toggle('active', p.dataset.pane===name));
 }
+async function cancelTool(){
+  try{
+    await fetch('/api/tool/cancel',{method:'POST'});
+  }catch(e){}
+}
 async function runTool(task, btn){
+  // 如果已经在运行 (按钮变成 cancel) → 取消
+  if(btn.classList.contains('cancel')){
+    btn.disabled = true;
+    btn.textContent = '终止中...';
+    cancelTool();
+    return;
+  }
   const s=document.getElementById('toolStatus');
-  document.querySelectorAll('.tool-task-btn').forEach(b=>b.disabled=true);
+  // 禁用其他按钮, 当前按钮改成"终止"
+  document.querySelectorAll('.tool-task-btn').forEach(b=>{
+    if(b!==btn) b.disabled=true;
+  });
+  btn.dataset.origText = btn.textContent;
+  btn.textContent = '🛑 终止';
+  btn.classList.add('cancel');
+  window.__runningBtn = btn;
   // 清当前 pane 的日志框
   const L=document.getElementById('toolLog_'+window.__activeToolPane);
   if(L) L.textContent='';
   s.style.display='inline-block';
   s.className='tool-status running';
-  s.textContent='⏳ 运行中: '+btn.textContent.trim();
+  s.textContent='⏳ 运行中: '+btn.dataset.origText.trim();
   try{
     const r=await fetch('/api/tool',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({task:task})});
     const d=await r.json();
     if(!r.ok){
       s.className='tool-status err';
       s.textContent='✗ '+(d.error||'启动失败');
-      document.querySelectorAll('.tool-task-btn').forEach(b=>b.disabled=false);
+      // 启动失败立刻还原
+      document.querySelectorAll('.tool-task-btn').forEach(b=>{
+        b.disabled=false;
+        if(b.dataset.origText){b.textContent = b.dataset.origText; b.dataset.origText='';}
+        b.classList.remove('cancel');
+      });
     }
   }catch(e){
     s.className='tool-status err';
     s.textContent='✗ 网络错误: '+e.message;
-    document.querySelectorAll('.tool-task-btn').forEach(b=>b.disabled=false);
+    document.querySelectorAll('.tool-task-btn').forEach(b=>{
+      b.disabled=false;
+      if(b.dataset.origText){b.textContent = b.dataset.origText; b.dataset.origText='';}
+      b.classList.remove('cancel');
+    });
   }
 }
 // 工具按钮 + tab 切换 click handler 绑定
@@ -2215,9 +2255,20 @@ function connectSSE(){
   es.addEventListener('tool_done', ev=>{
     const d=JSON.parse(ev.data);
     const s=document.getElementById('toolStatus');
-    s.textContent = d.ok ? '✓ 完成' : ('✗ 失败 (code ' + d.exit_code + ')');
-    s.className = 'tool-status ' + (d.ok ? 'ok' : 'err');
-    document.querySelectorAll('.tool-task-btn').forEach(b=>b.disabled=false);
+    if(d.cancelled){
+      s.textContent = '⊘ 已终止';
+      s.className = 'tool-status err';
+    } else {
+      s.textContent = d.ok ? '✓ 完成' : ('✗ 失败 (code ' + d.exit_code + ')');
+      s.className = 'tool-status ' + (d.ok ? 'ok' : 'err');
+    }
+    // 还原所有按钮 + 把"终止"按钮还原成原文本
+    document.querySelectorAll('.tool-task-btn').forEach(b=>{
+      b.disabled=false;
+      if(b.dataset.origText){b.textContent = b.dataset.origText; b.dataset.origText='';}
+      b.classList.remove('cancel');
+    });
+    window.__runningBtn = null;
   });
   es.onerror=()=>{
     S.textContent='重连...';
@@ -2293,7 +2344,7 @@ TOOL_TASKS = {
 }
 
 _tool_lock = threading.Lock()
-_tool_running = {"job": None}  # 同时只允许一个任务
+_tool_running = {"job": None, "proc": None, "cancelled": False}  # 同时只允许一个任务
 
 
 def _broadcast_tool_event(event, **fields):
@@ -2315,6 +2366,7 @@ def _run_tool_task(job_id, task_name):
                           line=f"━━━ 开始: {task['name']} ━━━\n")
 
     exit_code = 0
+    cancelled = False
     for step in task["steps"]:
         cmd_str = " ".join(step)
         _broadcast_tool_event("tool_log", job_id=job_id,
@@ -2341,19 +2393,39 @@ def _run_tool_task(job_id, task_name):
             exit_code = -1
             break
 
+        # 暴露 proc 给取消路由
+        with _tool_lock:
+            _tool_running["proc"] = proc
+
         for line in proc.stdout:
             _broadcast_tool_event("tool_log", job_id=job_id, line=line)
+            with _tool_lock:
+                if _tool_running.get("cancelled"):
+                    break
         proc.wait()
+        with _tool_lock:
+            _tool_running["proc"] = None
+            if _tool_running.get("cancelled"):
+                cancelled = True
+                _broadcast_tool_event("tool_log", job_id=job_id,
+                                      line=f"\n[CANCELLED] 任务被用户终止\n")
+                break
         if proc.returncode != 0:
             _broadcast_tool_event("tool_log", job_id=job_id,
                                   line=f"\n[FAIL] 返回码 {proc.returncode}\n")
             exit_code = proc.returncode
             break
 
-    _broadcast_tool_event("tool_done", job_id=job_id, ok=(exit_code == 0),
-                          exit_code=exit_code)
+    if cancelled:
+        _broadcast_tool_event("tool_done", job_id=job_id, ok=False,
+                              exit_code=-15, cancelled=True)
+    else:
+        _broadcast_tool_event("tool_done", job_id=job_id, ok=(exit_code == 0),
+                              exit_code=exit_code)
     with _tool_lock:
         _tool_running["job"] = None
+        _tool_running["proc"] = None
+        _tool_running["cancelled"] = False
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -2515,6 +2587,30 @@ class Handler(BaseHTTPRequestHandler):
                 "task": task_name,
                 "name": TOOL_TASKS[task_name]["name"],
             }).encode())
+        elif self.path == "/api/tool/cancel":
+            with _tool_lock:
+                proc = _tool_running.get("proc")
+                job = _tool_running.get("job")
+                if not proc or not job:
+                    self.send_response(404)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": "无运行中任务"}).encode())
+                    return
+                _tool_running["cancelled"] = True
+            try:
+                proc.terminate()
+                # 给 1.5 秒优雅退, 否则强杀
+                try:
+                    proc.wait(timeout=1.5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+            except Exception as e:
+                pass  # 进程可能正好自己退了
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"job_id": job, "cancelled": True}).encode())
         else:
             self.send_error(404)
 

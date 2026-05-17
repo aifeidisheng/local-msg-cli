@@ -9,7 +9,22 @@ from datetime import datetime
 if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-import pilk
+try:
+    import pilk
+except ImportError:
+    print("[ERROR] 缺少 pilk 库 (SILK 解码必需)", file=sys.stderr)
+    print("        请运行: pip install pilk", file=sys.stderr)
+    print("        然后重新启动本任务", file=sys.stderr)
+    sys.exit(1)
+
+import shutil as _shutil
+if not _shutil.which("ffmpeg"):
+    print("[ERROR] ffmpeg 不在 PATH 中 (MP3 编码必需)", file=sys.stderr)
+    print("        Windows: https://ffmpeg.org/download.html 下载后加入 PATH", file=sys.stderr)
+    print("        macOS:   brew install ffmpeg", file=sys.stderr)
+    print("        Linux:   apt install ffmpeg / yum install ffmpeg", file=sys.stderr)
+    sys.exit(1)
+
 from config import load_config
 
 _cfg = load_config()
