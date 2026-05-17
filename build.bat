@@ -1,46 +1,21 @@
 @echo off
 chcp 65001 >nul
 echo ========================================
-echo   WeChatDecrypt 打包脚本
+echo   WeChatDecrypt 打包脚本 (Web UI 版)
 echo ========================================
 echo.
 
-:: 检查 pyinstaller
+REM 检查 pyinstaller
 where pyinstaller >nul 2>&1
 if errorlevel 1 (
-    echo [!] 未找到 pyinstaller，正在安装...
+    echo [!] 未找到 pyinstaller, 正在安装...
     pip install pyinstaller
 )
 
-echo [*] 开始打包...
+echo [*] 调用 PyInstaller (走 WeChatDecrypt.spec, 不重复维护文件清单)...
 echo.
 
-pyinstaller --noconfirm --onefile --console --name "WeChatDecrypt" ^
-    --add-data "main.py;." ^
-    --add-data "config.py;." ^
-    --add-data "decrypt_db.py;." ^
-    --add-data "export_messages.py;." ^
-    --add-data "voice_to_mp3.py;." ^
-    --add-data "find_all_keys.py;." ^
-    --add-data "find_all_keys_windows.py;." ^
-    --add-data "find_all_keys_linux.py;." ^
-    --add-data "find_wxwork_keys.py;." ^
-    --add-data "decrypt_wxwork_db.py;." ^
-    --add-data "export_wxwork_messages.py;." ^
-    --add-data "wxwork_crypto.py;." ^
-    --add-data "key_scan_common.py;." ^
-    --add-data "key_utils.py;." ^
-    --add-data "decode_image.py;." ^
-    --add-data "find_image_key.py;." ^
-    --add-data "find_image_key_monitor.py;." ^
-    --add-data "decrypt_sns.py;." ^
-    --add-data "export_sns.py;." ^
-    --add-data "monitor.py;." ^
-    --add-data "monitor_web.py;." ^
-    --add-data "mcp_server.py;." ^
-    --add-data "config.example.json;." ^
-    --collect-all pilk ^
-    app_gui.py
+pyinstaller --noconfirm WeChatDecrypt.spec
 
 if errorlevel 1 (
     echo.
@@ -51,9 +26,12 @@ if errorlevel 1 (
 
 echo.
 echo ========================================
-echo   打包完成！
+echo   打包完成!
 echo   输出: dist\WeChatDecrypt.exe
 for %%F in (dist\WeChatDecrypt.exe) do echo   大小: %%~zF bytes
+echo.
+echo   使用: 双击 WeChatDecrypt.exe
+echo   ^→ 自动启动浏览器到 http://localhost:5678 (Web UI)
 echo ========================================
 echo.
 pause

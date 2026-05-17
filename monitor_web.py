@@ -2973,20 +2973,43 @@ class ThreadedServer(ThreadingMixIn, HTTPServer):
     allow_reuse_address = True
 
 
-def main():
-    print("=" * 60, flush=True)
-    print("  微信实时监听 (WAL增量 + SSE推送)", flush=True)
-    print("=" * 60, flush=True)
+def _start_monitor_if_ready():
+    """如果 keys 已存在且能解出 session.db, 启动监听线程; 否则跳过。
 
-    with open(KEYS_FILE, encoding="utf-8") as f:
-        keys = strip_key_metadata(json.load(f))
+    用户在 Web UI 工具箱点 "① 提取密钥 + 解密数据库" 后, keys 文件就会
+    存在。届时刷新页面即可激活监听 (重启 monitor_web 或者下次访问 UI
+    时再尝试启动)。
+
+    返回 True = 监听已启动, False = 未启动 (UI 仍可用作工具箱)。
+    """
+    if not os.path.exists(KEYS_FILE):
+        print(f"[!] 未找到 keys 文件: {KEYS_FILE}", flush=True)
+        print("    Web UI 仍可用作工具箱 (从右上角 🛠️ 工具 启动 '① 提取密钥')",
+              flush=True)
+        print("    解密完成后重启本进程, 监听会自动启动\n", flush=True)
+        return False
+
+    try:
+        with open(KEYS_FILE, encoding="utf-8") as f:
+            keys = strip_key_metadata(json.load(f))
+    except Exception as e:
+        print(f"[!] 读取 keys 文件失败: {e}", flush=True)
+        print("    Web UI 仍可用作工具箱\n", flush=True)
+        return False
 
     session_key_info = get_key_info(keys, os.path.join("session", "session.db"))
     if not session_key_info:
-        print("[ERROR] 找不到 session.db 的密钥", flush=True)
-        sys.exit(1)
+        print("[!] keys 文件里没有 session.db 密钥", flush=True)
+        print("    可能 keys 是部分提取的, 工具箱 → '① 提取密钥' 重跑一次\n",
+              flush=True)
+        return False
+
     enc_key = bytes.fromhex(session_key_info["enc_key"])
     session_db = os.path.join(DB_DIR, "session", "session.db")
+    if not os.path.exists(session_db):
+        print(f"[!] session.db 不存在: {session_db}", flush=True)
+        print("    检查 config.json 的 db_dir 是否对应当前微信账号\n", flush=True)
+        return False
 
     print("加载联系人...", flush=True)
     contact_names = load_contact_names()
@@ -3014,7 +3037,7 @@ def main():
 
     db_cache = MonitorDBCache(keys, MONITOR_CACHE_DIR)
 
-    # 后台预热所有 message DB（图片/emoji 解密必需）
+    # 后台预热所有 message DB
     def _warmup():
         try:
             t0 = time.perf_counter()
@@ -3032,16 +3055,26 @@ def main():
                     print(f"[warmup] {k} 失败: {e}", flush=True)
         except Exception as e:
             print(f"[warmup] 异常: {e}", flush=True)
-        # 构建 emoji 映射（独立解密，不走 cache）
         _build_emoji_lookup(keys)
         print(f"[warmup] 全部完成 {(time.perf_counter()-t0)*1000:.0f}ms", flush=True)
     threading.Thread(target=_warmup, daemon=True).start()
 
-    t = threading.Thread(target=monitor_thread, args=(enc_key, session_db, contact_names, db_cache, username_db_map), daemon=True)
+    t = threading.Thread(target=monitor_thread,
+                         args=(enc_key, session_db, contact_names, db_cache, username_db_map),
+                         daemon=True)
     t.start()
+    return True
+
+
+def main():
+    print("=" * 60, flush=True)
+    print("  WeChat Decrypt — Web UI + 实时监听", flush=True)
+    print("=" * 60, flush=True)
+
+    _start_monitor_if_ready()
 
     server = ThreadedServer(('0.0.0.0', PORT), Handler)
-    print(f"\n=> http://localhost:{PORT}", flush=True)
+    print(f"=> http://localhost:{PORT}", flush=True)
     print("Ctrl+C 停止\n", flush=True)
 
     try:

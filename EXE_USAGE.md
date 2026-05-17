@@ -1,125 +1,101 @@
-# WeChat Decrypt 工具箱 使用说明
+# WeChatDecrypt 使用说明 (Web UI 版)
 
 ## 快速开始
 
-1. **启动微信**并登录账号；如果要解密企业微信，也请先启动企业微信
-2. 双击 `WeChatDecrypt.exe` 打开工具箱
-3. 根据需要点击按钮：
-   - **① 微信解密** → 从微信进程提取密钥并解密数据库到 `decrypted/` 目录
-   - **② 图片密钥** → 从微信进程提取新版图片 AES 密钥
-   - **③ 导出数据** → 将聊天记录导出为 CSV / HTML / JSON 到 `wechat_files/<wxid>/<联系人>/` 目录
-   - **④ 朋友圈图片** → 解密朋友圈缓存图片
-   - **⑤ 企业微信解密** → 从企业微信进程提取密钥并解密数据库到 `wxwork_decrypted/` 目录
-   - **⑥ 企业微信导出** → 选择某个人或群，导出 CSV / HTML / JSON 到 `wxwork_export/` 目录
+1. **启动微信** (个人微信 / 企业微信, 哪个想解密就启动哪个)
+2. **双击 `WeChatDecrypt.exe`**
+3. 浏览器**自动打开** `http://localhost:5678` (没自动开就手动复制粘贴)
+4. 右上角点 **🛠️ 工具** 展开工具箱, 按 tab 切到你要的板块
+
+## 工具箱 3 个 tab
+
+### 📱 个人微信
+
+| 步骤 | 操作 |
+|---|---|
+| Step 1 — 解密 | ① 提取密钥 + 解密数据库 / ② 提取图片密钥 |
+| Step 2 — 导出/解码 | ③ 导出聊天 (弹模态框选会话+格式) / ④ 批量解密图片 / ⑤ 朋友圈解密+导出 |
+
+**前置**: 微信 PC 版正在运行且已登录
+
+### 🏢 企业微信
+
+| 步骤 | 操作 |
+|---|---|
+| Step 1 — 解密 | ① 提取密钥 + 解密数据库 |
+| Step 2 — 导出 | ② 导出聊天 (弹模态框选会话+CSV/HTML/JSON) |
+
+**前置**: 企业微信 PC 版正在运行且已登录 (独立于个人微信)
+
+### 🔧 工具
+
+跟微信/企微进程无关, 只读已解密产物:
+- 语音转 MP3 (需 [ffmpeg](https://ffmpeg.org/) 在 PATH)
+
+## 实时消息监听
+
+- 工具箱下方就是消息流, 按时间降序排列 (最新在顶)
+- SSE 推送, 毫秒级延迟
+- 图片自动解密预览, 表情/链接/转账等富媒体内联渲染
+- 右上角 **⚙️** 配置消息通知规则 (按群名/发送人匹配, 桌面通知 + 声音)
+
+## 导出筛选 (重要)
+
+点 ③ 导出聊天 / ② 企微导出 后, **会弹模态框**:
+
+- 🔍 搜索框按会话名/wxid 过滤
+- 复选框选要导的会话 (3142 个个人微信会话 / 14 个企微会话按时间降序)
+- 一键 [全选] / [清空] / [选最近 30 天活跃]
+- 选格式 (CSV / HTML / JSON, 企微支持; 个人微信目前只输出 JSON)
+- 点 [确认导出 →] 才真正跑
+
+**不会再"一点就跑全量"**。
+
+## 任务终止
+
+任何任务跑起来后, 触发的按钮会变成红色 **🛑 终止**。再点一下立刻 SIGTERM/kill 子进程。
 
 ## 前置要求
 
 - Windows 10 / 11
-- 微信 PC 版已登录（解密微信时需要微信进程运行）
-- 企业微信 PC 版已登录（解密企业微信时需要企业微信进程运行）
-- [FFmpeg](https://ffmpeg.org/download.html) 已安装并加入 PATH（转换音频需要）
+- 微信 / 企业微信 PC 版已登录 (跑解密前需要进程在运行)
+- [FFmpeg](https://ffmpeg.org/download.html) 已安装并加入 PATH (仅"语音转 MP3"需要)
 
-### 检查 FFmpeg
+## 输出目录
 
-打开命令提示符，输入：
-```
-ffmpeg -version
-```
-如果提示"不是内部或外部命令"，需要先安装 FFmpeg。
-
-## 输出目录说明
-
-运行后在 exe 所在目录下生成以下文件夹：
+在 exe 所在目录下生成:
 
 ```
 WeChatDecrypt.exe
-config.json          ← 首次运行自动生成的配置文件
-decrypted/           ← ① 解密后的数据库文件
-wxwork_decrypted/    ← ⑤ 解密后的企业微信数据库文件
-wxwork_export/       ← ⑥ 导出的企业微信聊天记录
-  群名_R_123/
-    .info
-    messages.csv
+config.json                  ← 首次运行自动生成
+decrypted/                   ← 个人微信解密后的 SQLite 数据库
+wxwork_decrypted/            ← 企业微信解密后的 SQLite 数据库
+wxwork_keys.json             ← 企微 keys (含明文 raw key, 已 chmod 0600)
+all_keys.json                ← 个人微信 keys (同上)
+wechat_files/<wxid>/         ← 导出的聊天记录 (按 wxid + 联系人分子目录)
+  张三/
+    messages.csv             ← (用 export_messages.py 时)
     messages.html
     messages.json
-wechat_files/        ← ③ 导出的聊天记录 (按 wxid + 联系人组织)
-  <wxid>/
-    张三/
-      .info          ← 联系人信息（username/alias/remark/nick_name）
-      messages.csv   ← CSV 格式（Excel 可直接打开）
-      messages.html  ← HTML 格式（浏览器打开，微信气泡样式）
-      messages.json  ← JSON 格式（程序处理用）
-      image/         ← 该联系人聊天涉及的图片
-    朋友圈图片/        ← ④ 解密后的朋友圈缓存图片
-    李四/
-      ...
+  朋友圈图片/                  ← 朋友圈缓存图片解密后
+  data/                      ← 语音转 MP3 输出 (有的话)
+exported_chats/              ← 用 ③ 导出全部聊天 (JSON) 时的输出 (export_all_chats.py)
+wxwork_export/               ← 企微聊天导出
 ```
 
-## 导出格式说明
+## 远程访问 / 多设备
 
-### CSV
-- 编码：UTF-8 with BOM，Excel 双击即可正确显示中文
-- 字段：时间、发送者、消息类型、内容、server_id
+monitor_web 默认 bind `0.0.0.0`, 同局域网其他设备可以访问
+`http://<你的本机 IP>:5678`。如需要只允许本机访问, 修改源码 `PORT` 那一行附近的 bind 地址改成 `127.0.0.1`。
 
-### HTML
-- 浏览器打开，模拟微信聊天界面
-- 左侧气泡为接收消息，右侧为发送消息
-- 按日期自动分组
+## 历史: 为什么没有 tkinter GUI 了
 
-### JSON
-- 完整结构化数据，包含所有元信息
-- 适合程序二次处理或 AI 训练
+旧版本 (commit b986413 ~ a01d326) 提供过 `app_gui.py` tkinter 桌面 GUI, 但:
 
-## 配置文件
+- tkinter 在中文字体下渲染糊
+- 90 年代 Windows 控件风格, 难看
+- 只能跑 Windows, 不跨平台
+- 没法远程访问
+- 维护两套 UI (tkinter + Web) 代码重复
 
-首次运行会自动检测微信数据目录并生成 `config.json`：
-
-```json
-{
-    "db_dir": "D:\\xwechat_files\\wxid_xxx\\db_storage",
-    "keys_file": "all_keys.json",
-    "decrypted_dir": "decrypted",
-    "wechat_process": "Weixin.exe",
-    "wxwork_db_dir": "C:\\Users\\<用户>\\Documents\\WXWork\\<account_id>\\Data",
-    "wxwork_keys_file": "wxwork_keys.json",
-    "wxwork_decrypted_dir": "wxwork_decrypted",
-    "wxwork_export_dir": "wxwork_export"
-}
-```
-
-如果自动检测失败，请手动修改 `db_dir` 为你的微信数据目录。
-路径可在：微信设置 → 文件管理 中找到。
-
-## 常见问题
-
-**Q: 点击"解密数据库"提示未检测到微信进程**
-A: 请确保微信 PC 版已启动并登录，然后重试。
-
-**Q: 解密失败 / 密钥提取失败**
-A: 检查 `config.json` 中的 `db_dir` 是否与当前登录的微信账号匹配。切换账号后需要删除 `all_keys.json` 重新提取。
-
-**Q: 企业微信解密失败 / 找不到企业微信数据目录**
-A: 确认企业微信 PC 版已启动并登录。若自动检测失败，请在 `config.json` 中设置 `wxwork_db_dir`，路径通常类似 `C:\Users\<用户>\Documents\WXWork\<account_id>\Data`。切换企业微信账号后删除 `wxwork_keys.json` 重新提取。
-
-**Q: 企业微信导出为空 / 找不到会话**
-A: 先执行"⑤ 企业微信解密"，确认 `wxwork_decrypted/message.db` 和 `wxwork_decrypted/session.db` 存在，然后再执行"⑥ 企业微信导出"。
-
-**Q: 转换音频没有输出**
-A: 确认已安装 FFmpeg 并加入系统 PATH。确认已先执行"① 解密数据库"。
-
-**Q: 导出消息为空**
-A: 确认已先执行"① 解密数据库"，且 `decrypted/message/` 下有 `.db` 文件。
-
-**Q: 目录名是 wxid_xxx 而不是昵称**
-A: 该联系人不在通讯录中（contact.db 无记录），会使用原始 username。
-
-## 自行打包
-
-安装依赖后双击 `build.bat` 即可重新打包：
-
-```
-pip install pyinstaller pycryptodome zstandard pilk
-build.bat
-```
-
-输出文件：`dist\WeChatDecrypt.exe`
+commit (这次) 起完全切到 Web UI: 浏览器渲染清晰、跨平台、远程可访问、跟实时监听共享一套 SSE 通道, 同时没有功能损失 (8 个工具按钮 + 模态框筛选 + 终止 + 状态都在 Web 上)。

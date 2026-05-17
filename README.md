@@ -62,17 +62,21 @@ python export_all_chats.py
 </details>
 
 <details>
-<summary>Windows — GUI / EXE (推荐非技术用户)</summary>
+<summary>Windows — Web UI / EXE (推荐非技术用户)</summary>
 
 ```bash
-# 直接跑 GUI (开发模式)
-python app_gui.py
+# 直接跑 Web UI (开发模式)
+python monitor_web.py        # → 浏览器自动开 http://localhost:5678
 
 # 或打包成单 exe 分发给别人
 build.bat                    # 输出 dist/WeChatDecrypt.exe
+                             # 双击 exe → 自动开浏览器 → Web UI 工具箱
 ```
 
-按钮覆盖: 解密 / 导出 / 朋友圈 / 企业微信 / 语音转 MP3。详见 [EXE_USAGE.md](./EXE_USAGE.md)。
+工具箱 3 个 tab (📱 个人微信 / 🏢 企业微信 / 🔧 工具),
+覆盖解密 / 导出 / 朋友圈 / 语音转 MP3 全部场景, 导出带模态框筛选 (不会动不动跑全量)。
+
+实时消息监听跟工具箱在同一页面。详见 [EXE_USAGE.md](./EXE_USAGE.md)。
 
 </details>
 
@@ -324,7 +328,7 @@ make help       # 列出所有命令
 | 文件 | 说明 |
 |---|---|
 | `main.py` | **CLI 总入口** — 子命令 `decrypt` / `export` / `all` / `status` / `decode-images` / `help` |
-| `app_gui.py` | **Windows GUI** — tkinter 界面整合所有功能 (PR #107) |
+| `monitor_web.py` | **Web UI 总入口** — 实时监听 + 8 个工具按钮 + 导出筛选模态框 (`python monitor_web.py` 即用, PyInstaller 打包成单 exe 给非技术用户) |
 | `setup.sh` | 一键安装依赖 (macOS / Linux / Windows Git Bash) |
 | `setup.py` | 交互式配置向导 (`python setup.py --check` 仅检查环境) |
 | `cleanup.py` | 磁盘清理工具 (`status` 查看用量 / `--dry-run` 预览) |
@@ -381,7 +385,7 @@ make help       # 列出所有命令
 
 | 文件 | 说明 |
 |---|---|
-| `monitor_web.py` | Web UI (浏览器实时收消息, SSE 推送, http://localhost:5678) |
+| `monitor_web.py` | (见 ① 入口) — 同一个文件既是 Web UI 总入口也是实时消息监听 |
 | `monitor.py` | 命令行实时监听 |
 | `mcp_server.py` | **MCP Server** — Claude AI 查询微信数据 (含 `get_chat_history` / `decode_voice` / `decode_refer` 等 20+ 工具) |
 | `decode_transfer.py` | CLI: 查单条转账消息 (mcp_server `decode_transfer` 工具的命令行包装) |
@@ -446,34 +450,42 @@ WCDB (微信的 SQLCipher 封装) 会在进程内存中缓存派生后的 raw ke
 
 `export_sns.py` 解析 SnsTimeLine 的 XML 时已加 **XXE 防护**(拒绝 `<!DOCTYPE>` / `<!ENTITY>` + 200KB 大小上限),避免恶意朋友圈 XML 通过 entity expansion 或外部实体引用执行 SSRF / 读取本地文件。`mcp_server.py` 解析其他类型 appmsg XML 同样有这层保护。
 
-### GUI 工具箱 & 单 exe 打包
+### Web UI 工具箱 & 单 exe 打包
 
-提供 tkinter 图形界面 (`app_gui.py`)，集成核心功能：
+`monitor_web.py` 既是实时消息监听 (浏览器 Web UI), 又是工具箱总入口。
+右上角 🛠️ 工具 按钮展开 3 个 tab:
 
-1. **解密数据库** — 调用 `main.py decrypt`
-2. **导出消息** — 调用 `export_messages.py`，输出 CSV / HTML / JSON
-3. **转换音频** — 调用 `voice_to_mp3.py`，SILK_V3 → MP3
-4. **企业微信解密** — 调用 `find_wxwork_keys.py` + `decrypt_wxwork_db.py`
-5. **企业微信导出** — 调用 `export_wxwork_messages.py`，按个人/群导出 CSV / HTML / JSON
+- **📱 个人微信**: Step 1 解密 / 图片密钥 → Step 2 导出聊天 / 批量解图片 / 朋友圈
+- **🏢 企业微信**: Step 1 解密 → Step 2 导出聊天 (CSV/HTML/JSON)
+- **🔧 工具**: 语音转 MP3 等
+
+特点:
+- **导出筛选模态框**: 不会一点就跑全量, 弹框选会话 (含搜索/全选/选最近 30 天)
+- **任务终止**: 按钮变红 🛑, 一点立刻 SIGTERM 子进程
+- **跟实时监听共存**: 同一页面下方就是消息流, 互不影响
+- **跨平台 + 远程可访问**: 浏览器渲染清晰, 默认 bind 0.0.0.0 同局域网可用
 
 #### 直接运行
 
 ```bash
-python app_gui.py
+python monitor_web.py        # → 浏览器自动开 http://localhost:5678
 ```
 
 #### 打包为单 exe
 
 ```bash
 pip install pyinstaller
-build.bat
+build.bat                    # → dist\WeChatDecrypt.exe
 ```
 
-输出 `dist\WeChatDecrypt.exe`（约 18MB），双击即可使用，无需安装 Python。
+输出约 20MB 的单 exe, 双击即用, 无需安装 Python。
 
-> 转换音频需要系统安装 [FFmpeg](https://ffmpeg.org/download.html) 并加入 PATH。
+> 语音转 MP3 需要系统安装 [FFmpeg](https://ffmpeg.org/download.html) 并加入 PATH。
 
 详细说明见 [EXE_USAGE.md](EXE_USAGE.md)。
+
+> **历史**: 旧版本提供过 tkinter `app_gui.py` 桌面 GUI, 在 commit 273fe65 后完全移除。
+> 原因: 渲染糊 / Windows-only / 维护两套 UI。Web UI 功能完全对齐且更好。
 
 ### WAL 处理
 
