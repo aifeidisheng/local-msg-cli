@@ -315,6 +315,15 @@ make help       # 列出所有命令
 
 WCDB (微信的 SQLCipher 封装) 会在进程内存中缓存派生后的 raw key，格式为 `x'<64hex_enc_key><32hex_salt>'`。三个平台均可通过扫描进程内存匹配此模式，再通过 HMAC 校验 page 1 确认密钥正确性。
 
+#### 安全提示
+
+- `all_keys.json` / `wxwork_keys.json` 包含明文 raw key,落盘时已 `chmod 0600`(Unix)或保留默认 ACL(Windows)。**勿提交到 git 或与人共享**——拿到 key 等于拿到全部聊天解密能力。
+- 解密后的 `.db` 文件是明文 SQLite,内容包括所有联系人、群、消息,**同样需要小心备份和分享**。
+
+### 朋友圈解密的 XML 安全
+
+`export_sns.py` 解析 SnsTimeLine 的 XML 时已加 **XXE 防护**(拒绝 `<!DOCTYPE>` / `<!ENTITY>` + 200KB 大小上限),避免恶意朋友圈 XML 通过 entity expansion 或外部实体引用执行 SSRF / 读取本地文件。`mcp_server.py` 解析其他类型 appmsg XML 同样有这层保护。
+
 ### GUI 工具箱 & 单 exe 打包
 
 提供 tkinter 图形界面 (`app_gui.py`)，集成核心功能：

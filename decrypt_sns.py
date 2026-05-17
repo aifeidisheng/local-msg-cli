@@ -13,6 +13,7 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from config import load_config
+from decode_image import aligned_aes_block_size
 
 _cfg = load_config()
 SNS_CACHE_DIR = _cfg.get("sns_cache_dir", "")
@@ -78,7 +79,7 @@ def decrypt_dat(dat_path):
             if len(data) < 15:
                 return None, None
             aes_size, xor_size = struct.unpack_from('<LL', data, 6)
-            aligned = aes_size - ~(~aes_size % 16)
+            aligned = aligned_aes_block_size(aes_size)
             offset = 15
             if offset + aligned > len(data):
                 return None, None

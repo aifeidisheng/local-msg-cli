@@ -171,13 +171,17 @@ def ensure_keys(keys_file, db_dir):
 def show_status():
     """显示当前数据状态"""
     cfg = {}
-    config_file = "config.json"
+    # 走 config._config_file_path() 而不是硬编码 "config.json"
+    # 这样打包成 exe 后 (cwd 可能任意位置) 仍能找到正确的 config
+    from config import _config_file_path
+    config_file = _config_file_path()
     if os.path.exists(config_file):
         with open(config_file, encoding="utf-8") as f:
             cfg = json.load(f)
-        print(f"[config] db_dir = {cfg.get('db_dir', '?')}")
+        print(f"[config] {config_file}")
+        print(f"         db_dir = {cfg.get('db_dir', '?')}")
     else:
-        print("[config] 未找到 config.json")
+        print(f"[config] 未找到 {config_file}")
 
     keys_files = sorted(glob.glob("all_keys*.json"))
     print(f"[keys]   {len(keys_files)} 个密钥文件")

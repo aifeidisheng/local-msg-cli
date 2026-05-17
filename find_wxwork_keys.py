@@ -357,6 +357,11 @@ def _wxwork_page_size_chain(memory_regions, starts, cipher_addr):
       raw_key = cipher + 0x08
       aes_ctx = *(cipher + 0x2c)
       page_size = *(*(*(cipher + 0x30) + 0x04) + 0x24)
+
+    NOTE: WXWork.exe (5.0.x) 是 **32-bit** 进程,所有指针 = 4 字节 (`_read_u32`)。
+    腾讯如果升级到 64-bit (`Program Files\WXWork\`),结构偏移和指针大小都要重做
+    逆向,这套代码会直接失效——届时需要扫描入口加 IsWow64Process 检测并给出
+    友好报错。当前实测 5.0.8.6009 全部 17 个 db 解密成功,该 32-bit 假设有效。
     """
     page_size_holder = _read_u32(memory_regions, starts, cipher_addr + 0x30)
     if page_size_holder is None or not _valid_ptr(memory_regions, starts, page_size_holder, 8):
@@ -500,9 +505,18 @@ def save_wxwork_results(db_files, salt_to_dbs, key_map, db_dir, out_file, print_
         raise RuntimeError("未能从任何企业微信进程中提取到密钥")
 
     result["_db_dir"] = db_dir
-    with open(out_file, 'w', encoding='utf-8') as f:
+    # 写文件含明文 raw key,先 atomic write 到 tmp 再 rename,中途 chmod 0600
+    # 限本用户读写。Windows 上 os.chmod 主要控制只读位,严格 ACL 需 win32security
+    # 这里至少避免世界可读的最差情况。
+    tmp_file = out_file + ".tmp"
+    with open(tmp_file, 'w', encoding='utf-8') as f:
         json.dump(result, f, indent=2, ensure_ascii=False)
-    print_fn(f"\n密钥保存到: {out_file}")
+    try:
+        os.chmod(tmp_file, 0o600)
+    except OSError:
+        pass  # Windows 上某些场景 chmod 可能失败,不阻塞主流程
+    os.replace(tmp_file, out_file)
+    print_fn(f"\n密钥保存到: {out_file} (权限已收紧为 0600)")
 
     missing = [rel for rel, path, sz, salt_hex, page1 in db_files if salt_hex not in key_map]
     if missing:

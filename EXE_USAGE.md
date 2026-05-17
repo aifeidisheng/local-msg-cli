@@ -7,7 +7,7 @@
 3. 根据需要点击按钮：
    - **① 微信解密** → 从微信进程提取密钥并解密数据库到 `decrypted/` 目录
    - **② 图片密钥** → 从微信进程提取新版图片 AES 密钥
-   - **③ 导出数据** → 将聊天记录导出为 CSV / HTML / JSON 到 `export/` 目录
+   - **③ 导出数据** → 将聊天记录导出为 CSV / HTML / JSON 到 `wechat_files/<wxid>/<联系人>/` 目录
    - **④ 朋友圈图片** → 解密朋友圈缓存图片
    - **⑤ 企业微信解密** → 从企业微信进程提取密钥并解密数据库到 `wxwork_decrypted/` 目录
    - **⑥ 企业微信导出** → 选择某个人或群，导出 CSV / HTML / JSON 到 `wxwork_export/` 目录
@@ -42,19 +42,17 @@ wxwork_export/       ← ⑥ 导出的企业微信聊天记录
     messages.csv
     messages.html
     messages.json
-export/              ← ③ 导出的聊天记录
-  张三/
-    .info            ← 联系人信息（username/alias/remark/nick_name）
-    message_0.db.csv ← CSV 格式（Excel 可直接打开）
-    message_0.db.html← HTML 格式（浏览器打开，微信气泡样式）
-    message_0.db.json← JSON 格式（程序处理用）
-  李四/
-    ...
-data/                ← 导出时选择“同时转换语音为 MP3”后的输出
-  张三/
-    .info
-    20250101_120000_1.mp3
-    ...
+wechat_files/        ← ③ 导出的聊天记录 (按 wxid + 联系人组织)
+  <wxid>/
+    张三/
+      .info          ← 联系人信息（username/alias/remark/nick_name）
+      messages.csv   ← CSV 格式（Excel 可直接打开）
+      messages.html  ← HTML 格式（浏览器打开，微信气泡样式）
+      messages.json  ← JSON 格式（程序处理用）
+      image/         ← 该联系人聊天涉及的图片
+    朋友圈图片/        ← ④ 解密后的朋友圈缓存图片
+    李四/
+      ...
 ```
 
 ## 导出格式说明

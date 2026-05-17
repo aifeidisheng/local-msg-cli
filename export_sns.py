@@ -21,6 +21,13 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from config import load_config
+from decode_image import aligned_aes_block_size
+
+# 朋友圈 XML 来源是不可信输入 (他人朋友圈的 content), 必须挡 XXE。
+# 跟 mcp_server._XML_UNSAFE_RE 保持同一过滤模式; max_len 比 mcp_server 宽松
+# (朋友圈 timeline XML 含媒体列表 + 评论, 实测可达几十KB; 给 200K 余量)。
+_SNS_XML_UNSAFE_RE = re.compile(r'<!DOCTYPE|<!ENTITY', re.IGNORECASE)
+_SNS_XML_MAX_LEN = 200_000
 
 _cfg = load_config()
 DECRYPTED_DIR = _cfg["decrypted_dir"]
@@ -83,7 +90,7 @@ def _decrypt_sns_dat(dat_path):
             from Crypto.Cipher import AES
             from Crypto.Util import Padding
             aes_size, xor_size = struct.unpack_from('<LL', data, 6)
-            aligned = aes_size + (16 - aes_size % 16) if aes_size % 16 else aes_size + 16
+            aligned = aligned_aes_block_size(aes_size)
             offset = 15
             if offset + aligned > len(data):
                 return None
@@ -228,7 +235,7 @@ def _build_sns_cache_index():
                 try:
                     from Crypto.Cipher import AES as _AES
                     aes_size, xor_size = struct.unpack_from('<LL', data, 6)
-                    aligned = aes_size + (16 - aes_size % 16) if aes_size % 16 else aes_size + 16
+                    aligned = aligned_aes_block_size(aes_size)
                     est_dec_size = fsize - 15 - (aligned - aes_size)
                     available = min(aligned, len(data) - 15)
                     # 按 16 字节块对齐（ECB 可逐块解密）
@@ -424,6 +431,14 @@ def _parse_media_list(timeline_obj):
 
 def _parse_timeline_xml(content_xml):
     """解析 SnsTimeLine 的 Content XML，返回结构化数据"""
+    if not content_xml:
+        return None
+    if len(content_xml) > _SNS_XML_MAX_LEN:
+        return None
+    if _SNS_XML_UNSAFE_RE.search(content_xml):
+        # XXE 防护: 拒绝 DOCTYPE/ENTITY,避免恶意朋友圈 XML 通过 entity expansion
+        # 或外部实体引用执行 SSRF/读取本地文件
+        return None
     try:
         root = ET.fromstring(content_xml)
     except ET.ParseError:
