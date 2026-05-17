@@ -62,21 +62,32 @@ python export_all_chats.py
 </details>
 
 <details>
-<summary>Windows — Web UI / EXE (推荐非技术用户)</summary>
+<summary>Windows — Web UI (推荐, 跨平台 + 实时监听)</summary>
 
 ```bash
-# 直接跑 Web UI (开发模式)
 python monitor_web.py        # → 浏览器自动开 http://localhost:5678
-
-# 或打包成单 exe 分发给别人
-build.bat                    # 输出 dist/WeChatDecrypt.exe
-                             # 双击 exe → 自动开浏览器 → Web UI 工具箱
 ```
 
-工具箱 3 个 tab (📱 个人微信 / 🏢 企业微信 / 🔧 工具),
-覆盖解密 / 导出 / 朋友圈 / 语音转 MP3 全部场景, 导出带模态框筛选 (不会动不动跑全量)。
+工具箱 3 个 tab (📱 个人微信 / 🏢 企业微信 / 🔧 工具), 覆盖解密 / 导出 /
+朋友圈 / 语音转 MP3 全部场景, 导出带模态框筛选 (不会一点就跑全量)。
+实时消息监听跟工具箱在同一页面。
 
-实时消息监听跟工具箱在同一页面。详见 [EXE_USAGE.md](./EXE_USAGE.md)。
+</details>
+
+<details>
+<summary>Windows — 桌面 GUI / EXE (tkinter, 适合不开浏览器的场景)</summary>
+
+```bash
+# 直接跑桌面 GUI
+python app_gui.py
+
+# 或打包成单 exe 分发给别人 (默认入口 Web UI)
+build.bat                    # 输出 dist/WeChatDecrypt.exe
+```
+
+跟 Web UI **共存**, 两者覆盖功能基本一致。tkinter 优点是不依赖浏览器
+(全离线 / 公司机器禁浏览器场景), 缺点是中文渲染糊 + 不跨平台 +
+没远程访问。 详见 [EXE_USAGE.md](./EXE_USAGE.md)。
 
 </details>
 
@@ -328,7 +339,8 @@ make help       # 列出所有命令
 | 文件 | 说明 |
 |---|---|
 | `main.py` | **CLI 总入口** — 子命令 `decrypt` / `export` / `all` / `status` / `decode-images` / `help` |
-| `monitor_web.py` | **Web UI 总入口** — 实时监听 + 8 个工具按钮 + 导出筛选模态框 (`python monitor_web.py` 即用, PyInstaller 打包成单 exe 给非技术用户) |
+| `monitor_web.py` | **Web UI 总入口 (推荐)** — 浏览器界面: 实时监听 + 8 个工具按钮 + 导出筛选模态框, 也是 PyInstaller 单 exe 的入口 |
+| `app_gui.py` | **桌面 GUI (备用)** — tkinter 界面, 跟 Web UI 功能基本对齐, 适合不开浏览器场景 |
 | `setup.sh` | 一键安装依赖 (macOS / Linux / Windows Git Bash) |
 | `setup.py` | 交互式配置向导 (`python setup.py --check` 仅检查环境) |
 | `cleanup.py` | 磁盘清理工具 (`status` 查看用量 / `--dry-run` 预览) |
@@ -450,9 +462,16 @@ WCDB (微信的 SQLCipher 封装) 会在进程内存中缓存派生后的 raw ke
 
 `export_sns.py` 解析 SnsTimeLine 的 XML 时已加 **XXE 防护**(拒绝 `<!DOCTYPE>` / `<!ENTITY>` + 200KB 大小上限),避免恶意朋友圈 XML 通过 entity expansion 或外部实体引用执行 SSRF / 读取本地文件。`mcp_server.py` 解析其他类型 appmsg XML 同样有这层保护。
 
-### Web UI 工具箱 & 单 exe 打包
+### GUI 工具箱 (Web UI 推荐 + tkinter 备用, 共存)
 
-`monitor_web.py` 既是实时消息监听 (浏览器 Web UI), 又是工具箱总入口。
+项目提供 **两套 UI 共存**, 用户按场景选:
+
+#### Web UI (`monitor_web.py`) — 推荐
+
+```bash
+python monitor_web.py        # → 浏览器自动开 http://localhost:5678
+```
+
 右上角 🛠️ 工具 按钮展开 3 个 tab:
 
 - **📱 个人微信**: Step 1 解密 / 图片密钥 → Step 2 导出聊天 / 批量解图片 / 朋友圈
@@ -465,27 +484,30 @@ WCDB (微信的 SQLCipher 封装) 会在进程内存中缓存派生后的 raw ke
 - **跟实时监听共存**: 同一页面下方就是消息流, 互不影响
 - **跨平台 + 远程可访问**: 浏览器渲染清晰, 默认 bind 0.0.0.0 同局域网可用
 
-#### 直接运行
+#### 桌面 GUI (`app_gui.py`) — 备用
 
 ```bash
-python monitor_web.py        # → 浏览器自动开 http://localhost:5678
+python app_gui.py            # 直接弹 tkinter 窗口, 不开浏览器
 ```
+
+适合: 公司机器禁浏览器 / 全离线场景 / 喜欢传统桌面应用的用户。
+功能跟 Web UI 基本对齐 (8 个按钮覆盖解密/导出/朋友圈/企微/语音),
+但中文字体下渲染较糊, Windows-only。
 
 #### 打包为单 exe
 
 ```bash
 pip install pyinstaller
-build.bat                    # → dist\WeChatDecrypt.exe
+build.bat                    # → dist\WeChatDecrypt.exe (~20MB)
 ```
 
-输出约 20MB 的单 exe, 双击即用, 无需安装 Python。
+**单 exe 默认入口是 Web UI** (双击 → 自动开浏览器), 因为 Web UI 体验更好。
+要打包成 tkinter 入口的话改 `WeChatDecrypt.spec` 里的 `Analysis(['monitor_web.py'])`
+为 `Analysis(['app_gui.py'])` 再 `build.bat`。
 
 > 语音转 MP3 需要系统安装 [FFmpeg](https://ffmpeg.org/download.html) 并加入 PATH。
 
 详细说明见 [EXE_USAGE.md](EXE_USAGE.md)。
-
-> **历史**: 旧版本提供过 tkinter `app_gui.py` 桌面 GUI, 在 commit 273fe65 后完全移除。
-> 原因: 渲染糊 / Windows-only / 维护两套 UI。Web UI 功能完全对齐且更好。
 
 ### WAL 处理
 

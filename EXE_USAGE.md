@@ -88,14 +88,19 @@ wxwork_export/               ← 企微聊天导出
 monitor_web 默认 bind `0.0.0.0`, 同局域网其他设备可以访问
 `http://<你的本机 IP>:5678`。如需要只允许本机访问, 修改源码 `PORT` 那一行附近的 bind 地址改成 `127.0.0.1`。
 
-## 历史: 为什么没有 tkinter GUI 了
+## 还有个 tkinter 桌面 GUI (备用, 共存)
 
-旧版本 (commit b986413 ~ a01d326) 提供过 `app_gui.py` tkinter 桌面 GUI, 但:
+如果你 **不想开浏览器** (公司机器禁浏览器 / 全离线场景), 可以用桌面 GUI:
 
-- tkinter 在中文字体下渲染糊
-- 90 年代 Windows 控件风格, 难看
-- 只能跑 Windows, 不跨平台
+```bash
+python app_gui.py        # → 弹 tkinter 窗口
+```
+
+跟 Web UI 功能基本对齐 (8 个按钮 / 导出对话框), 缺点:
+- 中文字体下渲染较糊
+- Windows-only (不跨平台)
 - 没法远程访问
-- 维护两套 UI (tkinter + Web) 代码重复
 
-commit (这次) 起完全切到 Web UI: 浏览器渲染清晰、跨平台、远程可访问、跟实时监听共享一套 SSE 通道, 同时没有功能损失 (8 个工具按钮 + 模态框筛选 + 终止 + 状态都在 Web 上)。
+单 exe **默认入口是 Web UI**。要打 tkinter 版的 exe, 改
+`WeChatDecrypt.spec` 里 `Analysis(['monitor_web.py'])` 为
+`Analysis(['app_gui.py'])` 再 `build.bat`。
