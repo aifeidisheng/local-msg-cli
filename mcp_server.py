@@ -909,6 +909,8 @@ def _format_app_message_text(content, local_type, is_group, chat_username, chat_
         return f"[文件] {title}" if title else "[文件]"
     if app_type == 5:
         return f"[链接] {title}" if title else "[链接]"
+    if app_type == 51:
+        return _format_finder_message_text(appmsg, title)
     if app_type in (33, 36, 44):
         return f"[小程序] {title}" if title else "[小程序]"
     if title:
@@ -1259,6 +1261,23 @@ def _format_redpacket_message_text(appmsg, title):
     if sender:
         parts.append(f"(发自 {sender.group(1)})")
     return ' '.join(parts)
+
+
+def _format_finder_message_text(appmsg, title):
+    """渲染视频号分享（appmsg type=51）一行展示文本。
+
+    现状：独立视频号分享走 _format_app_message_text 的 generic 分支，渲染成无信息的
+    [链接/文件]；而同一条视频号被引用回复嵌套时反而有 [视频号] 标签
+    （见 _INNER_APPMSG_TYPE_LABEL['51']），两条路径体验不一致。本 helper 把合并转发
+    记录 _format_record_dataitem 的 datatype==22 已用的 finderFeed 读法接到独立消息。
+
+    fallback：缺 nickname → [视频号] {title}；title 也缺 → [视频号]。
+    """
+    nickname = _collapse_text(appmsg.findtext('finderFeed/nickname') or '')
+    desc = _collapse_text(appmsg.findtext('finderFeed/desc') or '')
+    if nickname:
+        return f"[视频号] {nickname}: {desc[:80]}" if desc else f"[视频号] {nickname}"
+    return f"[视频号] {title}" if title else "[视频号]"
 
 
 def _format_voip_message_text(content):
