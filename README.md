@@ -622,6 +622,7 @@ cc -O2 -o find_all_keys_macos find_all_keys_macos.c -framework Foundation
 
 # 运行（自动查找微信进程、扫描内存、匹配 DB salt）
 sudo ./find_all_keys_macos
+```
 
 <details>
 <summary>点击展开</summary>
