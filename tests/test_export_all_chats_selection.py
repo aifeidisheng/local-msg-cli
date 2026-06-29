@@ -223,21 +223,17 @@ class ExportPlanCsvTests(unittest.TestCase):
 
 
 class ExportPlanStatsTests(unittest.TestCase):
-    def test_collects_message_resource_and_voice_estimates_with_date_filter(self):
+    def test_collects_message_resource_estimates_with_date_filter(self):
         username = "wxid_alice"
         table_name = "Msg_" + hashlib.md5(username.encode()).hexdigest()
         with tempfile.TemporaryDirectory() as tmp:
             msg_db = os.path.join(tmp, "message_0.db")
             resource_db = os.path.join(tmp, "message_resource.db")
-            media_db = os.path.join(tmp, "media_0.db")
             _create_message_db(msg_db, table_name)
             _create_resource_db(resource_db, username)
-            _create_media_db(media_db, username)
 
             with patch.object(export_all_chats, "_get_message_resource_db_path",
-                              return_value=resource_db), \
-                 patch.object(export_all_chats.mcp_server, "_iter_media_db_paths",
-                              return_value=[media_db]):
+                              return_value=resource_db):
                 stats = export_all_chats._collect_chat_plan_stats(
                     username,
                     [{"db_path": msg_db, "table_name": table_name}],
@@ -248,9 +244,9 @@ class ExportPlanStatsTests(unittest.TestCase):
 
         self.assertEqual(stats["message_count"], 1)
         self.assertEqual(stats["message_body_bytes"], 6)
-        self.assertEqual(stats["attachment_estimated_bytes"], 13)
+        self.assertEqual(stats["attachment_estimated_bytes"], 8)
         self.assertEqual(stats["attachment_scanned_bytes"], "")
-        self.assertEqual(stats["total_estimated_bytes"], 19)
+        self.assertEqual(stats["total_estimated_bytes"], 14)
         self.assertEqual(stats["first_time"], "1970-01-01 08:03:20")
         self.assertEqual(stats["last_time"], "1970-01-01 08:03:20")
         self.assertEqual(stats["size_status"], "ok")
@@ -698,26 +694,6 @@ def _create_resource_db(path, username):
                      (11, 1, 200))
         conn.execute("INSERT INTO MessageResourceDetail VALUES (?, ?)", (10, 7))
         conn.execute("INSERT INTO MessageResourceDetail VALUES (?, ?)", (11, 8))
-        conn.commit()
-
-
-def _create_media_db(path, username):
-    with closing(sqlite3.connect(path)) as conn:
-        conn.execute("CREATE TABLE Name2Id (user_name TEXT)")
-        conn.execute("""
-            CREATE TABLE VoiceInfo (
-                chat_name_id INTEGER,
-                local_id INTEGER,
-                create_time INTEGER,
-                voice_data BLOB
-            )
-        """)
-        conn.execute("INSERT INTO Name2Id(rowid, user_name) VALUES (?, ?)",
-                     (1, username))
-        conn.execute("INSERT INTO VoiceInfo VALUES (?, ?, ?, ?)",
-                     (1, 1, 100, b"abc"))
-        conn.execute("INSERT INTO VoiceInfo VALUES (?, ?, ?, ?)",
-                     (1, 2, 200, b"abcde"))
         conn.commit()
 
 

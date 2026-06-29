@@ -77,37 +77,6 @@ def detect_wechat_dir():
     return None
 
 
-def detect_transcription_backends():
-    """检测可用的转录 backend"""
-    backends = {"local": True}  # local 总是可用（如果安装了依赖）
-
-    # whisper-cpp
-    if shutil.which("whisper-cpp") or shutil.which("whisper-cli"):
-        backends["whisper_cpp"] = True
-        model_dirs = [
-            os.path.expanduser("~/Library/Application Support/whisper-cpp"),
-            os.path.expanduser("~/whisper-models"),
-            "/opt/homebrew/share/whisper-cpp/models",
-        ]
-        for md in model_dirs:
-            if os.path.exists(md):
-                models = [f for f in os.listdir(md) if f.startswith("ggml-") and f.endswith(".bin")]
-                if models:
-                    backends["whisper_cpp_model"] = models[0]
-                    break
-    else:
-        backends["whisper_cpp"] = False
-
-    # openai
-    try:
-        import openai  # noqa
-        backends["openai"] = True
-    except ImportError:
-        backends["openai"] = False
-
-    return backends
-
-
 def check_environment():
     """检查环境，返回状态信息"""
     print("=== 环境检查 ===")
@@ -119,10 +88,6 @@ def check_environment():
     print(f"[venv]  {'是' if in_venv else '否'}")
     if not in_venv:
         print("       建议使用: python3 -m venv .venv && source .venv/bin/activate")
-
-    # whisper-cpp
-    whisper_bin = shutil.which("whisper-cpp") or shutil.which("whisper-cli")
-    print(f"[whisper-cpp] {'✓ ' + whisper_bin if whisper_bin else '✗ 未安装 (brew install whisper-cpp)'}")
 
     # config
     if os.path.exists("config.json"):
@@ -149,7 +114,7 @@ def check_environment():
 
 def interactive_setup():
     """交互式配置向导"""
-    print("\n=== 微信解密工具 — 配置向导 ===\n")
+    print("\n=== 本机消息 MCP 数据源 — 配置向导 ===\n")
 
     # 加载或创建配置
     config = {}
@@ -164,10 +129,10 @@ def interactive_setup():
     if detected:
         if len(detected) == 1:
             chosen = detected[0]
-            print(f"[1/3] 微信数据目录: 自动检测到")
+            print(f"[1/2] 微信数据目录: 自动检测到")
             print(f"      {chosen}")
         else:
-            print(f"[1/3] 检测到 {len(detected)} 个微信数据目录:")
+            print(f"[1/2] 检测到 {len(detected)} 个微信数据目录:")
             for i, d in enumerate(detected, 1):
                 print(f"      [{i}] {d}")
             try:
@@ -177,38 +142,13 @@ def interactive_setup():
                 chosen = detected[0]
         config["db_dir"] = chosen
     else:
-        print("[1/3] 微信数据目录: 未能自动检测")
+        print("[1/2] 微信数据目录: 未能自动检测")
         default_path = os.path.expanduser("~/Documents/xwechat_files/your_wxid/db_storage")
         chosen = input(f"      请手动输入路径 [{default_path}]: ") or default_path
         config["db_dir"] = chosen
 
-    # 转录 backend
-    backends = detect_transcription_backends()
-    print(f"\n[2/3] 语音转录 backend:")
-    print(f"      [1] local — 本地 CPU 转录（默认，隐私最佳，速度较慢）")
-    status_w = "✓" if backends.get("whisper_cpp") else "✗ (brew install whisper-cpp)"
-    print(f"      [2] whisper_cpp — GPU 加速 ({status_w})")
-    status_o = "✓" if backends.get("openai") else "✗ (pip install openai)"
-    print(f"      [3] openai — API 转录 ({status_o})")
-
-    try:
-        sel = int(input("\n      请选择 (1-3) [1]: ") or "1")
-        if sel == 2:
-            config["transcription_backend"] = "whisper_cpp"
-            if "whisper_cpp_model" in backends:
-                config["whisper_cpp_model"] = backends["whisper_cpp_model"]
-        elif sel == 3:
-            config["transcription_backend"] = "openai"
-            key = input("      输入 OpenAI API Key: ").strip()
-            if key:
-                config["openai_api_key"] = key
-        else:
-            config["transcription_backend"] = "local"
-    except (ValueError, IndexError):
-        config["transcription_backend"] = "local"
-
     # 确认
-    print(f"\n[3/3] 即将写入 config.json:")
+    print(f"\n[2/2] 即将写入 config.json:")
     print(json.dumps(config, indent=4))
     ans = input("\n      确认？(Y/n): ").strip().lower()
     if ans in ("", "y", "yes"):
@@ -220,8 +160,8 @@ def interactive_setup():
 
     print("\n配置完成！下一步:")
     print("  python main.py status    — 查看状态")
-    print("  python main.py decrypt   — 解密数据库")
-    print("  python main.py export    — 解密 + 导出聊天记录")
+    print("  python main.py init      — 预解密 MCP 查询缓存")
+    print("  python main.py serve     — 启动 MCP Server")
 
 
 def main():

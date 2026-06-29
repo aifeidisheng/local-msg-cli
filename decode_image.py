@@ -35,7 +35,7 @@ def aligned_aes_block_size(aes_size):
     aes_size 不是 16 倍数: aligned = 向上对齐到 16 (aes_size + (16 - aes_size%16))
     aes_size 是 16 倍数:   aligned = aes_size + 16 (完整 padding 块)
 
-    canonical 实现, 给 decrypt_sns.py / export_sns.py / decode_image.py 共用。
+    canonical 实现，供 decode_image.py 和 MCP 图片解码工具共用。
     早期 wx-dat 风格的 bitwise trick `aes_size - ~(~aes_size % 16)` 数学等价但
     可读性差, 现在用清晰版本。
     """
@@ -489,7 +489,7 @@ class ImageResolver:
         (实测最高同 chat 7 条同 local_id 的记录), 默认取最新一条。
 
         message_local_type 上 32 bit 是版本/会话 flag, 用 % 2^32 取低位匹配
-        图片类型 3, 同 monitor_web.py 里 push 路径的写法。
+        图片类型 3，与消息渲染路径保持一致。
         """
         path = self.cache.get("message/message_resource.db")
         if not path:

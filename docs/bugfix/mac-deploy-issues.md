@@ -245,9 +245,9 @@ cc -O2 -o find_all_keys_macos find_all_keys_macos.c -framework Foundation
 # 5. 提取密钥
 sudo ./find_all_keys_macos
 
-# 6. 启动 Web UI（db_dir 已自动检测，无需手动配置）
-.venv/bin/python3 main.py          # 启动 Web UI → http://localhost:5678
-.venv/bin/python3 decrypt_db.py    # 或仅全量解密
+# 6. 预解密并启动 MCP Server（db_dir 已自动检测，无需手动配置）
+.venv/bin/python3 main.py init
+.venv/bin/python3 main.py serve --port 8765
 ```
 
 ## 修复状态汇总

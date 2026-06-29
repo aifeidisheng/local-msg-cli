@@ -1,22 +1,17 @@
 #!/usr/bin/env python3
-"""批量导出所有微信聊天记录为 JSON 文件，可选附带语音转录。
+"""批量导出所有微信聊天记录为 JSON 文件。
 
 此脚本将导出所有会话的聊天记录，输出格式与 export_chat.py 完全一致。
 支持导出到指定目录，默认输出到 ./exported_chats 目录。
-
-语音转录通过 mcp_server 的 backend 配置驱动（config.json 中设置
-transcription_backend 为 whisper_cpp / openai / local）。未启用 backend
-或缺少依赖时仅导出文本消息，不报错。
 
 用法:
     python3 export_all_chats.py                         # 全量导出所有会话
     python3 export_all_chats.py --write-plan-csv export_plan.csv
     python3 export_all_chats.py output_dir --from-plan-csv export_plan.csv
-    python3 export_all_chats.py --with-transcriptions   # 全量导出 + 转录语音
     python3 export_all_chats.py -i                      # 增量（只导出最新消息）
     python3 export_all_chats.py --start 2025-01-01      # 按日期范围
     python3 export_all_chats.py --end 2025-01-31
-    python3 export_all_chats.py --start 2025-01-01 --end 2025-01-31 -t
+    python3 export_all_chats.py --start 2025-01-01 --end 2025-01-31
 """
 
 import argparse
@@ -137,7 +132,7 @@ def _content_hash_for_uid(content):
 
 
 def _delta_msg_uid(username, db_path, local_id, timestamp, msg_type, content):
-    db_name = os.path.basename(str(db_path or ""))
+    db_name = os.path.basename(str(db_path or "").replace("\\", "/"))
     payload = (
         f"{username}|{db_name}|{int(local_id)}|{int(timestamp)}|"
         f"{msg_type or 'text'}|{_content_hash_for_uid(content)}"
@@ -545,40 +540,6 @@ def _query_resource_estimated_bytes(username, start_ts=None, end_ts=None):
     return int(row[0] or 0), None
 
 
-def _query_voice_estimated_bytes(username, start_ts=None, end_ts=None):
-    try:
-        media_paths = list(mcp_server._iter_media_db_paths())
-    except Exception:
-        return 0, "media_error"
-    if not media_paths:
-        return 0, "media_missing"
-
-    total = 0
-    for media_db in media_paths:
-        try:
-            with closing(sqlite3.connect(media_db)) as conn:
-                chat_name_id = mcp_server._get_chat_name_id(conn, username)
-                if chat_name_id is None:
-                    continue
-                clauses = ["chat_name_id = ?"]
-                params = [chat_name_id]
-                if start_ts is not None:
-                    clauses.append("create_time >= ?")
-                    params.append(start_ts)
-                if end_ts is not None:
-                    clauses.append("create_time <= ?")
-                    params.append(end_ts)
-                row = conn.execute(f"""
-                    SELECT COALESCE(SUM(COALESCE(length(voice_data), 0)), 0)
-                    FROM VoiceInfo
-                    WHERE {" AND ".join(clauses)}
-                """, params).fetchone()
-                total += int(row[0] or 0)
-        except sqlite3.Error:
-            return total, "media_error"
-    return total, None
-
-
 def _scan_dir_bytes(path):
     total = 0
     if not os.path.isdir(path):
@@ -658,19 +619,13 @@ def _collect_chat_plan_stats(username, message_tables, start_ts=None, end_ts=Non
     if resource_status:
         status.append(resource_status)
 
-    voice_bytes, voice_status = _query_voice_estimated_bytes(
-        username, start_ts=start_ts, end_ts=end_ts
-    )
-    if voice_status:
-        status.append(voice_status)
-
     scanned_bytes = ""
     if size_mode == "scan":
         scanned_bytes, scan_status = _scan_local_attachment_bytes(username)
         if scan_status:
             status.append(scan_status)
 
-    attachment_estimated = int(resource_bytes or 0) + int(voice_bytes or 0)
+    attachment_estimated = int(resource_bytes or 0)
     size_status = "ok" if not status else "partial:" + ",".join(sorted(set(status)))
     return {
         "message_count": message_count,
@@ -841,54 +796,6 @@ def _collect_resource_estimates_batch(usernames, start_ts=None, end_ts=None):
     return values, statuses
 
 
-def _collect_voice_estimates_batch(usernames, start_ts=None, end_ts=None):
-    values = {username: 0 for username in usernames}
-    statuses = {username: set() for username in usernames}
-    try:
-        media_paths = list(mcp_server._iter_media_db_paths())
-    except Exception:
-        for username in usernames:
-            statuses[username].add("media_error")
-        return values, statuses
-
-    if not media_paths:
-        for username in usernames:
-            statuses[username].add("media_missing")
-        return values, statuses
-
-    usernames = list(usernames)
-    try:
-        for media_db in media_paths:
-            with closing(sqlite3.connect(media_db)) as conn:
-                batch_size = 500
-                for i in range(0, len(usernames), batch_size):
-                    batch = usernames[i:i + batch_size]
-                    placeholders = ",".join("?" for _ in batch)
-                    params = list(batch)
-                    clauses = [f"n.user_name IN ({placeholders})"]
-                    if start_ts is not None:
-                        clauses.append("v.create_time >= ?")
-                        params.append(start_ts)
-                    if end_ts is not None:
-                        clauses.append("v.create_time <= ?")
-                        params.append(end_ts)
-                    where_sql = " AND ".join(clauses)
-                    rows = conn.execute(f"""
-                        SELECT n.user_name,
-                               COALESCE(SUM(COALESCE(length(v.voice_data), 0)), 0)
-                        FROM Name2Id n
-                        JOIN VoiceInfo v ON v.chat_name_id = n.rowid
-                        WHERE {where_sql}
-                        GROUP BY n.user_name
-                    """, params).fetchall()
-                    for username, size in rows:
-                        values[username] += int(size or 0)
-    except sqlite3.Error:
-        for username in usernames:
-            statuses[username].add("media_error")
-    return values, statuses
-
-
 def _finalize_plan_stats(acc):
     status = sorted(acc["statuses"])
     size_status = "ok" if not status else "partial:" + ",".join(status)
@@ -925,16 +832,6 @@ def _collect_all_plan_stats(chat_rows, start_ts=None, end_ts=None,
     for username in usernames:
         stats[username]["attachment_estimated_bytes"] += resource_values[username]
         stats[username]["statuses"].update(resource_statuses[username])
-
-    print("[*] 批量统计语音数据...", flush=True)
-    voice_values, voice_statuses = _collect_voice_estimates_batch(
-        usernames,
-        start_ts=start_ts,
-        end_ts=end_ts,
-    )
-    for username in usernames:
-        stats[username]["attachment_estimated_bytes"] += voice_values[username]
-        stats[username]["statuses"].update(voice_statuses[username])
 
     if size_mode == "scan":
         print("[*] 扫描本地附件目录...", flush=True)
@@ -1034,8 +931,7 @@ def _load_selected_usernames_from_plan_csv(
     return selected
 
 
-def export_one(username, output_dir, names, transcribe=False,
-               start_ts=None, end_ts=None, incremental=False):
+def export_one(username, output_dir, names, start_ts=None, end_ts=None, incremental=False):
     """
     导出单个会话。
 
@@ -1144,43 +1040,6 @@ def export_one(username, output_dir, names, transcribe=False,
     if not messages:
         return False, 0, 0, "empty"
 
-    # ── 语音转录 ──────────────────────────────────────────────
-    if transcribe:
-        # 只需转录新消息中的语音
-        voices_to_transcribe = new_messages if incremental else [
-            m for m in messages
-            if m.get("type") == "voice" and not m.get("transcription")
-        ]
-        transcribed = 0
-        failed = 0
-        for msg in voices_to_transcribe:
-            if msg.get("type") != "voice":
-                continue
-            lid = msg["local_id"]
-            try:
-                row = mcp_server._fetch_voice_row(username, lid)
-                if row is None:
-                    continue
-                voice_data, create_time = row
-                wav_path, _ = mcp_server._silk_to_wav(
-                    voice_data, create_time, username, lid
-                )
-                backend = _resolve_backend()
-                result = mcp_server._transcribe(wav_path, backend)
-                if result and result.get("text"):
-                    msg["transcription"] = result["text"]
-                    transcribed += 1
-                os.unlink(wav_path)
-            except Exception:
-                failed += 1
-        if transcribed or failed:
-            display = names.get(username, username)
-            voice_total = len(voices_to_transcribe)
-            print(
-                f"   转录: {transcribed}/{voice_total} 条语音"
-                + (f" ({failed} 失败)" if failed else "")
-            )
-
     # ── 写文件 ────────────────────────────────────────────────
     output = {
         "chat": display_name,
@@ -1206,30 +1065,7 @@ def export_one(username, output_dir, names, transcribe=False,
     return True, len(messages), new_count, None
 
 
-def _transcribe_delta_voice_messages(username, messages):
-    for msg in messages:
-        if msg.get("type") != "voice" or msg.get("transcription"):
-            continue
-        lid = msg["local_id"]
-        try:
-            row = mcp_server._fetch_voice_row(username, lid)
-            if row is None:
-                continue
-            voice_data, create_time = row
-            wav_path, _ = mcp_server._silk_to_wav(
-                voice_data, create_time, username, lid
-            )
-            backend = _resolve_backend()
-            result = mcp_server._transcribe(wav_path, backend)
-            if result and result.get("text"):
-                msg["transcription"] = result["text"]
-            os.unlink(wav_path)
-        except Exception:
-            continue
-
-
-def export_delta_one(username, delta_root, names, run_id, start_ts,
-                     end_ts=None, transcribe=False):
+def export_delta_one(username, delta_root, names, run_id, start_ts, end_ts=None):
     if start_ts is None:
         raise ValueError("delta export requires start_ts")
 
@@ -1321,9 +1157,6 @@ def export_delta_one(username, delta_root, names, run_id, start_ts,
             "reason": "no messages in delta window",
         }
 
-    if transcribe:
-        _transcribe_delta_voice_messages(username, messages)
-
     delta_rel_path = os.path.join(
         "chats",
         _delta_filename(display_name, ctx["is_group"], username),
@@ -1408,23 +1241,9 @@ def _write_delta_manifest(delta_root, run_id, start_ts, end_ts,
     return manifest_path
 
 
-_BACKEND_CACHE = None
-
-
-def _resolve_backend():
-    """解析转录 backend，结果缓存以避免重复检测。"""
-    global _BACKEND_CACHE
-    if _BACKEND_CACHE is None:
-        try:
-            _BACKEND_CACHE = mcp_server._resolve_active_backend()
-        except Exception:
-            _BACKEND_CACHE = "local"
-    return _BACKEND_CACHE
-
-
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="批量导出所有微信聊天记录为 JSON 文件，可选附带语音转录",
+        description="批量导出所有微信聊天记录为 JSON 文件",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
@@ -1434,11 +1253,10 @@ def main(argv=None):
     python3 export_all_chats.py --write-plan-csv export_plan.csv --size-mode scan
     python3 export_all_chats.py output_dir --from-plan-csv export_plan.csv
     python3 export_all_chats.py output_dir --from-plan-csv export_plan.csv --plan-mode whitelist
-    python3 export_all_chats.py -t                        全量导出 + 转录语音
     python3 export_all_chats.py -i                        增量（追加新消息）
     python3 export_all_chats.py --start 2025-01-01        按日期范围导出
     python3 export_all_chats.py --end 2025-01-31          按日期范围导出
-    python3 export_all_chats.py --start 2025-01-01 --end 2025-01-31 -t
+    python3 export_all_chats.py --start 2025-01-01 --end 2025-01-31
 """,
     )
     parser.add_argument(
@@ -1446,12 +1264,6 @@ def main(argv=None):
         nargs="?",
         default=None,
         help="输出目录路径 (默认: ./exported_chats)",
-    )
-    parser.add_argument(
-        "-t",
-        "--with-transcriptions",
-        action="store_true",
-        help="导出时一并转录语音消息（依赖 config.json 配置的 backend）",
     )
     parser.add_argument(
         "--write-plan-csv",
@@ -1530,14 +1342,6 @@ def main(argv=None):
         sys.exit(1)
     if args.delta_only and start_ts is None:
         parser.error("--delta-only requires --start to avoid accidental full export")
-
-    if args.with_transcriptions:
-        try:
-            backend = _resolve_backend()
-            print(f"语音转录: 启用 (backend={backend})")
-        except Exception as e:
-            print(f"语音转录: backend 解析失败: {e}", file=sys.stderr)
-            args.with_transcriptions = False
 
     if not os.path.exists(mcp_server.DECRYPTED_DIR):
         print(f"错误: 解密目录不存在: {mcp_server.DECRYPTED_DIR}", file=sys.stderr)
@@ -1655,7 +1459,6 @@ def main(argv=None):
                 run_id=run_id,
                 start_ts=start_ts,
                 end_ts=end_ts,
-                transcribe=args.with_transcriptions,
             )
             delta_results.append(result)
             success = result.get("success", False)
@@ -1665,7 +1468,6 @@ def main(argv=None):
         else:
             success, total_msgs, new_msgs, reason = export_one(
                 username, output_dir, names,
-                transcribe=args.with_transcriptions,
                 start_ts=start_ts,
                 end_ts=end_ts,
                 incremental=args.incremental,

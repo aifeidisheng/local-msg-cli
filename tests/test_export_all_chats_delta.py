@@ -80,7 +80,6 @@ class ExportDeltaOneTests(unittest.TestCase):
                     run_id="20260526T080000",
                     start_ts=1778889600,
                     end_ts=1778890000,
-                    transcribe=False,
                 )
 
             self.assertTrue(result["success"])
@@ -133,7 +132,6 @@ class ExportDeltaOneTests(unittest.TestCase):
                     run_id="20260526T080000",
                     start_ts=1778890001,
                     end_ts=1778890100,
-                    transcribe=False,
                 )
 
             self.assertTrue(result["success"])

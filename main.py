@@ -1,8 +1,10 @@
 """
 WeChat Decrypt 一键启动
 
-python main.py               # 提取密钥 + 启动 Web UI
+python main.py               # 启动 streamable-http MCP Server
 python main.py decrypt       # 提取密钥 + 解密全部数据库
+python main.py init          # 提取密钥 + 预解密 MCP 查询缓存
+python main.py serve         # 启动 streamable-http MCP Server
 python main.py export        # 提取密钥 + 解密 + 批量导出聊天记录
 python main.py all           # 从零到完成：密钥 → 解密 → 导出
 python main.py status        # 显示当前数据状态
@@ -205,39 +207,11 @@ def show_status():
 
     exported_dir = "exported_chats"
     if os.path.exists(exported_dir):
-        jsons = [f for f in glob.glob(os.path.join(exported_dir, "*.json"))
-                 if not f.endswith("_transcribed.json")]
-        tx_jsons = glob.glob(os.path.join(exported_dir, "*_transcribed.json"))
+        jsons = glob.glob(os.path.join(exported_dir, "*.json"))
         total_sz = sum(os.path.getsize(f) for f in jsons) / 1024 / 1024
         print(f"[export]  {len(jsons)} 个 JSON ({total_sz:.0f} MB)")
     else:
         print("[export]  未导出 (运行: python main.py export)")
-
-    if os.path.exists(exported_dir):
-        total_voice = 0
-        total_tx = 0
-        for jp in glob.glob(os.path.join(exported_dir, "*_transcribed.json")):
-            try:
-                with open(jp, encoding="utf-8") as f:
-                    data = json.load(f)
-            except Exception:
-                continue
-            if isinstance(data, dict) and "chats" in data:
-                for chat in data["chats"]:
-                    for m in chat.get("messages", []):
-                        if m.get("type") == "voice":
-                            total_voice += 1
-                            if m.get("transcription"):
-                                total_tx += 1
-            elif isinstance(data, dict):
-                for m in data.get("messages", []):
-                    if m.get("type") == "voice":
-                        total_voice += 1
-                        if m.get("transcription"):
-                            total_tx += 1
-        if total_voice > 0:
-            pct = total_tx * 100 // max(total_voice, 1)
-            print(f"[transcribe] {total_tx}/{total_voice} ({pct}%) 条语音已转录")
 
     # 建议的下一步
     print()
@@ -256,13 +230,15 @@ def show_status():
 
 def print_usage():
     print("用法:")
-    print("  python main.py                启动实时消息监听 (Web UI)")
+    print("  python main.py init           首次使用前预解密 MCP 查询缓存")
+    print("  python main.py init --target-db MSG  仅预解密名称包含 MSG 的数据库")
+    print("  python main.py serve          启动 MCP Server (http://127.0.0.1:8765/mcp)")
+    print("  python main.py serve --port 8765     指定 MCP Server 端口")
     print("  python main.py decrypt        解密全部数据库到 decrypted/")
     print("  python main.py decode-images  批量解密 .dat 图片到 decoded_image_dir/")
     print("  python main.py decode-images --help  查看 decode-images 全部选项")
     print("  python main.py export         解密 + 批量导出聊天记录")
     print("  python main.py all            从零到完成：密钥 → 解密 → 导出")
-    print("  python main.py emoticons      导出收藏的表情包")
     print("  python main.py status         显示当前状态和磁盘用量")
 
 
@@ -282,7 +258,7 @@ def main():
     print("=" * 60)
     print()
 
-    cmd = sys.argv[1] if len(sys.argv) > 1 else "web"
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "serve"
 
     # help / status 不需要密钥和微信进程
     if cmd in ("help", "-h", "--help"):
@@ -295,6 +271,27 @@ def main():
     # 以下命令需要配置 + 微信进程
     from config import load_config
     cfg = load_config()
+
+    if cmd == "serve":
+        import argparse
+
+        parser = argparse.ArgumentParser(
+            prog="main.py serve",
+            description="启动本机 MCP Server，使用 streamable-http 协议，默认路径为 /mcp。",
+        )
+        parser.add_argument("--host", default="127.0.0.1", help="监听地址，默认 127.0.0.1")
+        parser.add_argument("--port", type=int, default=8765, help="监听端口，默认 8765")
+        args = parser.parse_args(sys.argv[2:])
+
+        if not os.path.exists(cfg.get("keys_file", "")):
+            print(f"[!] 未找到密钥文件: {cfg.get('keys_file', '')}")
+            print("    请先运行: python main.py init")
+        print(f"[*] 启动 MCP Server: http://{args.host}:{args.port}/mcp")
+        print("    Desktop 工具配置类型请选择 streamablehttp")
+        print()
+        from mcp_server import serve
+        serve(host=args.host, port=args.port)
+        return
 
     # 早路由:decode-images 不需要微信进程在运行,也不需要 DB 密钥
     if len(sys.argv) > 1 and sys.argv[1] == "decode-images":
@@ -312,7 +309,28 @@ def main():
 
     ensure_keys(cfg["keys_file"], cfg["db_dir"])
 
-    if cmd == "decrypt":
+    if cmd == "init":
+        import argparse
+
+        parser = argparse.ArgumentParser(
+            prog="main.py init",
+            description="首次使用前预解密数据库到 MCP 查询缓存，避免首次工具调用超时。",
+        )
+        parser.add_argument(
+            "--target-db",
+            default=None,
+            help="仅预解密名称包含该字符串的数据库，例如 MSG、Contact、session",
+        )
+        args = parser.parse_args(sys.argv[2:])
+
+        print("[*] 开始预解密 MCP 查询缓存...")
+        print()
+        from mcp_server import predecrypt_databases
+        stats = predecrypt_databases(target_db=args.target_db)
+        if stats["failed"]:
+            sys.exit(2)
+
+    elif cmd == "decrypt":
         print("[*] 开始解密全部数据库...")
         print()
         from decrypt_db import main as decrypt_all
@@ -332,30 +350,6 @@ def main():
             export_all(export_args)
         except SystemExit:
             pass
-
-        if cmd == "all" and os.path.exists("exported_chats"):
-            print()
-            print("[*] 检查语音转录配置...")
-            from config import load_config
-            cfg2 = load_config()
-            from mcp_server import _resolve_active_backend
-            backend = _resolve_active_backend()
-            if backend and backend != "local":
-                print(f"    检测到 backend = {backend}")
-                print("    如需转录语音，运行: python export_all_chats.py --with-transcriptions")
-            else:
-                print("    未配置语音转录 backend (config.json 中设置)")
-                print("    配置后运行: python export_all_chats.py --with-transcriptions")
-
-    elif cmd == "emoticons":
-        from export_emoticons import main as export_emojis
-        export_emojis()
-
-    elif cmd == "web":
-        print("[*] 启动 Web UI...")
-        print()
-        from monitor_web import main as start_web
-        start_web()
 
     else:
         print(f"[!] 未知命令: {cmd}")

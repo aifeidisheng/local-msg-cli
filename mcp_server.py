@@ -1,8 +1,7 @@
 r"""
-WeChat MCP Server - query WeChat messages, contacts via Claude
+Local message MCP server.
 
-Based on FastMCP (stdio transport), reuses existing decryption.
-Runs on Windows Python (needs access to D:\ WeChat databases).
+Exposes local chat contacts and message history through FastMCP streamable-http.
 """
 
 import io
@@ -12,9 +11,27 @@ import wave
 import hmac as hmac_mod
 from contextlib import closing
 from datetime import datetime, timedelta
+from typing import Optional, List, Union
 import xml.etree.ElementTree as ET
 from Crypto.Cipher import AES
-from mcp.server.fastmcp import FastMCP
+try:
+    from fastmcp import FastMCP
+except ImportError:  # pragma: no cover - compatibility for older local test envs
+    try:
+        from mcp.server.fastmcp import FastMCP
+    except ImportError:  # pragma: no cover - unit-test fallback when MCP deps are absent
+        class FastMCP:  # type: ignore[no-redef]
+            def __init__(self, *args, **kwargs):
+                self._tools = {}
+
+            def tool(self, *decorator_args, **decorator_kwargs):
+                def decorator(fn):
+                    self._tools[fn.__name__] = fn
+                    return fn
+                return decorator
+
+            def streamable_http_app(self):
+                raise RuntimeError("fastmcp is required to run the MCP server")
 import zstandard as zstd
 from config import _config_file_path, _DEFAULT
 from decode_image import ImageResolver
@@ -1203,7 +1220,7 @@ def _extract_transfer_info(appmsg):
 
 
 def _format_transfer_message_text(appmsg, title):
-    """渲染微信转账（appmsg type=2000）一行展示文本，给 history / monitor_web 共用。
+    """渲染微信转账（appmsg type=2000）一行展示文本，给 history/export 共用。
 
     fallback 顺序：
       1) wcpayinfo 缺失 → 只显示 title 兜底，避免吞数据
@@ -2037,7 +2054,18 @@ def _search_all_messages(keyword, start_ts, end_ts, start_time, end_time, limit,
 
 # ============ MCP Server ============
 
-mcp = FastMCP("wechat", instructions="查询微信消息、联系人等数据")
+mcp = FastMCP(
+    "local-message-source",
+    instructions=(
+        "查询本机消息联系人和历史消息。优先使用 list_contacts 获取聊天 ID，"
+        "再用 query_messages 按明确时间范围查询；跨聊天检索使用 search_messages。"
+    ),
+)
+
+
+def _tool_text(name):
+    """FastMCP 1.x tests call decorated functions directly; FastMCP 2.x may return tool results."""
+    return name
 
 # 新消息追踪
 _last_check_state = {}  # {username: last_timestamp}
@@ -2102,8 +2130,29 @@ def get_recent_sessions(limit: int = 20) -> str:
 
 
 @mcp.tool()
-def get_chat_history(chat_name: str, limit: int = 50, offset: int = 0, start_time: str = "", end_time: str = "", oldest_first: bool = False, msg_types: list[str] | None = None) -> str:
-    """获取指定聊天的消息记录。
+def get_chat_history(chat_name: str, limit: int = 50, offset: int = 0, start_time: str = "", end_time: str = "", oldest_first: bool = False, msg_types: Optional[List[str]] = None) -> str:
+    """查询指定联系人或群聊的历史消息。
+
+    适用场景：
+    - 查看某个联系人或群聊在指定时间范围内的上下文
+    - 追踪群聊讨论、整理近期观点、核对消息来源
+    - 通过 list_contacts/get_contacts 找到名称或 ID 后进一步查询
+
+    参数说明：
+    - chat_name: 聊天对象的名字、备注名或 ID，支持模糊匹配
+    - limit: 返回消息数量；大范围查询建议分页
+    - offset: 分页偏移量
+    - start_time/end_time: 可选时间范围，格式 YYYY-MM-DD、YYYY-MM-DD HH:MM 或 YYYY-MM-DD HH:MM:SS
+    - oldest_first: True 时从最早消息开始返回；默认返回最新消息页后按阅读顺序展示
+    - msg_types: 消息类型过滤，可选 text/image/voice/video/file/emoji/location/namecard/voip/system
+
+    返回：
+    文本消息列表，每行包含发送时间、发送者和格式化后的消息内容。群聊结果会显示群 ID。
+
+    注意：
+    - 面向 Agent 的新调用优先使用 query_messages，它强制传入 start_time
+    - 查询超过 7 天或 limit 很大时可能较慢，建议缩小时间范围或分页
+    - 图片、语音、文件等非文本内容只返回摘要，详情需使用对应 decode 工具
 
     Args:
         chat_name: 聊天对象的名字、备注名或wxid，自动模糊匹配
@@ -2163,15 +2212,88 @@ def get_chat_history(chat_name: str, limit: int = 50, offset: int = 0, start_tim
 
 
 @mcp.tool()
+def query_messages(
+    chat_id: str,
+    start_time: str,
+    end_time: str = "",
+    keyword: str = "",
+    limit: int = 200,
+    offset: int = 0,
+) -> str:
+    """查询指定联系人或群聊在明确时间范围内的历史消息。
+
+    适用场景：
+    - 追踪投研群讨论，例如“某投研群最近 3 天的券商观点”
+    - 检索指定聊天内的标的、公司、行业或关键词提及
+    - 获取一段时间内的消息供后续归纳分析，要求保留来源和时间
+
+    参数：
+    - chat_id: 群聊或联系人 ID/名称，通过 list_contacts 获取；群聊 ID 通常包含 @chatroom
+    - start_time: 必填，起始时间，支持 YYYY-MM-DD、YYYY-MM-DD HH:MM 或 YYYY-MM-DD HH:MM:SS
+    - end_time: 可选，结束时间；为空表示查询到最新消息
+    - keyword: 可选关键词过滤，适合股票代码、公司名、行业词或人名
+    - limit: 返回条数，默认 200；大范围查询建议分段或分页
+    - offset: 分页偏移量，默认 0
+
+    返回：
+    结构化文本列表，每条包含 timestamp、sender 和 content 信息；标题包含聊天名称、ID、时间范围和分页信息。
+
+    注意事项：
+    - start_time 必须明确，避免无边界全量查询导致超时
+    - 跨群分析请分别调用 query_messages 后再聚合
+    - 仅本机已解密且有权限访问的数据可查询
+    """
+    if not start_time:
+        return "错误: start_time 为必填参数，请指定明确起始时间，例如 2026-06-01 00:00:00"
+    if keyword:
+        return search_messages(
+            keyword=keyword,
+            chat_name=chat_id,
+            start_time=start_time,
+            end_time=end_time,
+            limit=limit,
+            offset=offset,
+        )
+    return get_chat_history(
+        chat_name=chat_id,
+        limit=limit,
+        offset=offset,
+        start_time=start_time,
+        end_time=end_time,
+        oldest_first=True,
+        msg_types=["text"],
+    )
+
+
+@mcp.tool()
 def search_messages(
     keyword: str,
-    chat_name: str | list[str] | None = None,
+    chat_name: Optional[Union[str, List[str]]] = None,
     start_time: str = "",
     end_time: str = "",
     limit: int = 20,
     offset: int = 0,
 ) -> str:
-    """搜索消息内容，支持全库、单个聊天对象、多个聊天对象，以及时间范围和分页。
+    """跨聊天搜索消息内容，支持全库、指定单聊/群聊、多个聊天对象、时间范围和分页。
+
+    适用场景：
+    - 不确定目标群聊时，全局搜索某个标的代码、公司名、人物或事件
+    - 比较多个群聊对同一主题的讨论热度
+    - 在已知聊天范围内查找关键词，再用 query_messages 拉取上下文
+
+    参数：
+    - keyword: 必填搜索关键词，支持股票代码、公司名、行业词等
+    - chat_name: 可选聊天对象名称或 ID；为空时全库搜索；也可传字符串列表做跨群搜索
+    - start_time/end_time: 可选时间范围；投研类分析建议明确传入
+    - limit: 返回结果数量，默认 20，最大 500
+    - offset: 分页偏移量
+
+    返回：
+    搜索命中列表，每条包含时间、聊天名称、发送者和命中的文本摘要。
+
+    与 query_messages 的区别：
+    - search_messages 适合“先找在哪里提到过”
+    - query_messages 适合“已知聊天和时间范围后拉取完整上下文”
 
     Args:
         keyword: 搜索关键词
@@ -2233,7 +2355,18 @@ def search_messages(
 
 @mcp.tool()
 def get_contacts(query: str = "", limit: int = 50) -> str:
-    """搜索或列出微信联系人。
+    """搜索或列出联系人和群聊。
+
+    适用场景：
+    - 根据群名、联系人备注、昵称或 ID 查找可查询对象
+    - 在调用 get_chat_history/query_messages 前确认聊天对象 ID
+
+    参数：
+    - query: 搜索关键词，匹配昵称、备注名或 ID；留空列出联系人和群聊
+    - limit: 返回数量，默认 50
+
+    返回：
+    每行包含 username/ID、备注和昵称。群聊 ID 通常包含 @chatroom。
 
     Args:
         query: 搜索关键词（匹配昵称、备注名、wxid），留空列出所有
@@ -2276,6 +2409,111 @@ def get_contacts(query: str = "", limit: int = 50) -> str:
     if total > limit:
         result += f"\n\n（共 {total} 个匹配，当前仅显示前 {limit} 个，可增大 limit 查看更多）"
     return result
+
+
+@mcp.tool()
+def list_contacts(query: str = "", limit: int = 100) -> str:
+    """列出或搜索本机消息数据源中的联系人和群聊。
+
+    适用场景：
+    - 用户提供群名或联系人名称时，先调用本工具确认准确 chat_id
+    - 需要枚举可分析的数据源，例如“有哪些投研群可以查询”
+    - 后续 query_messages 的 chat_id 参数必须从这里获取或确认
+
+    参数：
+    - query: 可选搜索词，匹配备注、昵称、别名、描述和 ID；为空时列出前 limit 个
+    - limit: 返回数量，默认 100；结果过多时请加 query 缩小范围
+
+    返回字段：
+    - id: 联系人或群聊 ID，传给 query_messages 的 chat_id
+    - name: 优先使用备注名，其次昵称，最后 ID
+    - type: group 或 contact
+    - alias/description: 如本地数据库存在则返回辅助识别信息
+
+    注意：
+    - 群聊 ID 通常包含 @chatroom
+    - 查不到目标时，请换用更短的关键词或直接用 get_contacts 兼容工具搜索
+    """
+    contacts = get_contact_full()
+    if not contacts:
+        return "错误: 无法加载联系人数据"
+
+    q = (query or "").lower()
+    if q:
+        filtered = [
+            c for c in contacts
+            if q in (c.get("nick_name") or "").lower()
+            or q in (c.get("remark") or "").lower()
+            or q in (c.get("username") or "").lower()
+            or q in (c.get("alias") or "").lower()
+            or q in (c.get("description") or "").lower()
+        ]
+    else:
+        filtered = contacts
+
+    total = len(filtered)
+    filtered = filtered[:limit]
+    if not filtered:
+        return f'未找到匹配 "{query}" 的联系人或群聊'
+
+    lines = []
+    for c in filtered:
+        username = c.get("username") or ""
+        display = c.get("remark") or c.get("nick_name") or username
+        kind = "group" if "@chatroom" in username else "contact"
+        parts = [f"id={username}", f"name={display}", f"type={kind}"]
+        if c.get("alias"):
+            parts.append(f"alias={c['alias']}")
+        if c.get("description"):
+            parts.append(f"description={c['description']}")
+        lines.append(" | ".join(parts))
+
+    header = f"返回 {len(filtered)} 个联系人/群聊"
+    if query:
+        header += f"（搜索: {query}）"
+    result = header + ":\n\n" + "\n".join(lines)
+    if total > limit:
+        result += f"\n\n（共 {total} 个匹配，当前仅显示前 {limit} 个；请增加 limit 或使用 query 缩小范围）"
+    return result
+
+
+@mcp.tool()
+def get_contact_info(contact_id: str) -> str:
+    """获取单个联系人或群聊的本地元数据详情。
+
+    适用场景：
+    - 调用 query_messages 前确认某个 chat_id 对应的备注、昵称、类型
+    - 分析输出需要标注群聊/联系人来源信息
+    - 用户给出 wxid 或 @chatroom ID，需要转成人可读名称
+
+    参数：
+    - contact_id: 联系人或群聊 ID，也可传备注/昵称并进行模糊解析
+
+    返回：
+    id、name、type、remark、nick_name、alias、description、phone 等本地可用字段。
+
+    注意：
+    - 仅返回本地联系人数据库已有的元数据
+    - 群聊成员详情不在本工具返回范围内
+    """
+    username = resolve_username(contact_id) or contact_id
+    contacts = get_contact_full()
+    for c in contacts:
+        if c.get("username") == username:
+            display = c.get("remark") or c.get("nick_name") or username
+            kind = "group" if "@chatroom" in username else "contact"
+            fields = [
+                f"id: {username}",
+                f"name: {display}",
+                f"type: {kind}",
+                f"remark: {c.get('remark') or ''}",
+                f"nick_name: {c.get('nick_name') or ''}",
+                f"alias: {c.get('alias') or ''}",
+                f"description: {c.get('description') or ''}",
+                f"phone: {c.get('phone') or ''}",
+            ]
+            return "\n".join(fields)
+    return f"未找到联系人或群聊: {contact_id}。请先调用 list_contacts(query='{contact_id}') 确认 ID。"
 
 
 @mcp.tool()
@@ -3508,595 +3746,62 @@ def get_chat_images(chat_name: str, limit: int = 20, offset: int = 0, start_time
     return header + ":\n\n" + "\n".join(lines) + _pagination_hint(len(lines), limit, offset)
 
 
-# ============ 语音解密 ============
-
-DECODED_VOICE_DIR = os.path.join(SCRIPT_DIR, "decoded_voices")
-
-# media DB 与 message DB 同样会分片（media_0.db、media_1.db…），
-# 每个分片各有独立的 Name2Id / VoiceInfo 表。
-MEDIA_DB_KEYS = sorted([
-    k for k in ALL_KEYS
-    if any(v.startswith("message/") for v in key_path_variants(k))
-    and any(re.search(r"media_\d+\.db$", v) for v in key_path_variants(k))
-])
-
-
-def _iter_media_db_paths():
-    for rel_key in MEDIA_DB_KEYS:
-        path = _cache.get(rel_key)
-        if path:
-            yield path
-
-
-def _get_chat_name_id(conn, username):
-    row = conn.execute(
-        "SELECT rowid FROM Name2Id WHERE user_name = ?", (username,)
-    ).fetchone()
-    return row[0] if row else None
-
-
-def _fetch_voice_row(username, local_id):
-    """遍历所有 media DB 分片，返回 (voice_data, create_time)；找不到返回 None。"""
-    for media_db in _iter_media_db_paths():
-        with closing(sqlite3.connect(media_db)) as conn:
-            chat_name_id = _get_chat_name_id(conn, username)
-            if chat_name_id is None:
-                continue
-            row = conn.execute(
-                "SELECT voice_data, create_time FROM VoiceInfo "
-                "WHERE chat_name_id = ? AND local_id = ?",
-                (chat_name_id, local_id),
-            ).fetchone()
-            if row:
-                return row
-    return None
-
-
-def _silk_to_wav(voice_data, create_time, username, local_id):
-    """Decode SILK voice blob to WAV file, return output path."""
-    # pypi 上有多个 SILK 相关包名（silk-python / pysilk / pilk），
-    # 这里用的是 synodriver/pysilk —— 安装包名 silk-python，import 名 pysilk
-    import pysilk
-    data = bytes(voice_data)
-    silk_data = data[1:] if data[0] == 0x02 else data
-    os.makedirs(DECODED_VOICE_DIR, exist_ok=True)
-    time_str = datetime.fromtimestamp(create_time).strftime('%Y%m%d_%H%M%S')
-    out_path = os.path.join(DECODED_VOICE_DIR, f"{username}_{time_str}_{local_id}.wav")
-    inp = io.BytesIO(silk_data)
-    out = io.BytesIO()
-    pysilk.decode(inp, out, 24000)
-    pcm = out.getvalue()
-    with wave.open(out_path, 'wb') as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(24000)
-        wf.writeframes(pcm)
-    return out_path, len(pcm)
-
-
-@mcp.tool()
-def get_voice_messages(chat_name: str, limit: int = 20, offset: int = 0, start_time: str = "", end_time: str = "") -> str:
-    """列出某个聊天中的语音消息。
-
-    返回语音的时间、local_id 和大小，可配合 decode_voice 工具解码。
-
-    Args:
-        chat_name: 聊天对象的名字、备注名或wxid
-        limit: 返回数量，默认20
-        offset: 分页偏移量，默认0
-        start_time: 起始时间，支持 YYYY-MM-DD / YYYY-MM-DD HH:MM / YYYY-MM-DD HH:MM:SS
-        end_time: 结束时间，支持 YYYY-MM-DD / YYYY-MM-DD HH:MM / YYYY-MM-DD HH:MM:SS
-    """
-    try:
-        _validate_pagination(limit, offset)
-        start_ts, end_ts = _parse_time_range(start_time, end_time)
-    except ValueError as e:
-        return f"错误: {e}"
-
-    username = resolve_username(chat_name)
-    if not username:
-        return f"找不到聊天对象: {chat_name}"
-
-    names = get_contact_names()
-    display_name = names.get(username, username)
-
-    if not MEDIA_DB_KEYS:
-        return "找不到 media DB"
-
-    # 每分片各取 limit+offset 条候选, 合并后全局排序切片 [offset:offset+limit] 出本页。
-    candidate_limit = limit + offset
-    clauses = ['chat_name_id = ?']
-    if start_ts is not None:
-        clauses.append('create_time >= ?')
-    if end_ts is not None:
-        clauses.append('create_time <= ?')
-    where_sql = ' AND '.join(clauses)
-
-    rows = []
-    for media_db in _iter_media_db_paths():
-        with closing(sqlite3.connect(media_db)) as conn:
-            chat_name_id = _get_chat_name_id(conn, username)
-            if chat_name_id is None:
-                continue
-            params = [chat_name_id]
-            if start_ts is not None:
-                params.append(start_ts)
-            if end_ts is not None:
-                params.append(end_ts)
-            params.append(candidate_limit)
-            rows.extend(conn.execute(
-                f"SELECT local_id, create_time, length(voice_data) FROM VoiceInfo "
-                f"WHERE {where_sql} ORDER BY create_time DESC LIMIT ?",
-                params,
-            ).fetchall())
-
-    if not rows:
-        return f"{display_name} 无语音消息"
-
-    rows.sort(key=lambda r: r[1], reverse=True)
-    paged = rows[offset:offset + limit]
-
-    lines = []
-    for local_id, create_time, size in paged:
-        time_str = datetime.fromtimestamp(create_time).strftime('%Y-%m-%d %H:%M')
-        lines.append(f"[{time_str}] local_id={local_id}  {size/1024:.0f}KB")
-
-    header = f"{display_name} 的 {len(lines)} 条语音消息（offset={offset}, limit={limit}）"
-    if start_time or end_time:
-        header += f"\n时间范围: {start_time or '最早'} ~ {end_time or '最新'}"
-    return header + ":\n\n" + "\n".join(lines) + _pagination_hint(len(lines), limit, offset)
-
-
-@mcp.tool()
-def decode_voice(chat_name: str, local_id: int) -> str:
-    """解码微信语音消息为 WAV 文件。
-
-    先用 get_voice_messages 获取 local_id，再用此工具解码。
-    输出文件保存在 decoded_voices/ 目录。
-
-    依赖: pip install silk-python (import 名为 pysilk)
-
-    Args:
-        chat_name: 聊天对象的名字、备注名或wxid
-        local_id: 语音消息的 local_id（从 get_voice_messages 获取）
-    """
-    try:
-        import pysilk  # noqa: F401
-    except ImportError:
-        return "缺少依赖: pip install silk-python"
-
-    username = resolve_username(chat_name)
-    if not username:
-        return f"找不到聊天对象: {chat_name}"
-
-    row = _fetch_voice_row(username, local_id)
-    if row is None:
-        return f"找不到 local_id={local_id} 的语音消息"
-
-    voice_data, create_time = row
-    out_path, pcm_len = _silk_to_wav(voice_data, create_time, username, local_id)
-    duration_s = pcm_len / (24000 * 2)
-    return (
-        f"解码成功!\n"
-        f"  文件: {out_path}\n"
-        f"  时长: {duration_s:.1f}秒\n"
-        f"  大小: {os.path.getsize(out_path):,} bytes"
-    )
-
-
-# ============ 语音转录缓存 ============
-#
-# Whisper 转录耗时（CPU 下每条数秒到数十秒），且结果是确定性的
-# （同一段 voice_data → 同一段 text），非常适合缓存。
-#
-# 缓存 key 用 json.dumps([username, local_id])：local_id 在单个 username 下
-# 稳定唯一，套一层 JSON 序列化保证 username 里若含分隔符也不会与其它条目碰撞。
-#
-# 写入走 temp + os.replace 原子替换，避免进程中途被杀导致整份缓存损坏
-# （Whisper 的单次代价远高于 DBCache，破档不可接受）。
-#
-# 条目里记录 model_size：Whisper 升级默认模型后，旧条目自动视为失效并重跑。
-
-VOICE_TRANSCRIPTION_CACHE_FILE = os.path.join(SCRIPT_DIR, "voice_transcriptions.json")
-
-_voice_transcription_cache = None  # 懒加载 dict；None 表示尚未加载
-_voice_transcription_cache_lock = threading.Lock()
-_voice_transcription_save_warned = False  # 写失败仅首次写 stderr，避免刷屏
-
-
-def _voice_transcription_cache_key(username, local_id):
-    """构造缓存 key。用 json.dumps 兜底 username 里可能出现的分隔符。"""
-    return json.dumps([username, int(local_id)], ensure_ascii=False)
-
-
-def _load_voice_transcription_cache():
-    """加载缓存到模块级 dict，返回该 dict。
-
-    文件不存在 → 空 dict。JSON 损坏或 payload 非 dict → 空 dict
-    （与上游 DBCache 的容错风格一致：缓存坏了不要拖垮工具调用）。
-    """
-    global _voice_transcription_cache
-    with _voice_transcription_cache_lock:
-        if _voice_transcription_cache is not None:
-            return _voice_transcription_cache
-        if not os.path.exists(VOICE_TRANSCRIPTION_CACHE_FILE):
-            _voice_transcription_cache = {}
-            return _voice_transcription_cache
-        try:
-            with open(VOICE_TRANSCRIPTION_CACHE_FILE, encoding="utf-8") as f:
-                loaded = json.load(f)
-            _voice_transcription_cache = loaded if isinstance(loaded, dict) else {}
-        except (json.JSONDecodeError, OSError):
-            _voice_transcription_cache = {}
-        return _voice_transcription_cache
-
-
-def _save_voice_transcription_cache():
-    """持久化缓存到磁盘。
-
-    - 原子写：先写 .tmp 再 os.replace，避免 crash 中途留下半截文件。
-    - 未加载过也允许保存：此时把 module 状态初始化为空 dict，避免上层
-      代码因调用顺序错误而静默丢数据。
-    - OSError 不抛：避免转录成功但落盘失败时让工具调用也失败；但首次
-      失败会在 stderr 打一行警告，用户知道磁盘满 / 权限问题需要处理。
-    """
-    global _voice_transcription_cache, _voice_transcription_save_warned
-    with _voice_transcription_cache_lock:
-        if _voice_transcription_cache is None:
-            _voice_transcription_cache = {}
-        tmp_path = VOICE_TRANSCRIPTION_CACHE_FILE + ".tmp"
-        try:
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(_voice_transcription_cache, f, ensure_ascii=False)
-            os.replace(tmp_path, VOICE_TRANSCRIPTION_CACHE_FILE)
-        except OSError as exc:
-            if not _voice_transcription_save_warned:
-                print(
-                    f"[voice_cache] 写入失败（后续不再提示）: {exc}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                _voice_transcription_save_warned = True
-            # 清理可能残留的 .tmp
-            try:
-                if os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
-            except OSError:
-                pass
-
-
-# ============ 语音转录后端 ============
-#
-# 默认 local: 完全保留原有行为，CPU 上跑本地 Whisper。
-# opt-in openai: 需要 transcription_backend="openai" 且 openai_api_key 都齐
-# 才会上云；任一缺失静默回退 local + stderr 一行警告（用户感知到误配置但不阻塞）。
-# 详见 README "语音转录隐私" 章节。
-
-TRANSCRIPTION_BACKEND = _cfg.get("transcription_backend", "local")
-LOCAL_WHISPER_MODEL = _cfg.get("local_whisper_model", "base")
-OPENAI_API_KEY = _cfg.get("openai_api_key", "")
-
-OPENAI_WHISPER_MODEL = "whisper-1"           # OpenAI 当前唯一型号
-OPENAI_AUDIO_LIMIT_BYTES = 25 * 1024 * 1024  # OpenAI 25MB 上限
-
-_whisper_model = None
-_openai_client = None
-_openai_warning_emitted = False
-_fallback_warning_emitted = False
-
-# whisper.cpp 后端（macOS Metal GPU 加速）
-# 路径选项均为可选，默认自动检测
-WHISPER_CPP_BINARY = _cfg.get("whisper_cpp_binary", "")
-WHISPER_CPP_MODEL = _cfg.get("whisper_cpp_model", "")
-WHISPER_CPP_LANGUAGE = _cfg.get("whisper_cpp_language", "zh")
-WHISPER_CPP_THREADS = _cfg.get("whisper_cpp_threads", 0)
-
-_WHISPER_CPP_BINARY_SEARCH_PATHS = [
-    "/opt/homebrew/bin/whisper-cpp",
-    "/usr/local/bin/whisper-cpp",
-    os.path.expanduser("~/.local/bin/whisper-cpp"),
-]
-
-_WHISPER_CPP_MODEL_SEARCH_PATHS = [
-    os.path.expanduser("~/Library/Application Support/whisper-cpp"),
-    os.path.expanduser("~/Library/Application Support/Recordly/whisper"),
-    os.path.expanduser("~/whisper-models"),
-    os.path.expanduser("~/models"),
-    os.path.expanduser("~/Downloads"),
-    "/opt/homebrew/share/whisper-cpp/models",
-    "/usr/local/share/whisper-cpp/models",
-]
-
-_whisper_cpp_binary_resolved = None   # None=未检测, ""=未找到, str=路径
-_whisper_cpp_model_resolved = None    # 同上
-
-
-def _resolve_whisper_cpp_binary():
-    global _whisper_cpp_binary_resolved
-    if _whisper_cpp_binary_resolved is not None:
-        return _whisper_cpp_binary_resolved
-    if WHISPER_CPP_BINARY:
-        if os.path.isfile(WHISPER_CPP_BINARY) and os.access(WHISPER_CPP_BINARY, os.X_OK):
-            _whisper_cpp_binary_resolved = WHISPER_CPP_BINARY
-            return _whisper_cpp_binary_resolved
-    for p in _WHISPER_CPP_BINARY_SEARCH_PATHS:
-        if os.path.isfile(p) and os.access(p, os.X_OK):
-            _whisper_cpp_binary_resolved = p
-            return _whisper_cpp_binary_resolved
-    _whisper_cpp_binary_resolved = ""
-    return ""
-
-
-def _resolve_whisper_cpp_model():
-    global _whisper_cpp_model_resolved
-    if _whisper_cpp_model_resolved is not None:
-        return _whisper_cpp_model_resolved
-    if WHISPER_CPP_MODEL:
-        if os.path.isfile(WHISPER_CPP_MODEL):
-            _whisper_cpp_model_resolved = WHISPER_CPP_MODEL
-            return _whisper_cpp_model_resolved
-    for search_dir in _WHISPER_CPP_MODEL_SEARCH_PATHS:
-        if not os.path.isdir(search_dir):
+def iter_decryptable_databases(target_db: Optional[str] = None):
+    """Yield configured database keys that can be decrypted by the MCP cache."""
+    target = (target_db or "").lower()
+    seen = set()
+    for rel_key in sorted(ALL_KEYS):
+        if rel_key in seen:
             continue
-        for f in sorted(os.listdir(search_dir)):
-            if f.startswith("ggml-") and f.endswith(".bin"):
-                _whisper_cpp_model_resolved = os.path.join(search_dir, f)
-                return _whisper_cpp_model_resolved
-    _whisper_cpp_model_resolved = ""
-    return ""
+        seen.add(rel_key)
+        rel_path = rel_key.replace('\\', os.sep).replace('/', os.sep)
+        if target and target not in rel_key.lower() and target not in os.path.basename(rel_path).lower():
+            continue
+        db_path = os.path.join(DB_DIR, rel_path)
+        if os.path.exists(db_path):
+            yield rel_key, db_path
 
 
-def _resolve_active_backend():
-    """两因素 opt-in：openai 需要 flag + key 都齐才生效。
-    whisper_cpp 需要 binary 可检测到，否则回退 local。"""
-    global _fallback_warning_emitted
-    if TRANSCRIPTION_BACKEND == "openai":
-        if not OPENAI_API_KEY:
-            if not _fallback_warning_emitted:
-                print(
-                    "[whisper] transcription_backend=openai 但未配置 openai_api_key，"
-                    "回退到本地模型",
-                    file=sys.stderr, flush=True,
-                )
-                _fallback_warning_emitted = True
-            return "local"
-        return "openai"
-    if TRANSCRIPTION_BACKEND == "whisper_cpp":
-        if not _resolve_whisper_cpp_binary():
-            if not _fallback_warning_emitted:
-                print(
-                    "[whisper] transcription_backend=whisper_cpp 但未找到 "
-                    "whisper-cpp 二进制文件，回退到本地模型。"
-                    "安装: brew install whisper-cpp",
-                    file=sys.stderr, flush=True,
-                )
-                _fallback_warning_emitted = True
-            return "local"
-        return "whisper_cpp"
-    return "local"
+def predecrypt_databases(target_db: Optional[str] = None) -> dict:
+    """Warm the persistent MCP decrypted DB cache before the server receives queries."""
+    dbs = list(iter_decryptable_databases(target_db))
+    stats = {"total": len(dbs), "success": 0, "failed": 0, "skipped": 0}
+    if not dbs:
+        print("未找到可预解密的数据库")
+        return stats
 
-
-def _cache_signature():
-    """当前生效后端 + 模型，用作缓存命中判定 + 落盘字段。"""
-    backend = _resolve_active_backend()
-    if backend == "openai":
-        return {"backend": "openai", "model_size": OPENAI_WHISPER_MODEL}
-    if backend == "whisper_cpp":
-        model_path = _resolve_whisper_cpp_model()
-        model_name = os.path.basename(model_path) if model_path else "unknown"
-        return {"backend": "whisper_cpp", "model_size": model_name}
-    return {"backend": "local", "model_size": LOCAL_WHISPER_MODEL}
-
-
-def _get_whisper_model(model_size=None):
-    global _whisper_model
-    if model_size is None:
-        model_size = LOCAL_WHISPER_MODEL
-    if _whisper_model is None:
-        import whisper
-        _whisper_model = whisper.load_model(model_size)
-    return _whisper_model
-
-
-def _transcribe_local(wav_path):
-    model = _get_whisper_model()
-    result = model.transcribe(wav_path)
-    return {
-        "language": result.get("language", "unknown"),
-        "text": result.get("text", "").strip(),
-    }
-
-
-def _transcribe_openai(wav_path):
-    """通过 OpenAI Whisper API 转录。失败抛 RuntimeError，调用方负责面向用户的提示。"""
-    global _openai_client, _openai_warning_emitted
-
-    # 尺寸预检：放在 SDK 导入和实例化之前，确保超限文件绝不上传
-    size = os.path.getsize(wav_path)
-    if size > OPENAI_AUDIO_LIMIT_BYTES:
-        raise RuntimeError(
-            f"音频 {size / 1024 / 1024:.1f}MB 超过 OpenAI 25MB 上限，"
-            "提前拒绝以避免无谓上传"
-        )
-
-    try:
-        from openai import OpenAI
-        from openai import AuthenticationError, RateLimitError, APIError
-    except ImportError:
-        raise RuntimeError("缺少依赖: pip install openai")
-
-    if not _openai_warning_emitted:
-        print(
-            "[whisper] 已启用 OpenAI Whisper API，"
-            "语音将上传至 OpenAI 服务器进行转录",
-            file=sys.stderr, flush=True,
-        )
-        _openai_warning_emitted = True
-
-    if _openai_client is None:
-        _openai_client = OpenAI(api_key=OPENAI_API_KEY)
-
-    try:
-        with open(wav_path, "rb") as f:
-            result = _openai_client.audio.transcriptions.create(
-                model=OPENAI_WHISPER_MODEL,
-                file=f,
-                response_format="verbose_json",
-            )
-    except AuthenticationError:
-        raise RuntimeError("OpenAI 鉴权失败 (401)：检查 openai_api_key")
-    except RateLimitError:
-        raise RuntimeError("OpenAI 限流 (429)：稍后重试")
-    except APIError as e:
-        raise RuntimeError(f"OpenAI API 错误: {e}")
-
-    return {
-        "language": getattr(result, "language", "unknown"),
-        "text": (getattr(result, "text", "") or "").strip(),
-    }
-
-
-def _transcribe_whisper_cpp(wav_path):
-    """通过 whisper-cpp CLI（Metal GPU 加速）转录。失败抛 RuntimeError。"""
-    binary = _resolve_whisper_cpp_binary()
-    if not binary:
-        raise RuntimeError("whisper-cpp binary 未找到。安装: brew install whisper-cpp")
-    model = _resolve_whisper_cpp_model()
-    if not model:
-        raise RuntimeError(
-            "whisper.cpp 模型未找到。通过 config.json whisper_cpp_model 指定路径，"
-            "或下载: https://huggingface.co/ggerganov/whisper.cpp"
-        )
-
-    threads = WHISPER_CPP_THREADS
-    if not threads:
+    print(f"找到 {len(dbs)} 个数据库，开始预解密到 MCP 缓存...")
+    for idx, (rel_key, db_path) in enumerate(dbs, 1):
+        size_mb = os.path.getsize(db_path) / 1024 / 1024
+        print(f"[{idx}/{len(dbs)}] {rel_key} ({size_mb:.1f}MB) ...", end=" ")
+        started = time.time()
         try:
-            threads = min(os.cpu_count() or 4, 8)
-        except Exception:
-            threads = 4
+            cached_path = _cache.get(rel_key)
+            if cached_path:
+                elapsed = time.time() - started
+                print(f"OK -> {cached_path} ({elapsed:.1f}s)")
+                stats["success"] += 1
+            else:
+                print("SKIP (无密钥或源文件不可用)")
+                stats["skipped"] += 1
+        except Exception as e:
+            print(f"FAILED: {e}")
+            stats["failed"] += 1
 
-    try:
-        cmd = [
-            binary,
-            "-m", model,
-            "-f", wav_path,
-            "-l", WHISPER_CPP_LANGUAGE,
-            "-t", str(threads),
-            "--no-fallback",
-            "-otxt",
-        ]
-        subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-
-        txt_path = f"{wav_path}.txt"
-        if os.path.isfile(txt_path):
-            with open(txt_path, encoding="utf-8") as f:
-                text = f.read().strip()
-            os.unlink(txt_path)
-            return {"language": WHISPER_CPP_LANGUAGE, "text": text or ""}
-        return {"language": WHISPER_CPP_LANGUAGE, "text": ""}
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("whisper-cpp 超时 (120s)")
-    except Exception as e:
-        raise RuntimeError(f"whisper-cpp 转录失败: {e}")
+    print(
+        f"预解密完成: {stats['success']} 成功, {stats['failed']} 失败, "
+        f"{stats['skipped']} 跳过, 共 {stats['total']} 个"
+    )
+    return stats
 
 
-def _transcribe(wav_path, backend):
-    if backend == "openai":
-        return _transcribe_openai(wav_path)
-    if backend == "whisper_cpp":
-        return _transcribe_whisper_cpp(wav_path)
-    return _transcribe_local(wav_path)
+def serve(host: str = "127.0.0.1", port: int = 8765):
+    """Start the MCP server over streamable-http at /mcp."""
+    import uvicorn
 
-
-@mcp.tool()
-def transcribe_voice(chat_name: str, local_id: int) -> str:
-    """将微信语音消息转录为文字（自动检测语言，保留原语言）。
-
-    首次转录会先解码 SILK 语音为 WAV，再用 Whisper 转录；结果缓存到
-    voice_transcriptions.json，重复调用直接返回缓存（跳过 SILK 解码
-    和 Whisper 推理）。后端切换或本地模型升级（如 base → small）后，
-    旧条目自动视为失效并重新转录。首次运行本地模型会下载约 145MB 权重。
-
-    后端由 config.json 中 transcription_backend 字段控制（local/openai/whisper_cpp）。
-    详见 README "语音转录隐私" 章节。
-
-    依赖:
-      - 本地后端: pip install silk-python openai-whisper
-        (silk-python 的 import 名为 pysilk)
-      - OpenAI 后端: pip install silk-python openai
-      - whisper_cpp 后端: brew install whisper-cpp (macOS)
-
-    Args:
-        chat_name: 聊天对象的名字、备注名或wxid
-        local_id: 语音消息的 local_id（从 get_voice_messages 获取）
-    """
-    username = resolve_username(chat_name)
-    if not username:
-        return f"找不到聊天对象: {chat_name}"
-
-    sig = _cache_signature()
-    cache_key = _voice_transcription_cache_key(username, local_id)
-    cache = _load_voice_transcription_cache()
-    entry = cache.get(cache_key)
-    # 命中要求 backend + model_size 都匹配。
-    # 旧条目 (PR #58 schema) 缺 backend 字段，回填默认 "local" 保持向前兼容
-    # —— 那时唯一存在的后端就是 local，语义上等价。
-    if (
-        isinstance(entry, dict)
-        and "text" in entry
-        and entry.get("backend", "local") == sig["backend"]
-        and entry.get("model_size") == sig["model_size"]
-    ):
-        # 命中缓存：跳过 DB 查询、SILK 解码、转录。
-        # 条目里存了 create_time，即使源 DB 中消息已被清理仍能返回历史转录。
-        lang = entry.get("language", "unknown")
-        cached_ts = entry.get("create_time")
-        if isinstance(cached_ts, int):
-            time_label = datetime.fromtimestamp(cached_ts).strftime('%Y-%m-%d %H:%M')
-        else:
-            time_label = "-"
-        return f"[{time_label}] ({lang})\n{entry['text']}"
-
-    # 未命中：本地后端才需要 whisper 包，云后端在 _transcribe_openai 内单独检查
-    if sig["backend"] == "local":
-        try:
-            import whisper  # noqa: F401
-        except ImportError:
-            return "缺少依赖: pip install openai-whisper"
-    # SILK 解码两条路径都需要
-    try:
-        import pysilk  # noqa: F401
-    except ImportError:
-        return "缺少依赖: pip install silk-python"
-
-    row = _fetch_voice_row(username, local_id)
-    if row is None:
-        return f"找不到 local_id={local_id} 的语音消息"
-
-    voice_data, create_time = row
-    wav_path, _ = _silk_to_wav(voice_data, create_time, username, local_id)
-
-    try:
-        result = _transcribe(wav_path, sig["backend"])
-    except RuntimeError as e:
-        return str(e)
-    text = result["text"]
-    lang = result["language"]
-
-    # 写缓存：即使 text 为空也缓存（Whisper 偶尔对静音/极短片段返回空），
-    # 配合 backend + model_size 字段，切换后端或升级模型后会自动重转。
-    cache[cache_key] = {
-        "text": text,
-        "language": lang,
-        "create_time": int(create_time),
-        "backend": sig["backend"],
-        "model_size": sig["model_size"],
-    }
-    _save_voice_transcription_cache()
-
-    time_label = datetime.fromtimestamp(create_time).strftime('%Y-%m-%d %H:%M')
-    return f"[{time_label}] ({lang})\n{text}"
+    app = mcp.streamable_http_app()
+    uvicorn.run(app, host=host, port=port, log_level="info")
 
 
 if __name__ == "__main__":
-    mcp.run()
+    serve()

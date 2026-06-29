@@ -6,7 +6,7 @@
 
 参数:
     <chat_name>  联系人显示名、备注名或 wxid（仅 1v1 聊天有转账消息）。
-    <local_id>   转账消息的 local_id（从 export_chat 输出 / monitor_web 等地方获取）。
+    <local_id>   转账消息的 local_id（从 export_chat 或 query_messages 输出获取）。
     [<ts>]       可选 unix 时间戳。当 local_id 在多个分片冲突时用它唯一定位。
 
 输出: 多行可读文本，含方向（发起/收款/退还）、金额、备注、付款/收款 wxid、
