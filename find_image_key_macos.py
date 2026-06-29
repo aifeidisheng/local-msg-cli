@@ -25,8 +25,8 @@ uin 来源（两条路径，dispatcher 自动 fallback）
   得 ~256 个 uin 候选 → AES 模板验证唯一定位。
   优点：不依赖 kvcomm，多账号无歧义；缺点：~7 秒（单核 2^24 MD5）。
 
-命中后写回 config.json 的 image_aes_key / image_xor_key，monitor_web.py
-启动时自动加载，图片消息显示内联预览。
+命中后写回 config.json 的 image_aes_key / image_xor_key，decode_image.py
+和 MCP 图片解码工具会自动使用。
 
 致谢
 ----
@@ -634,7 +634,7 @@ def main(config_path=None):
     _save_config_atomic(config_path, config)
     print()
     print(f"[+] 已写入 {config_path}", flush=True)
-    print("    下次启动 monitor_web.py 时会自动加载新密钥，图片消息显示内联预览",
+    print("    后续 decode_image.py / MCP 图片解码工具会自动加载新密钥",
           flush=True)
 
 

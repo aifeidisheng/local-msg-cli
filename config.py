@@ -48,16 +48,6 @@ _DEFAULT = {
     "decrypted_dir": "decrypted",
     "decoded_image_dir": "decoded_images",
     "wechat_process": _DEFAULT_PROCESS,
-    "wxwork_db_dir": "",
-    "wxwork_keys_file": "wxwork_keys.json",
-    "wxwork_decrypted_dir": "wxwork_decrypted",
-    "wxwork_export_dir": "wxwork_export",
-    "wxwork_process": "WXWork.exe",
-    # 语音转录后端: "local" (默认, 本地 Whisper) 或 "openai" (OpenAI API)
-    # 切到 openai 时语音将上传至 OpenAI 服务器, 详见 README "语音转录隐私" 章节
-    "transcription_backend": "local",
-    "local_whisper_model": "base",
-    "openai_api_key": "",
 }
 
 
@@ -68,7 +58,6 @@ def _choose_candidate(candidates):
     if len(candidates) > 1:
         if (
             os.environ.get("WECHAT_DECRYPT_NONINTERACTIVE") == "1"
-            or os.environ.get("WECHAT_DECRYPT_GUI") == "1"
             or not sys.stdin.isatty()
         ):
             return candidates[0]
@@ -274,7 +263,6 @@ def load_config():
     base = _app_base_dir()
     for key in (
         "keys_file", "decrypted_dir", "decoded_image_dir",
-        "wxwork_keys_file", "wxwork_decrypted_dir", "wxwork_export_dir",
     ):
         if key in cfg and cfg[key] and not os.path.isabs(cfg[key]):
             cfg[key] = os.path.join(base, cfg[key])
@@ -309,7 +297,7 @@ def load_config():
     if "decoded_image_dir" not in cfg:
         cfg["decoded_image_dir"] = os.path.join(base, "decoded_images")
 
-    # 自动检测 WeChat Files 目录（FileStorage/MsgAttach, FileStorage/Sns/Cache）
+    # 自动检测 WeChat Files 目录（FileStorage/MsgAttach）
     if not cfg.get("wechat_files_dir"):
         wechat_files_base = os.path.join(os.path.expanduser("~"), "Documents", "WeChat Files")
         if os.path.isdir(wechat_files_base):
@@ -324,7 +312,6 @@ def load_config():
 
     wf_dir = cfg.get("wechat_files_dir", "")
     cfg["msgattach_dir"] = os.path.join(wf_dir, "FileStorage", "MsgAttach") if wf_dir else ""
-    cfg["sns_cache_dir"] = os.path.join(wf_dir, "FileStorage", "Sns", "Cache") if wf_dir else ""
 
     # xwechat_files 图片/缓存路径
     wb = cfg["wechat_base_dir"]

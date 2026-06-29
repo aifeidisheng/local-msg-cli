@@ -70,19 +70,6 @@ if [ "$PLATFORM" = "macos" ]; then
         echo "[xcode] ✓"
     fi
 
-    # whisper-cpp
-    if command -v brew &>/dev/null; then
-        if ! command -v whisper-cpp &>/dev/null; then
-            echo "[whisper-cpp] 通过 Homebrew 安装..."
-            brew install whisper-cpp
-        else
-            echo "[whisper-cpp] ✓ 已安装"
-        fi
-    else
-        echo "[brew] 未安装 Homebrew，跳过 whisper-cpp 自动安装"
-        echo "       手动安装: brew install whisper-cpp"
-    fi
-
     # 编译 C 扫描器
     if [ ! -f find_all_keys_macos ]; then
         echo "[编译] find_all_keys_macos..."
@@ -131,13 +118,11 @@ echo "========================================================"
 echo "  配置完成！下一步："
 echo ""
 echo "  1. 编辑 config.json 确认 db_dir 路径"
-echo "  2. 提取密钥并解密："
-echo "     macOS:   sudo ./find_all_keys_macos  &&  $VENV_PY decrypt_db.py"
-echo "     Linux:   sudo $VENV_PY find_all_keys.py  &&  $VENV_PY decrypt_db.py"
-echo "     Windows: python find_all_keys.py  &&  python decrypt_db.py"
+echo "  2. 预解密 MCP 查询缓存："
+echo "     $VENV_PY main.py init"
 echo ""
-echo "  3. 批量导出聊天记录："
-echo "     $VENV_PY export_all_chats.py"
+echo "  3. 启动 MCP Server："
+echo "     $VENV_PY main.py serve --port 8765"
 echo ""
-echo "  或使用 Makefile:  make decrypt / make all"
+echo "  或使用 Makefile:  make init / make serve"
 echo "========================================================"

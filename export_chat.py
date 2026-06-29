@@ -27,9 +27,6 @@
 默认值/空值会被省略: text 消息省略 "type"，无可提取内容时省略 "content"，
 1-on-1 聊天省略 "is_group"。
 
-语音消息以 type "voice" 导出且不带 transcription 字段；运行
-transcribe_chat.py 可用 Whisper 补齐转录。
-
 需先完成 WeChat DB 解密（详见 README）。
 
 完整 schema、字段语义与加载示例: docs/chat_export_format.md
@@ -89,8 +86,7 @@ def export_chat(chat_name, output_path):
             local_id, local_type, content, ct, username, display_name
         )
 
-        # Compact format: omit defaults/nulls. type defaults to "text", transcription
-        # is added later by transcribe_chat.py only for voice messages. See CLAUDE.md.
+        # Compact format: omit defaults/nulls. type defaults to "text".
         msg = {
             "local_id": local_id,
             "timestamp": create_time,

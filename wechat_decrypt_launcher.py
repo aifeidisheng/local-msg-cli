@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""WeChatDecrypt.exe 双模式入口。
+"""Local message MCP data source executable entrypoint.
 
-无参数时启动 Web UI；带参数时分发到现有 CLI 脚本。该入口同时兼容
-PyInstaller onefile 里 Web UI 子进程使用的 ``sys.executable script.py``
-调用形态。
+无参数时启动 MCP Server；带参数时分发到保留的 CLI 脚本。
 """
 
 import os
@@ -11,19 +9,12 @@ import runpy
 import sys
 
 
-MAIN_COMMANDS = {"decrypt", "export", "all", "status", "-s", "decode-images"}
+MAIN_COMMANDS = {"init", "serve", "decrypt", "export", "all", "status", "-s", "decode-images"}
 HELP_COMMANDS = {"help", "-h", "--help"}
 SCRIPT_ENTRYPOINTS = {
     "main.py",
-    "monitor_web.py",
     "export_all_chats.py",
     "find_image_key.py",
-    "decrypt_sns.py",
-    "export_sns.py",
-    "find_wxwork_keys.py",
-    "decrypt_wxwork_db.py",
-    "export_wxwork_messages.py",
-    "voice_to_mp3.py",
     "batch_decrypt_images.py",
     "decrypt_db.py",
 }
@@ -56,8 +47,9 @@ def print_usage(stream=None):
     stream.write(
         "WeChatDecrypt.exe 用法:\n"
         "\n"
-        "  WeChatDecrypt.exe                         启动 Web UI\n"
-        "  WeChatDecrypt.exe web                     启动 Web UI\n"
+        "  WeChatDecrypt.exe                         启动 MCP Server\n"
+        "  WeChatDecrypt.exe init                    预解密 MCP 查询缓存\n"
+        "  WeChatDecrypt.exe serve [args...]         启动 MCP Server\n"
         "  WeChatDecrypt.exe status                  查看状态\n"
         "  WeChatDecrypt.exe decrypt                 提取密钥并解密数据库\n"
         "  WeChatDecrypt.exe export [args...]        解密并批量导出聊天\n"
@@ -73,11 +65,9 @@ def print_usage(stream=None):
 
 def _resolve_script(argv):
     if not argv:
-        return "monitor_web.py", []
+        return "main.py", ["serve"]
 
     cmd = argv[0]
-    if cmd == "web":
-        return "monitor_web.py", argv[1:]
     if cmd in MAIN_COMMANDS:
         return "main.py", argv
     if cmd == "export-all":

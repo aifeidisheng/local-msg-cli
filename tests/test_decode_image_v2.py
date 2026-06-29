@@ -226,7 +226,7 @@ class TestV2DecryptSynthetic(unittest.TestCase):
 
     def test_v2_wxgf_payload_returns_hevc_format(self):
         # 微信 V2 动图 (wxgf 裸流 HEVC) 解密后 fmt='hevc',输出文件以 .hevc 结尾;
-        # 当前 ImageResolver 不再向 JPEG 转 (那是 monitor_web 的职责),保持原样输出。
+        # 当前 ImageResolver 不再向 JPEG 转，保持原始 HEVC 输出。
         wxgf_payload = b'wxgf' + b'\x00' * 84  # 88 字节,与 PNG payload 同长度,避免改 aes/xor sizes
         with tempfile.TemporaryDirectory() as td:
             dat_path = os.path.join(td, "test.dat")

@@ -28,17 +28,17 @@ class LauncherDispatchTests(unittest.TestCase):
         )
         return code, calls, stdout.getvalue(), stderr.getvalue()
 
-    def test_no_args_starts_web_ui(self):
+    def test_no_args_starts_mcp_server(self):
         code, calls, _, _ = self._dispatch([])
 
         self.assertEqual(code, 0)
-        self.assertEqual(calls, [("monitor_web.py", [])])
+        self.assertEqual(calls, [("main.py", ["serve"])])
 
-    def test_web_command_starts_web_ui(self):
-        code, calls, _, _ = self._dispatch(["web"])
+    def test_serve_command_routes_to_main(self):
+        code, calls, _, _ = self._dispatch(["serve", "--port", "8765"])
 
         self.assertEqual(code, 0)
-        self.assertEqual(calls, [("monitor_web.py", [])])
+        self.assertEqual(calls, [("main.py", ["serve", "--port", "8765"])])
 
     def test_decrypt_command_routes_to_main(self):
         code, calls, _, _ = self._dispatch(["decrypt"])
@@ -90,7 +90,7 @@ class LauncherDispatchTests(unittest.TestCase):
             try:
                 wechat_decrypt_launcher._prepare_runtime()
                 self.assertEqual(os.environ["WECHAT_DECRYPT_APP_DIR"], exe_dir)
-                self.assertEqual(os.getcwd(), exe_dir)
+                self.assertEqual(os.path.realpath(os.getcwd()), os.path.realpath(exe_dir))
             finally:
                 os.chdir(old_cwd)
 
@@ -110,7 +110,8 @@ class LauncherDispatchTests(unittest.TestCase):
         self.assertIn("'sqlite3'", spec)
         self.assertIn("'_sqlite3'", spec)
         self.assertIn("'wave'", spec)
-        self.assertIn("'mcp.server.fastmcp'", spec)
+        self.assertIn("'fastmcp'", spec)
+        self.assertIn("'uvicorn'", spec)
         self.assertIn("'Crypto.Util'", spec)
         self.assertIn("'Crypto.Util.Padding'", spec)
 
