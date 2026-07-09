@@ -22,7 +22,7 @@
 - macOS 需 Xcode Command Line Tools: `xcode-select --install`
 - 读取进程内存需要管理员/root 权限
 
-Desktop 内置 Python 已验证：`/Users/feijunwei/project/aejarvis/desktop/resources/python/mac-arm64/python/bin/python3` 为 Python 3.13.12，带 pip 26.0.1，满足本项目版本要求。该环境未预装 `pycryptodome`、`zstandard`、`fastmcp`，仍需安装 `requirements.txt`。
+若使用 Desktop 内置 Python（≥3.10 即可），仍需通过 `pip install -r requirements.txt` 安装依赖。
 
 ## 安装
 
@@ -35,7 +35,7 @@ pip install -r requirements.txt
 也可以使用 Desktop 内置 Python：
 
 ```bash
-/Users/feijunwei/project/aejarvis/desktop/resources/python/mac-arm64/python/bin/python3 -m pip install -r requirements.txt
+/path/to/desktop/python3 -m pip install -r requirements.txt
 ```
 
 ## macOS 快速开始
