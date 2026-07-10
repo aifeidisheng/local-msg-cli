@@ -55,10 +55,7 @@ _DEFAULT = {
     "version_guard": {
         "enabled": False,
         "block_on_unknown_version": True,
-        "require_exact_app_path": True,
-        "require_running_process_path": False,
         "require_update_disabled": False,
-        "require_installer_hash": False,
         "allowed_version_ranges": [],
     },
 }
@@ -133,10 +130,7 @@ def _normalize_version_guard_policy(data):
     policy_keys = {
         "enabled",
         "block_on_unknown_version",
-        "require_exact_app_path",
-        "require_running_process_path",
         "require_update_disabled",
-        "require_installer_hash",
         "allowed_version_ranges",
         "allowed_versions",
     }

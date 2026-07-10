@@ -1,11 +1,19 @@
 {
     "version_guard": {
-        "enabled": false,
+        "enabled": true,
         "block_on_unknown_version": true,
-        "require_exact_app_path": true,
-        "require_running_process_path": false,
-        "require_update_disabled": false,
-        "require_installer_hash": false,
-        "allowed_version_ranges": []
+        "require_update_disabled": true,
+        "allowed_version_ranges": [
+            {
+                "platform": "windows",
+                "min_version": "4.1.9",
+                "max_version": "4.1.9"
+            },
+            {
+                "platform": "darwin",
+                "min_version": "4.1.8",
+                "max_version": "4.1.8"
+            }
+        ]
     }
 }

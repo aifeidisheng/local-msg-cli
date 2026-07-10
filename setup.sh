@@ -120,10 +120,7 @@ if [ ! -f version-guard.policy.json ]; then
     "version_guard": {
         "enabled": false,
         "block_on_unknown_version": true,
-        "require_exact_app_path": true,
-        "require_running_process_path": false,
         "require_update_disabled": false,
-        "require_installer_hash": false,
         "allowed_version_ranges": []
     }
 }

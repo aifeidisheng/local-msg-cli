@@ -159,6 +159,108 @@ class WechatVersionGuardTests(unittest.TestCase):
 
         self.assertTrue(result.ok, result.reason_text)
 
+    def test_macos_update_disabled_requirement_passes_when_both_flags_false(self):
+        with tempfile.TemporaryDirectory() as td, \
+             patch.object(guard.platform, "system", return_value="Darwin"), \
+             patch.object(guard, "_process_paths", return_value=[]), \
+             patch.object(
+                 guard,
+                 "_read_macos_update_settings",
+                 return_value={
+                     "prefs_path": "/tmp/com.tencent.xinWeChat.plist",
+                     "enable_automatic_checks": False,
+                     "automatically_update": False,
+                     "update_disabled": True,
+                 },
+             ):
+            app_path = _make_macos_app(td)
+            cfg = {
+                "wechat_app_path": app_path,
+                "version_guard": {
+                    "enabled": True,
+                    "require_update_disabled": True,
+                    "allowed_version_ranges": [
+                        {
+                            "platform": "darwin",
+                            "min_version": "4.0.18",
+                            "max_version": "4.0.18",
+                        }
+                    ],
+                },
+            }
+
+            result = guard.check_version(cfg)
+
+        self.assertTrue(result.ok, result.reason_text)
+
+    def test_macos_update_disabled_requirement_fails_when_auto_update_enabled(self):
+        with tempfile.TemporaryDirectory() as td, \
+             patch.object(guard.platform, "system", return_value="Darwin"), \
+             patch.object(guard, "_process_paths", return_value=[]), \
+             patch.object(
+                 guard,
+                 "_read_macos_update_settings",
+                 return_value={
+                     "prefs_path": "/tmp/com.tencent.xinWeChat.plist",
+                     "enable_automatic_checks": True,
+                     "automatically_update": True,
+                     "update_disabled": False,
+                 },
+             ):
+            app_path = _make_macos_app(td)
+            cfg = {
+                "wechat_app_path": app_path,
+                "version_guard": {
+                    "enabled": True,
+                    "require_update_disabled": True,
+                    "allowed_version_ranges": [
+                        {
+                            "platform": "darwin",
+                            "min_version": "4.0.18",
+                            "max_version": "4.0.18",
+                        }
+                    ],
+                },
+            }
+
+            result = guard.check_version(cfg)
+
+        self.assertFalse(result.ok)
+        self.assertIn("自动更新未关闭", result.reason_text)
+
+    def test_non_macos_update_disabled_requirement_fails_closed(self):
+        cfg = {
+            "wechat_app_path": r"C:\Program Files\Tencent\Weixin\Weixin.exe",
+            "version_guard": {
+                "enabled": True,
+                "require_update_disabled": True,
+                "allowed_version_ranges": [
+                    {
+                        "platform": "windows",
+                        "min_version": "4.0.18",
+                        "max_version": "4.0.18",
+                    }
+                ],
+            },
+        }
+
+        with patch.object(guard.platform, "system", return_value="Windows"), \
+             patch.object(
+                 guard,
+                 "_read_windows_app",
+                 return_value={
+                     "platform": "windows",
+                     "app_path": r"C:\Program Files\Tencent\Weixin\Weixin.exe",
+                     "short_version": "4.0.18",
+                     "build_version": "23110",
+                 },
+             ), \
+             patch.object(os.path, "exists", return_value=True):
+            result = guard.check_version(cfg)
+
+        self.assertFalse(result.ok)
+        self.assertIn("未实现自动升级状态检测", result.reason_text)
+
 
 if __name__ == "__main__":
     unittest.main()

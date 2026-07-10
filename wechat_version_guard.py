@@ -6,7 +6,6 @@ missing app path, or out-of-range version blocks business actions.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import platform
@@ -107,6 +106,37 @@ def _read_macos_app(app_path: str) -> Dict[str, Any]:
         "short_version": str(info.get("CFBundleShortVersionString", "")),
         "build_version": str(info.get("CFBundleVersion", "")),
         "plist_path": plist_path,
+    }
+
+
+def _macos_update_preferences_path(app_path: str) -> str:
+    # Sandboxed macOS WeChat persists Sparkle update preferences here.
+    home = os.path.expanduser("~")
+    return os.path.join(
+        home,
+        "Library",
+        "Containers",
+        "com.tencent.xinWeChat",
+        "Data",
+        "Library",
+        "Preferences",
+        "com.tencent.xinWeChat.plist",
+    )
+
+
+def _read_macos_update_settings(app_path: str) -> Dict[str, Any]:
+    prefs_path = _macos_update_preferences_path(app_path)
+    with open(prefs_path, "rb") as f:
+        prefs = plistlib.load(f)
+    checks_enabled = prefs.get("SUEnableAutomaticChecks")
+    auto_update_enabled = prefs.get("SUAutomaticallyUpdate")
+    if not isinstance(checks_enabled, bool) or not isinstance(auto_update_enabled, bool):
+        raise RuntimeError("微信自动更新偏好缺失或格式异常")
+    return {
+        "prefs_path": prefs_path,
+        "enable_automatic_checks": checks_enabled,
+        "automatically_update": auto_update_enabled,
+        "update_disabled": (not checks_enabled) and (not auto_update_enabled),
     }
 
 
@@ -270,14 +300,6 @@ def _matches_allowed_range(detected: Dict[str, Any], allowed_range: Dict[str, An
     return bool(min_version or max_version)
 
 
-def _sha256_file(path: str) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def check_version(cfg: Dict[str, Any]) -> VersionCheckResult:
     guard = _guard_config(cfg)
     if not is_enabled(cfg):
@@ -306,30 +328,19 @@ def check_version(cfg: Dict[str, Any]) -> VersionCheckResult:
             f"{detected.get('short_version') or '?'}"
         )
 
-    if detected and guard.get("require_exact_app_path", True):
-        paths = _process_paths(cfg)
-        details["process_paths"] = paths
-        if paths and not any(_same_app_path(str(detected.get("app_path") or ""), p) for p in paths):
-            reasons.append("运行中的微信进程路径与配置的安装路径不一致")
-        elif not paths and guard.get("require_running_process_path", False):
-            reasons.append("未检测到运行中的微信进程路径")
-
     if guard.get("require_update_disabled", False):
-        reasons.append("当前版本未实现自动升级状态的可靠检测")
-
-    if guard.get("require_installer_hash", False):
-        installer_path = _expand_path(str(cfg.get("installer_path") or guard.get("installer_path") or ""))
-        expected = str(cfg.get("installer_sha256") or guard.get("installer_sha256") or "").lower()
-        details["installer_path"] = installer_path
-        if not installer_path or not expected:
-            reasons.append("要求校验安装包 hash，但 installer_path 或 installer_sha256 未配置")
-        elif not os.path.exists(installer_path):
-            reasons.append(f"安装包不存在: {installer_path}")
-        else:
-            actual = _sha256_file(installer_path)
-            details["installer_sha256"] = actual
-            if actual.lower() != expected:
-                reasons.append("安装包 sha256 与配置不一致")
+        current = _platform_key()
+        if current != "darwin":
+            reasons.append(f"当前平台未实现自动升级状态检测: {current}")
+        elif detected:
+            try:
+                update_settings = _read_macos_update_settings(str(detected.get("app_path") or ""))
+                details["update_settings"] = update_settings
+                if not update_settings.get("update_disabled", False):
+                    reasons.append("当前微信自动更新未关闭")
+            except Exception as exc:
+                details["update_settings_error"] = str(exc)
+                reasons.append(f"读取微信自动更新状态失败: {exc}")
 
     return VersionCheckResult(enabled=True, ok=not reasons, reasons=reasons, details=details)
 
@@ -348,13 +359,18 @@ def format_report(result: VersionCheckResult) -> str:
                 f"  build         = {detected.get('build_version') or '?'}",
             ]
         )
-    if result.details.get("process_paths") is not None:
-        paths = result.details.get("process_paths") or []
-        lines.append(f"  process_path  = {paths[0] if paths else '未检测到'}")
-    if result.details.get("installer_sha256"):
-        lines.append(f"  installer_sha256 = {result.details['installer_sha256']}")
     if result.reasons:
         lines.append("  reasons       = " + "；".join(result.reasons))
+    update_settings = result.details.get("update_settings") or {}
+    if update_settings:
+        lines.append(
+            "  auto_update   = "
+            + (
+                "disabled"
+                if update_settings.get("update_disabled")
+                else "enabled"
+            )
+        )
     return "\n".join(lines)
 
 

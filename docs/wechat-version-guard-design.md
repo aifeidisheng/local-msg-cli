@@ -40,14 +40,10 @@
   "version_guard": {
     "enabled": true,
     "block_on_unknown_version": true,
-    "require_exact_app_path": true,
-    "require_running_process_path": false,
     "require_update_disabled": false,
-    "require_installer_hash": false,
     "allowed_version_ranges": [
       {
         "platform": "darwin",
-        "bundle_id": "com.tencent.xinWeChat",
         "min_version": "4.0.18",
         "max_version": "4.0.18"
       }
@@ -75,15 +71,11 @@
 
 - `version_guard.enabled`: 是否启用版本门禁。生产环境必须为 `true`。
 - `allowed_version_ranges`: 允许的版本区间列表。每条规则至少应包含 `min_version` / `max_version` 之一；单一版本可将两者配置成相同值。
-- `bundle_id`: 可选应用身份约束，用于避免误识别成其他包。
 - `wechat_app_path`: 本机实际安装路径，保存在本地 `config.json`。可留空让程序尝试从运行中的微信进程自动发现；如需固定某台机器的安装位置再填写。macOS 为 `.app` bundle，Windows 为 `Weixin.exe`。
-- `installer_path`: 受控旧版安装包路径，建议保存在本地 `config.json`，仅用于运维诊断和安装包 hash 校验。
-- `installer_sha256`: 受控旧版安装包 sha256，建议保存在本地 `config.json`。
+- `installer_path`: 受控旧版安装包路径，可选保存在本地 `config.json` 供运维记录使用，不参与门禁判定。
+- `installer_sha256`: 受控旧版安装包 sha256，可选保存在本地 `config.json` 供运维记录使用，不参与门禁判定。
 - `build_version`: 当前仅作为 `doctor` 输出里的诊断信息保留，不作为主门禁条件。
-- `require_exact_app_path`: 校验运行中微信进程路径是否匹配配置路径。
-- `require_running_process_path`: 要求检测到运行中进程路径。默认关闭，避免 `serve` 前未启动微信时误阻断；严格部署可开启。
-- `require_update_disabled`: 自动升级状态强校验。当前实现不可靠读取该状态，开启后会拒绝执行。
-- `require_installer_hash`: 每次门禁时校验安装包 hash。安装包很大时会增加启动成本，建议只在 `doctor` 或安装流程中开启。
+- `require_update_disabled`: 自动升级状态强校验。当前已支持 macOS：读取 `~/Library/Containers/com.tencent.xinWeChat/Data/Library/Preferences/com.tencent.xinWeChat.plist` 中的 `SUEnableAutomaticChecks` 与 `SUAutomaticallyUpdate`；只有两者都为 `false` 才算关闭。其他平台暂未实现。
 
 ## 版本读取策略
 
@@ -92,7 +84,7 @@ macOS：
 - 读取 `WeChat.app/Contents/Info.plist`。
 - 校验 `CFBundleIdentifier`、`CFBundleShortVersionString`，并保留 `CFBundleVersion` 作为诊断信息。
 - 若 `wechat_app_path` 留空，尝试读取运行中 `WeChat` 进程路径并定位 `.app` bundle。
-- 若配置了 `wechat_app_path`，可选确认运行中进程与该路径属于同一个 `.app` bundle。
+- 若配置了 `wechat_app_path`，当前主要用于辅助定位本机微信安装位置，不再作为强制拒执行条件。
 
 Windows：
 
@@ -112,10 +104,8 @@ Linux：
 - 未配置 `wechat_app_path`，且未能从运行中的微信进程自动发现安装路径。
 - 安装路径不存在。
 - 版本读取失败。
-- `bundle_id` 不匹配，或 `short_version` 不在任一允许区间内。
-- 要求运行中进程路径校验，但进程路径缺失或不匹配。
-- 要求自动升级状态校验，但当前平台无法可靠确认。
-- 要求安装包 hash 校验，但安装包缺失或 hash 不一致。
+- `short_version` 不在任一允许区间内。
+- 要求自动升级状态校验，但当前平台暂未实现。
 
 ## 命令行为
 
@@ -142,7 +132,6 @@ Linux：
   bundle_id     = com.tencent.xinWeChat
   version       = 4.0.18
   build         = 23110
-  process_path  = /Applications/WeChat.app/Contents/MacOS/WeChat
 ```
 
 失败示例：
@@ -164,7 +153,7 @@ Linux：
 ## 受控安装流程
 
 1. 将旧版微信安装包放入受控目录。
-2. 计算安装包 sha256，并写入 `installer_sha256`。
+2. 如需留档，可计算安装包 sha256 并写入本机 `config.json`。
 3. 退出微信。
 4. 安装指定版本。
 5. macOS 如需读取进程内存，按现有流程重签名微信。
@@ -174,7 +163,7 @@ Linux：
 
 ## 自动升级策略
 
-- 优先在微信客户端设置中关闭自动更新。
+- 优先在微信客户端设置中关闭自动更新。macOS 当前会读取本地偏好里的 `SUEnableAutomaticChecks` 与 `SUAutomaticallyUpdate` 作为门禁依据。
 - 多人或受管设备建议用设备管理策略限制用户自行升级。
 - 不建议删除 updater、修改微信二进制或依赖域名屏蔽作为主控制手段。
 - 即使自动升级开关已关闭，工具仍必须每次执行前校验真实版本。

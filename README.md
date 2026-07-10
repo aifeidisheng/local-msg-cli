@@ -121,14 +121,10 @@ Cloud Runtime 无法连接用户本机的 `localhost`，使用本数据源的任
   "version_guard": {
     "enabled": true,
     "block_on_unknown_version": true,
-    "require_exact_app_path": true,
-    "require_running_process_path": false,
     "require_update_disabled": false,
-    "require_installer_hash": false,
     "allowed_version_ranges": [
       {
         "platform": "darwin",
-        "bundle_id": "com.tencent.xinWeChat",
         "min_version": "4.0.18",
         "max_version": "4.0.18"
       }
@@ -137,7 +133,7 @@ Cloud Runtime 无法连接用户本机的 `localhost`，使用本数据源的任
 }
 ```
 
-生产环境应启用 `version_guard.enabled=true` 并填写 `allowed_version_ranges`。当只允许单一版本时，可把 `min_version` 和 `max_version` 配成相同值；如果后续确认多个连续版本都安全，再适当放宽区间。共享版本规则建议提交 `version-guard.policy.json`，本机 `config.json` 继续只保存 `db_dir`、key、本机路径等运行态信息。`wechat_app_path`、`installer_path`、`installer_sha256` 仍然支持放在本机 `config.json` 中；`wechat_app_path` 也可留空让程序尝试从运行中的微信进程自动发现。`build_version` 当前只作为诊断信息展示，不作为主门禁条件。启用后，`serve`、`init`、`decrypt`、`export`、`all`、`decode-images` 会在任何密钥提取、解密或查询前校验真实微信版本；版本未知或不匹配会直接拒绝执行。`python main.py doctor` 可用于安装后诊断。详细设计见 [docs/wechat-version-guard-design.md](docs/wechat-version-guard-design.md)。
+生产环境应启用 `version_guard.enabled=true` 并填写 `allowed_version_ranges`。当只允许单一版本时，可把 `min_version` 和 `max_version` 配成相同值；如果后续确认多个连续版本都安全，再适当放宽区间。共享版本规则建议提交 `version-guard.policy.json`，本机 `config.json` 继续只保存 `db_dir`、key、本机路径等运行态信息。`wechat_app_path`、`installer_path`、`installer_sha256` 仍然支持放在本机 `config.json` 中，但默认门禁只关注真实版本号，不再强制要求运行中的微信必须来自某个固定安装目录，也不再依赖安装包 hash 校验；`wechat_app_path` 留空时程序也会尝试从运行中的微信进程自动发现。`build_version` 当前只作为诊断信息展示，不作为主门禁条件。`require_update_disabled=true` 现在在 macOS 上会读取微信本地偏好里的自动更新开关，要求“自动检查更新”和“自动自动安装更新”都处于关闭状态；其他平台暂未实现。启用后，`serve`、`init`、`decrypt`、`export`、`all`、`decode-images` 会在任何密钥提取、解密或查询前校验真实微信版本；版本未知或不匹配会直接拒绝执行。`python main.py doctor` 可用于安装后诊断。详细设计见 [docs/wechat-version-guard-design.md](docs/wechat-version-guard-design.md)。
 
 各平台默认路径：
 
