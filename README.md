@@ -18,7 +18,7 @@
 ## 环境要求
 
 - Python 3.10+
-- 白名单内的 WeChat 指定版本正在运行
+- 允许区间内的 WeChat 版本正在运行
 - macOS 需 Xcode Command Line Tools: `xcode-select --install`
 - 读取进程内存需要管理员/root 权限
 
@@ -111,7 +111,7 @@ Cloud Runtime 无法连接用户本机的 `localhost`，使用本数据源的任
   "decrypted_dir": "decrypted",
   "decoded_image_dir": "decoded_images",
   "wechat_process": "WeChat",
-  "wechat_app_path": "/Applications/WeChat.app",
+  "wechat_app_path": "",
   "installer_path": "/path/to/WeChat-allowed-version.dmg",
   "installer_sha256": "expected_sha256_here",
   "version_guard": {
@@ -121,20 +121,19 @@ Cloud Runtime 无法连接用户本机的 `localhost`，使用本数据源的任
     "require_running_process_path": false,
     "require_update_disabled": false,
     "require_installer_hash": false,
-    "allowed_versions": [
+    "allowed_version_ranges": [
       {
         "platform": "darwin",
-        "app_path": "/Applications/WeChat.app",
         "bundle_id": "com.tencent.xinWeChat",
-        "short_version": "4.0.18",
-        "build_version": "23110"
+        "min_version": "4.0.18",
+        "max_version": "4.0.18"
       }
     ]
   }
 }
 ```
 
-生产环境应启用 `version_guard.enabled=true` 并填写精确白名单版本。启用后，`serve`、`init`、`decrypt`、`export`、`all`、`decode-images` 会在任何密钥提取、解密或查询前校验真实微信安装路径和版本；版本未知或不匹配会直接拒绝执行。`python main.py doctor` 可用于安装后诊断。详细设计见 [docs/wechat-version-guard-design.md](docs/wechat-version-guard-design.md)。
+生产环境应启用 `version_guard.enabled=true` 并填写 `allowed_version_ranges`。当只允许单一版本时，可把 `min_version` 和 `max_version` 配成相同值；如果后续确认多个连续版本都安全，再适当放宽区间。`wechat_app_path` 是本机安装路径，可留空让程序尝试从运行中的微信进程自动发现；如需固定某台机器的安装位置再填写。`build_version` 当前只作为诊断信息展示，不作为主门禁条件。启用后，`serve`、`init`、`decrypt`、`export`、`all`、`decode-images` 会在任何密钥提取、解密或查询前校验真实微信版本；版本未知或不匹配会直接拒绝执行。`python main.py doctor` 可用于安装后诊断。详细设计见 [docs/wechat-version-guard-design.md](docs/wechat-version-guard-design.md)。
 
 各平台默认路径：
 

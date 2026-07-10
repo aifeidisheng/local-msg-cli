@@ -105,7 +105,7 @@ if [ ! -f config.json ]; then
     "decrypted_dir": "decrypted",
     "decoded_image_dir": "decoded_images",
     "wechat_process": "WeChat",
-    "wechat_app_path": "/Applications/WeChat.app",
+    "wechat_app_path": "",
     "installer_path": "",
     "installer_sha256": "",
     "version_guard": {
@@ -115,7 +115,7 @@ if [ ! -f config.json ]; then
         "require_running_process_path": false,
         "require_update_disabled": false,
         "require_installer_hash": false,
-        "allowed_versions": []
+        "allowed_version_ranges": []
     },
     "__comment_db_dir": "各平台默认路径见 README.md"
 }

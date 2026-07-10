@@ -14,12 +14,11 @@
         "require_running_process_path": false,
         "require_update_disabled": false,
         "require_installer_hash": false,
-        "allowed_versions": [
+        "allowed_version_ranges": [
             {
                 "platform": "windows",
-                "app_path": "C:\\Program Files\\Tencent\\Weixin\\Weixin.exe",
-                "short_version": "4.0.18",
-                "build_version": "23110"
+                "min_version": "4.0.18",
+                "max_version": "4.0.18"
             }
         ]
     }

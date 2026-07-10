@@ -244,7 +244,7 @@ def print_usage():
     print("  python main.py decode-images --help  查看 decode-images 全部选项")
     print("  python main.py export         解密 + 批量导出聊天记录")
     print("  python main.py all            从零到完成：密钥 → 解密 → 导出")
-    print("  python main.py doctor         检查微信安装路径、版本白名单和门禁状态")
+    print("  python main.py doctor         检查微信安装路径、版本区间门禁和门禁状态")
     print("  python main.py status         显示当前状态和磁盘用量")
 
 

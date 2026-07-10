@@ -48,7 +48,7 @@ _DEFAULT = {
     "decrypted_dir": "decrypted",
     "decoded_image_dir": "decoded_images",
     "wechat_process": _DEFAULT_PROCESS,
-    "wechat_app_path": "/Applications/WeChat.app" if _SYSTEM == "darwin" else "",
+    "wechat_app_path": "",
     "installer_path": "",
     "installer_sha256": "",
     "version_guard": {
@@ -58,7 +58,7 @@ _DEFAULT = {
         "require_running_process_path": False,
         "require_update_disabled": False,
         "require_installer_hash": False,
-        "allowed_versions": [],
+        "allowed_version_ranges": [],
     },
 }
 

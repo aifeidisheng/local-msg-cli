@@ -2,11 +2,11 @@
 
 ## 背景
 
-本项目依赖本机微信客户端的数据结构、数据库布局和进程内密钥形态。不同微信版本之间这些行为可能变化，继续在非指定版本上执行会带来账号风险、解密失败和数据结构不兼容风险。因此项目需要从“检测到微信即可执行”改为“指定版本明确通过才允许执行”。
+本项目依赖本机微信客户端的数据结构、数据库布局和进程内密钥形态。不同微信版本之间这些行为可能变化，继续在非指定版本上执行会带来账号风险、解密失败和数据结构不兼容风险。因此项目需要从“检测到微信即可执行”改为“命中指定版本区间才允许执行”。
 
 ## 目标
 
-- 只允许白名单中的微信客户端版本执行业务命令。
+- 只允许指定版本区间内的微信客户端执行业务命令。
 - 支持指定微信安装路径，避免误检测其他副本。
 - 支持记录旧版安装包路径和 sha256，便于受控重装和运维验包。
 - 版本不匹配、版本未知、路径不存在或检测失败时拒绝执行。
@@ -26,8 +26,8 @@
 采用三层控制：
 
 1. 受控安装：使用内部保存的旧版安装包，安装前校验 sha256，安装后校验客户端版本。
-2. 配置白名单：在 `config.json` 中声明允许的平台、安装路径、版本号和构建号。
-3. 运行时门禁：每次执行业务命令前读取真实安装信息，只有白名单匹配才继续。
+2. 配置版本区间：在 `config.json` 中声明允许的平台、版本区间和应用身份。
+3. 运行时门禁：每次执行业务命令前读取真实安装信息，只有命中允许区间才继续。
 
 关闭自动升级是运维要求，但不是最终判断依据。最终边界是运行时读取到的真实客户端版本。
 
@@ -37,7 +37,7 @@
 
 ```json
 {
-  "wechat_app_path": "/Applications/WeChat.app",
+  "wechat_app_path": "",
   "installer_path": "/opt/wechat-installers/WeChat-4.0.18.dmg",
   "installer_sha256": "expected_sha256_here",
   "version_guard": {
@@ -47,13 +47,12 @@
     "require_running_process_path": false,
     "require_update_disabled": false,
     "require_installer_hash": false,
-    "allowed_versions": [
+    "allowed_version_ranges": [
       {
         "platform": "darwin",
-        "app_path": "/Applications/WeChat.app",
         "bundle_id": "com.tencent.xinWeChat",
-        "short_version": "4.0.18",
-        "build_version": "23110"
+        "min_version": "4.0.18",
+        "max_version": "4.0.18"
       }
     ]
   }
@@ -63,10 +62,12 @@
 字段说明：
 
 - `version_guard.enabled`: 是否启用版本门禁。生产环境必须为 `true`。
-- `allowed_versions`: 精确白名单。不得使用 `4.x`、`>=4.0` 这类范围表达。
-- `wechat_app_path`: 实际安装路径。macOS 为 `.app` bundle，Windows 为 `Weixin.exe`。
+- `allowed_version_ranges`: 允许的版本区间列表。每条规则至少应包含 `min_version` / `max_version` 之一；单一版本可将两者配置成相同值。
+- `bundle_id`: 可选应用身份约束，用于避免误识别成其他包。
+- `wechat_app_path`: 本机实际安装路径。可留空让程序尝试从运行中的微信进程自动发现；如需固定某台机器的安装位置再填写。macOS 为 `.app` bundle，Windows 为 `Weixin.exe`。
 - `installer_path`: 受控旧版安装包路径，仅用于运维诊断和安装包 hash 校验。
 - `installer_sha256`: 受控旧版安装包 sha256。
+- `build_version`: 当前仅作为 `doctor` 输出里的诊断信息保留，不作为主门禁条件。
 - `require_exact_app_path`: 校验运行中微信进程路径是否匹配配置路径。
 - `require_running_process_path`: 要求检测到运行中进程路径。默认关闭，避免 `serve` 前未启动微信时误阻断；严格部署可开启。
 - `require_update_disabled`: 自动升级状态强校验。当前实现不可靠读取该状态，开启后会拒绝执行。
@@ -77,8 +78,9 @@
 macOS：
 
 - 读取 `WeChat.app/Contents/Info.plist`。
-- 校验 `CFBundleIdentifier`、`CFBundleShortVersionString`、`CFBundleVersion`。
-- 可选读取运行中 `WeChat` 进程路径，确认与 `wechat_app_path` 属于同一个 `.app` bundle。
+- 校验 `CFBundleIdentifier`、`CFBundleShortVersionString`，并保留 `CFBundleVersion` 作为诊断信息。
+- 若 `wechat_app_path` 留空，尝试读取运行中 `WeChat` 进程路径并定位 `.app` bundle。
+- 若配置了 `wechat_app_path`，可选确认运行中进程与该路径属于同一个 `.app` bundle。
 
 Windows：
 
@@ -87,18 +89,18 @@ Windows：
 
 Linux：
 
-- 发行形式差异较大，当前支持通过配置提供 `wechat_version.short_version` 和 `build_version`。
+- 发行形式差异较大，当前支持通过配置提供 `wechat_version.short_version`。
 - 后续可按具体发行包补充自动读取。
 
 ## 拒执行规则
 
 启用 `version_guard.enabled=true` 后，以下任一情况拒绝执行：
 
-- 未配置 `allowed_versions`。
-- 未配置 `wechat_app_path` 且白名单中也没有 `app_path`。
+- 未配置 `allowed_version_ranges`。
+- 未配置 `wechat_app_path`，且未能从运行中的微信进程自动发现安装路径。
 - 安装路径不存在。
 - 版本读取失败。
-- `bundle_id`、`short_version`、`build_version` 或 `app_path` 与白名单不匹配。
+- `bundle_id` 不匹配，或 `short_version` 不在任一允许区间内。
 - 要求运行中进程路径校验，但进程路径缺失或不匹配。
 - 要求自动升级状态校验，但当前平台无法可靠确认。
 - 要求安装包 hash 校验，但安装包缺失或 hash 不一致。
@@ -139,8 +141,8 @@ Linux：
   bundle_id     = com.tencent.xinWeChat
   version       = 4.0.20
   build         = 23897
-  reasons       = 当前微信版本不在白名单: 4.0.20 (23897)
-[!] 非指定微信版本，拒绝执行。请安装白名单版本后重试。
+  reasons       = 当前微信版本不在允许区间: 4.0.20
+[!] 非指定微信版本，拒绝执行。请安装允许区间内的版本后重试。
 ```
 
 ## MCP Server 运行期控制
@@ -167,11 +169,10 @@ Linux：
 
 ## 测试要求
 
-- 白名单版本匹配时通过。
+- 版本落在允许区间内时通过。
 - 版本号不匹配时拒绝。
 - 版本读取失败时拒绝。
 - `version_guard.enabled=false` 时兼容旧配置。
 - `doctor` 能输出明确诊断。
 - MCP 工具调用前会执行版本门禁。
 - 主业务命令在门禁失败时不进入密钥提取、解密或查询逻辑。
-

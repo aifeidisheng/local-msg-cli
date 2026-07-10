@@ -1,7 +1,7 @@
 """WeChat client version guard.
 
 The guard is intentionally fail-closed once enabled: an unknown version,
-missing app path, or mismatched allow-list entry blocks business actions.
+missing app path, or out-of-range version blocks business actions.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import json
 import os
 import platform
 import plistlib
+import re
 import subprocess
 import sys
 import time
@@ -61,9 +62,9 @@ def _platform_key() -> str:
     return system
 
 
-def _first_allowed_app_path(allowed_versions: Iterable[Dict[str, Any]]) -> str:
+def _first_allowed_app_path(entries: Iterable[Dict[str, Any]]) -> str:
     current = _platform_key()
-    for item in allowed_versions:
+    for item in entries:
         if item.get("platform") and str(item.get("platform")).lower() != current:
             continue
         app_path = item.get("app_path")
@@ -75,7 +76,13 @@ def _first_allowed_app_path(allowed_versions: Iterable[Dict[str, Any]]) -> str:
 def _configured_app_path(cfg: Dict[str, Any], guard: Dict[str, Any]) -> str:
     app_path = cfg.get("wechat_app_path") or guard.get("wechat_app_path")
     if not app_path:
+        app_path = _first_allowed_app_path(guard.get("allowed_version_ranges") or [])
+    if not app_path:
         app_path = _first_allowed_app_path(guard.get("allowed_versions") or [])
+    if not app_path:
+        paths = _process_paths(cfg)
+        if paths:
+            app_path = paths[0]
     return _expand_path(str(app_path)) if app_path else ""
 
 
@@ -143,13 +150,15 @@ def read_installed_version(cfg: Dict[str, Any]) -> Dict[str, Any]:
     guard = _guard_config(cfg)
     app_path = _configured_app_path(cfg, guard)
     if not app_path:
-        raise RuntimeError("未配置 wechat_app_path 或 allowed_versions[].app_path")
-    if not os.path.exists(app_path):
-        raise RuntimeError(f"微信安装路径不存在: {app_path}")
+        raise RuntimeError("未配置 wechat_app_path，且未能从运行中的微信进程自动发现安装路径")
 
     current = _platform_key()
     if current == "darwin":
+        if not os.path.exists(_macos_bundle_path(app_path)):
+            raise RuntimeError(f"微信安装路径不存在: {app_path}")
         return _read_macos_app(app_path)
+    if not os.path.exists(app_path):
+        raise RuntimeError(f"微信安装路径不存在: {app_path}")
     if current == "windows":
         return _read_windows_app(app_path)
     if current == "linux":
@@ -182,9 +191,36 @@ def _same_app_path(expected: str, actual: str) -> bool:
     return os.path.realpath(expected_bundle) == os.path.realpath(actual_bundle)
 
 
+def _allowed_version_ranges(guard: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw = guard.get("allowed_version_ranges") or []
+    return [item for item in raw if isinstance(item, dict)]
+
+
 def _allowed_versions(guard: Dict[str, Any]) -> List[Dict[str, Any]]:
     raw = guard.get("allowed_versions") or []
     return [item for item in raw if isinstance(item, dict)]
+
+
+def _version_tuple(version: str) -> Optional[tuple]:
+    parts = re.findall(r"\d+", str(version or ""))
+    if not parts:
+        return None
+    return tuple(int(part) for part in parts)
+
+
+def _compare_versions(left: str, right: str) -> Optional[int]:
+    left_tuple = _version_tuple(left)
+    right_tuple = _version_tuple(right)
+    if left_tuple is None or right_tuple is None:
+        return None
+    width = max(len(left_tuple), len(right_tuple))
+    left_norm = left_tuple + (0,) * (width - len(left_tuple))
+    right_norm = right_tuple + (0,) * (width - len(right_tuple))
+    if left_norm < right_norm:
+        return -1
+    if left_norm > right_norm:
+        return 1
+    return 0
 
 
 def _matches_allowed(detected: Dict[str, Any], allowed: Dict[str, Any]) -> bool:
@@ -199,6 +235,39 @@ def _matches_allowed(detected: Dict[str, Any], allowed: Dict[str, Any]) -> bool:
     if app_path and not _same_app_path(_expand_path(str(app_path)), str(detected.get("app_path") or "")):
         return False
     return bool(allowed.get("short_version") or allowed.get("build_version"))
+
+
+def _matches_allowed_range(detected: Dict[str, Any], allowed_range: Dict[str, Any]) -> bool:
+    current = _platform_key()
+    if allowed_range.get("platform") and str(allowed_range.get("platform")).lower() != current:
+        return False
+    bundle_id = allowed_range.get("bundle_id")
+    if bundle_id and str(detected.get("bundle_id", "")) != str(bundle_id):
+        return False
+    app_path = allowed_range.get("app_path")
+    if app_path and not _same_app_path(_expand_path(str(app_path)), str(detected.get("app_path") or "")):
+        return False
+
+    detected_version = str(detected.get("short_version") or "")
+    if not detected_version:
+        return False
+
+    min_version = allowed_range.get("min_version") or allowed_range.get("start_version")
+    max_version = allowed_range.get("max_version") or allowed_range.get("end_version")
+    exact_version = allowed_range.get("version") or allowed_range.get("short_version")
+
+    if exact_version:
+        cmp_exact = _compare_versions(detected_version, str(exact_version))
+        return cmp_exact == 0
+    if min_version:
+        cmp_min = _compare_versions(detected_version, str(min_version))
+        if cmp_min is None or cmp_min < 0:
+            return False
+    if max_version:
+        cmp_max = _compare_versions(detected_version, str(max_version))
+        if cmp_max is None or cmp_max > 0:
+            return False
+    return bool(min_version or max_version)
 
 
 def _sha256_file(path: str) -> str:
@@ -216,9 +285,10 @@ def check_version(cfg: Dict[str, Any]) -> VersionCheckResult:
 
     reasons: List[str] = []
     details: Dict[str, Any] = {}
+    ranges = _allowed_version_ranges(guard)
     allowed = _allowed_versions(guard)
-    if not allowed:
-        reasons.append("version_guard.enabled=true 但未配置 allowed_versions")
+    if not ranges and not allowed:
+        reasons.append("version_guard.enabled=true 但未配置 allowed_version_ranges")
 
     try:
         detected = read_installed_version(cfg)
@@ -228,10 +298,12 @@ def check_version(cfg: Dict[str, Any]) -> VersionCheckResult:
         details["error"] = str(exc)
         reasons.append(str(exc))
 
-    if detected and allowed and not any(_matches_allowed(detected, item) for item in allowed):
+    range_match = bool(detected and ranges and any(_matches_allowed_range(detected, item) for item in ranges))
+    exact_match = bool(detected and allowed and any(_matches_allowed(detected, item) for item in allowed))
+    if detected and (ranges or allowed) and not (range_match or exact_match):
         reasons.append(
-            "当前微信版本不在白名单: "
-            f"{detected.get('short_version') or '?'} ({detected.get('build_version') or '?'})"
+            "当前微信版本不在允许区间: "
+            f"{detected.get('short_version') or '?'}"
         )
 
     if detected and guard.get("require_exact_app_path", True):
@@ -291,7 +363,7 @@ def enforce_or_exit(cfg: Dict[str, Any]) -> None:
     if result.enabled:
         print(format_report(result), flush=True)
     if result.enabled and not result.ok:
-        print("[!] 非指定微信版本，拒绝执行。请安装白名单版本后重试。", flush=True)
+        print("[!] 非指定微信版本，拒绝执行。请安装允许区间内的版本后重试。", flush=True)
         sys.exit(2)
 
 
@@ -308,4 +380,3 @@ def check_or_raise(cfg: Dict[str, Any], ttl_seconds: int = 30) -> None:
         _MCP_CACHE["expires_at"] = now + ttl_seconds
     if not result.ok:
         raise RuntimeError(f"微信版本门禁拒绝执行: {result.reason_text}")
-
