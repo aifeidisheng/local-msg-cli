@@ -134,8 +134,11 @@ def _read_macos_update_settings(app_path: str) -> Dict[str, Any]:
         raise RuntimeError("微信自动更新偏好缺失或格式异常")
     return {
         "prefs_path": prefs_path,
+        "prefs_source": "plist_file",
         "enable_automatic_checks": checks_enabled,
         "automatically_update": auto_update_enabled,
+        "last_check_time": prefs.get("SULastCheckTime"),
+        "skipped_version": prefs.get("SUSkippedVersion"),
         "update_disabled": (not checks_enabled) and (not auto_update_enabled),
     }
 
@@ -371,6 +374,12 @@ def format_report(result: VersionCheckResult) -> str:
                 else "enabled"
             )
         )
+        lines.append(f"  prefs_source  = {update_settings.get('prefs_source') or '?'}")
+        lines.append(f"  prefs_path    = {update_settings.get('prefs_path') or '?'}")
+        if update_settings.get("last_check_time"):
+            lines.append(f"  last_check    = {update_settings.get('last_check_time')}")
+        if update_settings.get("skipped_version"):
+            lines.append(f"  skipped_ver   = {update_settings.get('skipped_version')}")
     return "\n".join(lines)
 
 

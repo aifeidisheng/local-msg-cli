@@ -228,6 +228,27 @@ class WechatVersionGuardTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("自动更新未关闭", result.reason_text)
 
+    def test_macos_update_settings_reads_diagnostic_fields_from_plist_file(self):
+        with tempfile.TemporaryDirectory() as td, \
+             patch.object(guard, "_macos_update_preferences_path", return_value=os.path.join(td, "prefs.plist")):
+            prefs_path = os.path.join(td, "prefs.plist")
+            with open(prefs_path, "wb") as f:
+                plistlib.dump(
+                    {
+                        "SUEnableAutomaticChecks": True,
+                        "SUAutomaticallyUpdate": True,
+                        "SUSkippedVersion": "269110",
+                        "SULastCheckTime": "2026-07-10 18:50:54 +0000",
+                    },
+                    f,
+                )
+
+            settings = guard._read_macos_update_settings("/Applications/WeChat.app")
+
+        self.assertEqual(settings["prefs_source"], "plist_file")
+        self.assertEqual(settings["skipped_version"], "269110")
+        self.assertEqual(settings["last_check_time"], "2026-07-10 18:50:54 +0000")
+
     def test_non_macos_update_disabled_requirement_fails_closed(self):
         cfg = {
             "wechat_app_path": r"C:\Program Files\Tencent\Weixin\Weixin.exe",

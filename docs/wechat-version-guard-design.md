@@ -75,7 +75,7 @@
 - `installer_path`: 受控旧版安装包路径，可选保存在本地 `config.json` 供运维记录使用，不参与门禁判定。
 - `installer_sha256`: 受控旧版安装包 sha256，可选保存在本地 `config.json` 供运维记录使用，不参与门禁判定。
 - `build_version`: 当前仅作为 `doctor` 输出里的诊断信息保留，不作为主门禁条件。
-- `require_update_disabled`: 自动升级状态强校验。当前已支持 macOS：读取 `~/Library/Containers/com.tencent.xinWeChat/Data/Library/Preferences/com.tencent.xinWeChat.plist` 中的 `SUEnableAutomaticChecks` 与 `SUAutomaticallyUpdate`；只有两者都为 `false` 才算关闭。其他平台暂未实现。
+- `require_update_disabled`: 自动升级状态强校验。当前已支持 macOS：直接解析磁盘上的 `~/Library/Containers/com.tencent.xinWeChat/Data/Library/Preferences/com.tencent.xinWeChat.plist`，读取 `SUEnableAutomaticChecks` 与 `SUAutomaticallyUpdate`；只有两者都为 `false` 才算关闭。不要用 `defaults read` 作为门禁依据，因为它可能读到 `cfprefsd` 的过期缓存。其他平台暂未实现。
 
 ## 版本读取策略
 
@@ -133,6 +133,8 @@ Linux：
   version       = 4.0.18
   build         = 23110
 ```
+
+启用 `require_update_disabled` 后，`doctor` 还会输出 `prefs_source=plist_file`、`prefs_path`、`last_check` 和 `skipped_ver` 等诊断字段。若这些结果与 `defaults read com.tencent.xinWeChat ...` 不一致，以 `doctor`/plist 文件结果为准；`defaults` 可能被 macOS 偏好缓存误导。
 
 失败示例：
 
