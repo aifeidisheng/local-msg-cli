@@ -102,7 +102,7 @@ Cloud Runtime 无法连接用户本机的 `localhost`，使用本数据源的任
 
 ## 配置
 
-程序会自动检测微信数据目录并生成 `config.json`。如果自动检测失败，手动创建：
+程序会自动检测微信数据目录并生成 `config.json`。这个文件只建议保存本机运行配置，不建议提交到 git。手动创建时可保持最小结构：
 
 ```json
 {
@@ -110,10 +110,14 @@ Cloud Runtime 无法连接用户本机的 `localhost`，使用本数据源的任
   "keys_file": "all_keys.json",
   "decrypted_dir": "decrypted",
   "decoded_image_dir": "decoded_images",
-  "wechat_process": "WeChat",
-  "wechat_app_path": "",
-  "installer_path": "/path/to/WeChat-allowed-version.dmg",
-  "installer_sha256": "expected_sha256_here",
+  "wechat_process": "WeChat"
+}
+```
+
+如果要启用共享版本门禁，请把规则放到仓库内的 `version-guard.policy.json`：
+
+```json
+{
   "version_guard": {
     "enabled": true,
     "block_on_unknown_version": true,
@@ -133,7 +137,7 @@ Cloud Runtime 无法连接用户本机的 `localhost`，使用本数据源的任
 }
 ```
 
-生产环境应启用 `version_guard.enabled=true` 并填写 `allowed_version_ranges`。当只允许单一版本时，可把 `min_version` 和 `max_version` 配成相同值；如果后续确认多个连续版本都安全，再适当放宽区间。`wechat_app_path` 是本机安装路径，可留空让程序尝试从运行中的微信进程自动发现；如需固定某台机器的安装位置再填写。`build_version` 当前只作为诊断信息展示，不作为主门禁条件。启用后，`serve`、`init`、`decrypt`、`export`、`all`、`decode-images` 会在任何密钥提取、解密或查询前校验真实微信版本；版本未知或不匹配会直接拒绝执行。`python main.py doctor` 可用于安装后诊断。详细设计见 [docs/wechat-version-guard-design.md](docs/wechat-version-guard-design.md)。
+生产环境应启用 `version_guard.enabled=true` 并填写 `allowed_version_ranges`。当只允许单一版本时，可把 `min_version` 和 `max_version` 配成相同值；如果后续确认多个连续版本都安全，再适当放宽区间。共享版本规则建议提交 `version-guard.policy.json`，本机 `config.json` 继续只保存 `db_dir`、key、本机路径等运行态信息。`wechat_app_path`、`installer_path`、`installer_sha256` 仍然支持放在本机 `config.json` 中；`wechat_app_path` 也可留空让程序尝试从运行中的微信进程自动发现。`build_version` 当前只作为诊断信息展示，不作为主门禁条件。启用后，`serve`、`init`、`decrypt`、`export`、`all`、`decode-images` 会在任何密钥提取、解密或查询前校验真实微信版本；版本未知或不匹配会直接拒绝执行。`python main.py doctor` 可用于安装后诊断。详细设计见 [docs/wechat-version-guard-design.md](docs/wechat-version-guard-design.md)。
 
 各平台默认路径：
 

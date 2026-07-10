@@ -56,6 +56,8 @@ from collections import Counter
 
 from Crypto.Cipher import AES
 
+from config import _merge_dict, _read_raw_config
+
 # V2 .dat 文件 magic（与 decode_image.py 中 V2_MAGIC_FULL 一致）
 V2_MAGIC = bytes.fromhex("070856320807")
 
@@ -567,7 +569,7 @@ def find_image_key_macos(db_dir):
     return _find_via_bruteforce(db_dir, attach_dir, templates)
 
 
-def _save_config_atomic(config_path, config):
+def _save_config_atomic(config_path, updates):
     """原子写 config.json：tmp + os.replace 防止中断留下半截文件。
 
     若 json.dump 或 os.replace 抛错，向上抛出（让 main 给出 stacktrace
@@ -575,6 +577,7 @@ def _save_config_atomic(config_path, config):
     """
     tmp_path = config_path + ".tmp"
     try:
+        config = _merge_dict(_read_raw_config(config_path), updates)
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2, ensure_ascii=False)
         os.replace(tmp_path, config_path)
@@ -631,7 +634,10 @@ def main(config_path=None):
     xor_key, aes_key = result
     config["image_aes_key"] = aes_key
     config["image_xor_key"] = xor_key
-    _save_config_atomic(config_path, config)
+    _save_config_atomic(
+        config_path,
+        {"image_aes_key": aes_key, "image_xor_key": xor_key},
+    )
     print()
     print(f"[+] 已写入 {config_path}", flush=True)
     print("    后续 decode_image.py / MCP 图片解码工具会自动加载新密钥",

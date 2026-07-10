@@ -17,6 +17,8 @@ from ctypes import wintypes
 from Crypto.Cipher import AES
 from Crypto.Util import Padding
 
+from config import save_config_updates
+
 # Windows API constants
 PROCESS_VM_READ = 0x0010
 PROCESS_QUERY_INFORMATION = 0x0400
@@ -297,11 +299,10 @@ def main():
                 config['image_aes_key'] = aes_key
                 if xor_key is not None:
                     config['image_xor_key'] = xor_key
-                config_raw['image_aes_key'] = aes_key
+                updates = {'image_aes_key': aes_key}
                 if xor_key is not None:
-                    config_raw['image_xor_key'] = xor_key
-                with open(config_path, 'w', encoding="utf-8") as f:
-                    json.dump(config_raw, f, indent=2, ensure_ascii=False)
+                    updates['image_xor_key'] = xor_key
+                config_path = save_config_updates(updates)
                 print(f"Saved to {config_path}", flush=True)
 
                 verify_and_decrypt(attach_dir, aes_key, xor_key)

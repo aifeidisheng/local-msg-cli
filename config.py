@@ -9,6 +9,7 @@ import platform
 import sys
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+VERSION_GUARD_POLICY_FILE = "version-guard.policy.json"
 
 # 打包后 __file__ 指向临时目录，优先使用环境变量指定的 exe 所在目录。
 def _app_base_dir():
@@ -61,6 +62,92 @@ _DEFAULT = {
         "allowed_version_ranges": [],
     },
 }
+
+_PERSIST_DEFAULT = {
+    "db_dir": _DEFAULT_TEMPLATE_DIR,
+    "keys_file": "all_keys.json",
+    "decrypted_dir": "decrypted",
+    "decoded_image_dir": "decoded_images",
+    "wechat_process": _DEFAULT_PROCESS,
+}
+
+
+def _read_raw_config(config_file):
+    if not os.path.exists(config_file):
+        return {}
+    try:
+        with open(config_file, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        print(f"[!] {config_file} 格式损坏，将使用默认配置")
+        return {}
+
+
+def _write_raw_config(config_file, data):
+    with open(config_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
+
+def _merge_dict(base, updates):
+    merged = dict(base)
+    for key, value in updates.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_dict(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def save_config_updates(updates):
+    """只按增量写回 config.json，避免把运行时默认值整包落盘。"""
+    config_file = _config_file_path()
+    raw = _read_raw_config(config_file)
+    merged = _merge_dict(raw, updates)
+    _write_raw_config(config_file, merged)
+    return config_file
+
+
+def _expand_path_value(path):
+    if not path:
+        return ""
+    path = os.path.expanduser(os.path.expandvars(path))
+    if os.path.isabs(path):
+        return path
+    return os.path.join(_app_base_dir(), path)
+
+
+def _version_guard_policy_path(cfg):
+    custom = cfg.get("version_guard_policy_file", "")
+    if custom:
+        return _expand_path_value(custom)
+    candidate = os.path.join(_app_base_dir(), VERSION_GUARD_POLICY_FILE)
+    return candidate if os.path.exists(candidate) else ""
+
+
+def _normalize_version_guard_policy(data):
+    if not isinstance(data, dict):
+        return {}
+    if isinstance(data.get("version_guard"), dict):
+        return data["version_guard"]
+    policy_keys = {
+        "enabled",
+        "block_on_unknown_version",
+        "require_exact_app_path",
+        "require_running_process_path",
+        "require_update_disabled",
+        "require_installer_hash",
+        "allowed_version_ranges",
+        "allowed_versions",
+    }
+    return data if any(key in data for key in policy_keys) else {}
+
+
+def _load_version_guard_policy(cfg):
+    policy_path = _version_guard_policy_path(cfg)
+    if not policy_path:
+        return {}, ""
+    return _normalize_version_guard_policy(_read_raw_config(policy_path)), policy_path
 
 
 def _choose_candidate(candidates):
@@ -236,29 +323,24 @@ def auto_detect_db_dir():
 
 
 def load_config():
-    cfg = {}
     config_file = _config_file_path()
-    if os.path.exists(config_file):
-        try:
-            with open(config_file, encoding="utf-8") as f:
-                cfg = json.load(f)
-        except json.JSONDecodeError:
-            print(f"[!] {config_file} 格式损坏，将使用默认配置")
-            cfg = {}
+    raw_cfg = _read_raw_config(config_file)
+    cfg = dict(raw_cfg)
     # db_dir 缺失或仍为模板值时，尝试自动检测
     db_dir = cfg.get("db_dir", "")
     if not db_dir or db_dir == _DEFAULT_TEMPLATE_DIR or "your_wxid" in db_dir:
         detected = auto_detect_db_dir()
         if detected:
             print(f"[+] 自动检测到微信数据目录: {detected}")
-            cfg = {**_DEFAULT, **cfg, "db_dir": detected}
-            with open(config_file, "w", encoding="utf-8") as f:
-                json.dump(cfg, f, indent=4, ensure_ascii=False)
+            if raw_cfg:
+                save_config_updates({"db_dir": detected})
+            else:
+                _write_raw_config(config_file, _merge_dict(_PERSIST_DEFAULT, {"db_dir": detected}))
+            cfg = _merge_dict(_DEFAULT, _merge_dict(raw_cfg, {"db_dir": detected}))
             print(f"[+] 已保存到: {config_file}")
         else:
             if not os.path.exists(config_file):
-                with open(config_file, "w", encoding="utf-8") as f:
-                    json.dump(_DEFAULT, f, indent=4, ensure_ascii=False)
+                _write_raw_config(config_file, _PERSIST_DEFAULT)
             print(f"[!] 未能自动检测微信数据目录")
             print(f"    请手动编辑 {config_file} 中的 db_dir 字段")
             if _SYSTEM == "linux":
@@ -269,7 +351,13 @@ def load_config():
                 print(f"    路径可在 微信设置 → 文件管理 中找到")
             sys.exit(1)
     else:
-        cfg = {**_DEFAULT, **cfg}
+        cfg = _merge_dict(_DEFAULT, cfg)
+
+    policy_guard, policy_path = _load_version_guard_policy(cfg)
+    if policy_guard:
+        cfg["version_guard"] = _merge_dict(cfg.get("version_guard") or {}, policy_guard)
+    if policy_path:
+        cfg["version_guard_policy_path"] = policy_path
 
     # 将相对路径转为绝对路径
     base = _app_base_dir()

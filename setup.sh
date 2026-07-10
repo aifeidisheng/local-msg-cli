@@ -105,18 +105,6 @@ if [ ! -f config.json ]; then
     "decrypted_dir": "decrypted",
     "decoded_image_dir": "decoded_images",
     "wechat_process": "WeChat",
-    "wechat_app_path": "",
-    "installer_path": "",
-    "installer_sha256": "",
-    "version_guard": {
-        "enabled": false,
-        "block_on_unknown_version": true,
-        "require_exact_app_path": true,
-        "require_running_process_path": false,
-        "require_update_disabled": false,
-        "require_installer_hash": false,
-        "allowed_version_ranges": []
-    },
     "__comment_db_dir": "各平台默认路径见 README.md"
 }
 CONFIG_EOF
@@ -125,12 +113,32 @@ else
     echo "[config] 已存在（跳过）"
 fi
 
+if [ ! -f version-guard.policy.json ]; then
+    echo "[config] 生成 version-guard.policy.json 模板..."
+    cat > version-guard.policy.json << 'POLICY_EOF'
+{
+    "version_guard": {
+        "enabled": false,
+        "block_on_unknown_version": true,
+        "require_exact_app_path": true,
+        "require_running_process_path": false,
+        "require_update_disabled": false,
+        "require_installer_hash": false,
+        "allowed_version_ranges": []
+    }
+}
+POLICY_EOF
+else
+    echo "[config] version-guard.policy.json 已存在（跳过）"
+fi
+
 # ── 完成 ──────────────────────────────────────────────────────
 echo ""
 echo "========================================================"
 echo "  配置完成！下一步："
 echo ""
 echo "  1. 编辑 config.json 确认 db_dir 路径"
+echo "     如需启用版本门禁，编辑 version-guard.policy.json"
 echo "  2. 预解密 MCP 查询缓存："
 echo "     $VENV_PY main.py init"
 echo ""

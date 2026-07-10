@@ -26,7 +26,7 @@
 采用三层控制：
 
 1. 受控安装：使用内部保存的旧版安装包，安装前校验 sha256，安装后校验客户端版本。
-2. 配置版本区间：在 `config.json` 中声明允许的平台、版本区间和应用身份。
+2. 配置版本区间：在 `version-guard.policy.json` 中声明允许的平台、版本区间和应用身份。
 3. 运行时门禁：每次执行业务命令前读取真实安装信息，只有命中允许区间才继续。
 
 关闭自动升级是运维要求，但不是最终判断依据。最终边界是运行时读取到的真实客户端版本。
@@ -37,9 +37,6 @@
 
 ```json
 {
-  "wechat_app_path": "",
-  "installer_path": "/opt/wechat-installers/WeChat-4.0.18.dmg",
-  "installer_sha256": "expected_sha256_here",
   "version_guard": {
     "enabled": true,
     "block_on_unknown_version": true,
@@ -59,14 +56,29 @@
 }
 ```
 
+本机 `config.json` 继续只保存运行态配置，例如：
+
+```json
+{
+  "db_dir": "/path/to/xwechat_files/<wxid>/db_storage",
+  "keys_file": "all_keys.json",
+  "decrypted_dir": "decrypted",
+  "decoded_image_dir": "decoded_images",
+  "wechat_process": "WeChat",
+  "wechat_app_path": "",
+  "installer_path": "/opt/wechat-installers/WeChat-4.0.18.dmg",
+  "installer_sha256": "expected_sha256_here"
+}
+```
+
 字段说明：
 
 - `version_guard.enabled`: 是否启用版本门禁。生产环境必须为 `true`。
 - `allowed_version_ranges`: 允许的版本区间列表。每条规则至少应包含 `min_version` / `max_version` 之一；单一版本可将两者配置成相同值。
 - `bundle_id`: 可选应用身份约束，用于避免误识别成其他包。
-- `wechat_app_path`: 本机实际安装路径。可留空让程序尝试从运行中的微信进程自动发现；如需固定某台机器的安装位置再填写。macOS 为 `.app` bundle，Windows 为 `Weixin.exe`。
-- `installer_path`: 受控旧版安装包路径，仅用于运维诊断和安装包 hash 校验。
-- `installer_sha256`: 受控旧版安装包 sha256。
+- `wechat_app_path`: 本机实际安装路径，保存在本地 `config.json`。可留空让程序尝试从运行中的微信进程自动发现；如需固定某台机器的安装位置再填写。macOS 为 `.app` bundle，Windows 为 `Weixin.exe`。
+- `installer_path`: 受控旧版安装包路径，建议保存在本地 `config.json`，仅用于运维诊断和安装包 hash 校验。
+- `installer_sha256`: 受控旧版安装包 sha256，建议保存在本地 `config.json`。
 - `build_version`: 当前仅作为 `doctor` 输出里的诊断信息保留，不作为主门禁条件。
 - `require_exact_app_path`: 校验运行中微信进程路径是否匹配配置路径。
 - `require_running_process_path`: 要求检测到运行中进程路径。默认关闭，避免 `serve` 前未启动微信时误阻断；严格部署可开启。
