@@ -17,6 +17,7 @@ import os
 import platform
 import subprocess
 import sys
+import argparse
 
 print = functools.partial(print, flush=True)
 
@@ -245,7 +246,42 @@ def print_usage():
     print("  python main.py export         解密 + 批量导出聊天记录")
     print("  python main.py all            从零到完成：密钥 → 解密 → 导出")
     print("  python main.py doctor         检查微信安装路径、版本区间门禁和门禁状态")
+    print("  python main.py update         检查并执行 git fast-forward 更新")
+    print("  python main.py update --check 只检查是否存在远端更新")
     print("  python main.py status         显示当前状态和磁盘用量")
+
+
+def _update_exit_code(status, check_only=False):
+    if status in ("up_to_date", "updated"):
+        return 0
+    if check_only and status == "update_available":
+        return 3
+    return 2
+
+
+def _run_update_command(check_only=False):
+    from repo_update import apply_updates, check_for_updates, format_update_report
+
+    result = check_for_updates() if check_only else apply_updates()
+    print(format_update_report(result))
+    return result
+
+
+def _maybe_auto_update_before_serve(argv):
+    preview = argparse.ArgumentParser(add_help=False)
+    preview.add_argument("--auto-update", action="store_true")
+    args, _ = preview.parse_known_args(argv)
+    if not args.auto_update:
+        return
+
+    print("[*] 启动前检查仓库更新...")
+    result = _run_update_command(check_only=False)
+    if result.status == "updated":
+        print("[*] 已更新代码，正在重启当前进程以加载新版本...")
+        os.execv(sys.executable, [sys.executable, *sys.argv])
+    if result.status not in ("up_to_date",):
+        print("[!] 自动更新未执行，继续使用当前代码启动 MCP 服务")
+        print()
 
 
 def _call_with_argv(func, argv):
@@ -273,6 +309,18 @@ def main():
     if cmd in ("status", "-s"):
         show_status()
         return
+    if cmd == "update":
+        parser = argparse.ArgumentParser(
+            prog="main.py update",
+            description="检查当前仓库与远端分支的差异，并在安全时执行 fast-forward 更新。",
+        )
+        parser.add_argument("--check", action="store_true", help="只检查，不执行更新")
+        args = parser.parse_args(sys.argv[2:])
+        result = _run_update_command(check_only=args.check)
+        sys.exit(_update_exit_code(result.status, check_only=args.check))
+
+    if cmd == "serve":
+        _maybe_auto_update_before_serve(sys.argv[2:])
 
     # 以下命令需要配置 + 微信进程
     from config import load_config
@@ -297,14 +345,17 @@ def main():
     enforce_or_exit(cfg)
 
     if cmd == "serve":
-        import argparse
-
         parser = argparse.ArgumentParser(
             prog="main.py serve",
             description="启动本机 MCP Server，使用 streamable-http 协议，默认路径为 /mcp。",
         )
         parser.add_argument("--host", default="127.0.0.1", help="监听地址，默认 127.0.0.1")
         parser.add_argument("--port", type=int, default=8765, help="监听端口，默认 8765")
+        parser.add_argument(
+            "--auto-update",
+            action="store_true",
+            help="启动前检查远端更新；满足条件时先执行 fast-forward 再自动重启",
+        )
         args = parser.parse_args(sys.argv[2:])
 
         if not os.path.exists(cfg.get("keys_file", "")):
@@ -334,8 +385,6 @@ def main():
     ensure_keys(cfg["keys_file"], cfg["db_dir"])
 
     if cmd == "init":
-        import argparse
-
         parser = argparse.ArgumentParser(
             prog="main.py init",
             description="首次使用前预解密数据库到 MCP 查询缓存，避免首次工具调用超时。",

@@ -76,12 +76,42 @@ Cloud Runtime 无法连接用户本机的 `localhost`，使用本数据源的任
 | 环境检查 | `python setup.py --check` |
 | 查看状态 | `python main.py status` |
 | 检查版本门禁 | `python main.py doctor` |
+| 检查代码更新 | `python main.py update --check` |
+| 执行代码更新 | `python main.py update` |
 | 首次预解密 MCP 缓存 | `python main.py init` |
 | 仅预解密指定数据库 | `python main.py init --target-db MSG` |
 | 启动 MCP Server | `python main.py serve --port 8765` |
+| 启动前自动更新后再起服务 | `python main.py serve --auto-update --port 8765` |
 | 解密全部数据库到目录 | `python main.py decrypt` |
 | 批量导出聊天记录 | `python export_all_chats.py` |
 | 批量解密图片 | `python main.py decode-images` |
+
+## 服务自更新
+
+如果本机 MCP 服务是直接从 git 工作区启动，可以启用启动前自动更新：
+
+```bash
+python main.py serve --auto-update --port 8765
+```
+
+更新感知规则：
+
+- 工作区必须干净；有未提交改动时拒绝自动更新
+- 当前分支必须已跟踪远端 upstream
+- 只允许 `git pull --ff-only`，不做自动合并
+- 如果本地领先远端、与远端分叉、网络拉取失败，都会跳过自动更新并继续使用当前代码启动
+
+单独检查是否有更新：
+
+```bash
+python main.py update --check
+```
+
+检查命令退出码：
+
+- `0`：已是最新
+- `3`：检测到可更新的远端提交
+- `2`：工作区不干净、分支分叉、未配置 upstream、拉取失败等不安全状态
 
 ## MCP 工具
 
