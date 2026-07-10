@@ -114,6 +114,9 @@ def main():
         print("  递归扫描文件夹下所有 .dat 文件并解密")
         sys.exit(1)
 
+    from wechat_version_guard import enforce_or_exit
+    enforce_or_exit(_cfg)
+
     source_dir = os.path.abspath(sys.argv[1])
     if not os.path.isdir(source_dir):
         print(f"目录不存在: {source_dir}")

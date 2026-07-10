@@ -48,6 +48,18 @@ _DEFAULT = {
     "decrypted_dir": "decrypted",
     "decoded_image_dir": "decoded_images",
     "wechat_process": _DEFAULT_PROCESS,
+    "wechat_app_path": "/Applications/WeChat.app" if _SYSTEM == "darwin" else "",
+    "installer_path": "",
+    "installer_sha256": "",
+    "version_guard": {
+        "enabled": False,
+        "block_on_unknown_version": True,
+        "require_exact_app_path": True,
+        "require_running_process_path": False,
+        "require_update_disabled": False,
+        "require_installer_hash": False,
+        "allowed_versions": [],
+    },
 }
 
 
@@ -274,7 +286,7 @@ def load_config():
     base = _app_base_dir()
     if cfg.get("db_dir"):
         cfg["db_dir"] = os.path.expanduser(os.path.expandvars(cfg["db_dir"]))
-    for key in ("keys_file", "decrypted_dir", "decoded_image_dir"):
+    for key in ("keys_file", "decrypted_dir", "decoded_image_dir", "wechat_app_path", "installer_path"):
         if cfg.get(key):
             cfg[key] = os.path.expanduser(os.path.expandvars(cfg[key]))
             if not os.path.isabs(cfg[key]):

@@ -103,7 +103,20 @@ if [ ! -f config.json ]; then
     "db_dir": "/path/to/your/wxid/db_storage",
     "keys_file": "all_keys.json",
     "decrypted_dir": "decrypted",
+    "decoded_image_dir": "decoded_images",
     "wechat_process": "WeChat",
+    "wechat_app_path": "/Applications/WeChat.app",
+    "installer_path": "",
+    "installer_sha256": "",
+    "version_guard": {
+        "enabled": false,
+        "block_on_unknown_version": true,
+        "require_exact_app_path": true,
+        "require_running_process_path": false,
+        "require_update_disabled": false,
+        "require_installer_hash": false,
+        "allowed_versions": []
+    },
     "__comment_db_dir": "各平台默认路径见 README.md"
 }
 CONFIG_EOF

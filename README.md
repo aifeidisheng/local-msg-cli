@@ -18,7 +18,7 @@
 ## 环境要求
 
 - Python 3.10+
-- WeChat 4.x 正在运行
+- 白名单内的 WeChat 指定版本正在运行
 - macOS 需 Xcode Command Line Tools: `xcode-select --install`
 - 读取进程内存需要管理员/root 权限
 
@@ -75,6 +75,7 @@ Cloud Runtime 无法连接用户本机的 `localhost`，使用本数据源的任
 | 配置向导 | `python setup.py` |
 | 环境检查 | `python setup.py --check` |
 | 查看状态 | `python main.py status` |
+| 检查版本门禁 | `python main.py doctor` |
 | 首次预解密 MCP 缓存 | `python main.py init` |
 | 仅预解密指定数据库 | `python main.py init --target-db MSG` |
 | 启动 MCP Server | `python main.py serve --port 8765` |
@@ -109,9 +110,31 @@ Cloud Runtime 无法连接用户本机的 `localhost`，使用本数据源的任
   "keys_file": "all_keys.json",
   "decrypted_dir": "decrypted",
   "decoded_image_dir": "decoded_images",
-  "wechat_process": "WeChat"
+  "wechat_process": "WeChat",
+  "wechat_app_path": "/Applications/WeChat.app",
+  "installer_path": "/path/to/WeChat-allowed-version.dmg",
+  "installer_sha256": "expected_sha256_here",
+  "version_guard": {
+    "enabled": true,
+    "block_on_unknown_version": true,
+    "require_exact_app_path": true,
+    "require_running_process_path": false,
+    "require_update_disabled": false,
+    "require_installer_hash": false,
+    "allowed_versions": [
+      {
+        "platform": "darwin",
+        "app_path": "/Applications/WeChat.app",
+        "bundle_id": "com.tencent.xinWeChat",
+        "short_version": "4.0.18",
+        "build_version": "23110"
+      }
+    ]
+  }
 }
 ```
+
+生产环境应启用 `version_guard.enabled=true` 并填写精确白名单版本。启用后，`serve`、`init`、`decrypt`、`export`、`all`、`decode-images` 会在任何密钥提取、解密或查询前校验真实微信安装路径和版本；版本未知或不匹配会直接拒绝执行。`python main.py doctor` 可用于安装后诊断。详细设计见 [docs/wechat-version-guard-design.md](docs/wechat-version-guard-design.md)。
 
 各平台默认路径：
 

@@ -125,6 +125,8 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python3 export_chat.py <chat_name> [output.json]")
         sys.exit(1)
+    from wechat_version_guard import enforce_or_exit
+    enforce_or_exit(mcp_server._cfg)
     chat = sys.argv[1]
     out = sys.argv[2] if len(sys.argv) > 2 else f"{chat}_export.json"
     export_chat(chat, out)

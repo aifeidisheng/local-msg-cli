@@ -654,6 +654,10 @@ if __name__ == "__main__":
         print("  解密单个 .dat 文件")
         sys.exit(1)
 
+    from config import load_config
+    from wechat_version_guard import enforce_or_exit
+    enforce_or_exit(load_config())
+
     dat_file = sys.argv[1]
     out_file = sys.argv[2] if len(sys.argv) > 2 else None
 

@@ -4,6 +4,7 @@ Local message MCP server.
 Exposes local chat contacts and message history through FastMCP streamable-http.
 """
 
+import functools
 import io
 import os, sys, json, time, sqlite3, tempfile, struct, hashlib, atexit, re, threading, subprocess
 import glob
@@ -2070,6 +2071,27 @@ def _tool_text(name):
     """FastMCP 1.x tests call decorated functions directly; FastMCP 2.x may return tool results."""
     return name
 
+
+_mcp_tool = mcp.tool
+
+
+def _guarded_tool(*decorator_args, **decorator_kwargs):
+    decorator = _mcp_tool(*decorator_args, **decorator_kwargs)
+
+    def wrap(fn):
+        @functools.wraps(fn)
+        def guarded(*args, **kwargs):
+            from wechat_version_guard import check_or_raise
+            check_or_raise(_cfg)
+            return fn(*args, **kwargs)
+
+        return decorator(guarded)
+
+    return wrap
+
+
+mcp.tool = _guarded_tool
+
 # 新消息追踪
 _last_check_state = {}  # {username: last_timestamp}
 
@@ -3807,9 +3829,13 @@ def _build_mcp_http_app():
     raise RuntimeError("FastMCP does not expose http_app() or streamable_http_app()")
 
 
-def serve(host: str = "127.0.0.1", port: int = 8765):
+def serve(host: str = "127.0.0.1", port: int = 8765, enforce_version: bool = True):
     """Start the MCP server over streamable-http at /mcp."""
     import uvicorn
+
+    if enforce_version:
+        from wechat_version_guard import enforce_or_exit
+        enforce_or_exit(_cfg)
 
     app = _build_mcp_http_app()
     uvicorn.run(app, host=host, port=port, log_level="info")

@@ -22,8 +22,10 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from config import load_config
+from wechat_version_guard import enforce_or_exit
 
 _cfg = load_config()
+enforce_or_exit(_cfg)
 MSG_DB_DIR = os.path.join(_cfg["decrypted_dir"], "message")
 CONTACT_DB_PATH = os.path.join(_cfg["decrypted_dir"], "contact", "contact.db")
 OUTPUT_DIR = _cfg["output_base_dir"]

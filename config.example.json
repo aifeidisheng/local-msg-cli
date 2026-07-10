@@ -3,5 +3,24 @@
     "keys_file": "all_keys.json",
     "decrypted_dir": "decrypted",
     "decoded_image_dir": "decoded_images",
-    "wechat_process": "Weixin.exe"
+    "wechat_process": "Weixin.exe",
+    "wechat_app_path": "",
+    "installer_path": "",
+    "installer_sha256": "",
+    "version_guard": {
+        "enabled": false,
+        "block_on_unknown_version": true,
+        "require_exact_app_path": true,
+        "require_running_process_path": false,
+        "require_update_disabled": false,
+        "require_installer_hash": false,
+        "allowed_versions": [
+            {
+                "platform": "windows",
+                "app_path": "C:\\Program Files\\Tencent\\Weixin\\Weixin.exe",
+                "short_version": "4.0.18",
+                "build_version": "23110"
+            }
+        ]
+    }
 }

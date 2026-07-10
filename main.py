@@ -182,6 +182,11 @@ def show_status():
             cfg = json.load(f)
         print(f"[config] {config_file}")
         print(f"         db_dir = {cfg.get('db_dir', '?')}")
+        try:
+            from wechat_version_guard import check_version, format_report
+            print(format_report(check_version(cfg)))
+        except Exception as e:
+            print(f"[version] 检测失败: {e}")
     else:
         print(f"[config] 未找到 {config_file}")
 
@@ -239,6 +244,7 @@ def print_usage():
     print("  python main.py decode-images --help  查看 decode-images 全部选项")
     print("  python main.py export         解密 + 批量导出聊天记录")
     print("  python main.py all            从零到完成：密钥 → 解密 → 导出")
+    print("  python main.py doctor         检查微信安装路径、版本白名单和门禁状态")
     print("  python main.py status         显示当前状态和磁盘用量")
 
 
@@ -272,6 +278,24 @@ def main():
     from config import load_config
     cfg = load_config()
 
+    if cmd == "doctor":
+        from wechat_version_guard import check_version, format_report
+        result = check_version(cfg)
+        print(format_report(result))
+        if result.enabled and not result.ok:
+            sys.exit(2)
+        return
+
+    business_commands = {"serve", "init", "decrypt", "export", "all", "decode-images"}
+    if cmd not in business_commands:
+        print(f"[!] 未知命令: {cmd}")
+        print()
+        print_usage()
+        sys.exit(1)
+
+    from wechat_version_guard import enforce_or_exit
+    enforce_or_exit(cfg)
+
     if cmd == "serve":
         import argparse
 
@@ -290,7 +314,7 @@ def main():
         print("    Desktop 工具配置类型请选择 streamablehttp")
         print()
         from mcp_server import serve
-        serve(host=args.host, port=args.port)
+        serve(host=args.host, port=args.port, enforce_version=False)
         return
 
     # 早路由:decode-images 不需要微信进程在运行,也不需要 DB 密钥
