@@ -30,6 +30,9 @@ except ImportError:  # pragma: no cover - compatibility for older local test env
                     return fn
                 return decorator
 
+            def http_app(self):
+                raise RuntimeError("fastmcp is required to run the MCP server")
+
             def streamable_http_app(self):
                 raise RuntimeError("fastmcp is required to run the MCP server")
 import zstandard as zstd
@@ -3795,11 +3798,20 @@ def predecrypt_databases(target_db: Optional[str] = None) -> dict:
     return stats
 
 
+def _build_mcp_http_app():
+    """Build the FastMCP HTTP app across FastMCP 2.x API variants."""
+    if hasattr(mcp, "http_app"):
+        return mcp.http_app()
+    if hasattr(mcp, "streamable_http_app"):
+        return mcp.streamable_http_app()
+    raise RuntimeError("FastMCP does not expose http_app() or streamable_http_app()")
+
+
 def serve(host: str = "127.0.0.1", port: int = 8765):
     """Start the MCP server over streamable-http at /mcp."""
     import uvicorn
 
-    app = mcp.streamable_http_app()
+    app = _build_mcp_http_app()
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 
