@@ -75,7 +75,7 @@
 - `installer_path`: 受控旧版安装包路径，可选保存在本地 `config.json` 供运维记录使用，不参与门禁判定。
 - `installer_sha256`: 受控旧版安装包 sha256，可选保存在本地 `config.json` 供运维记录使用，不参与门禁判定。
 - `build_version`: 当前仅作为 `doctor` 输出里的诊断信息保留，不作为主门禁条件。
-- `require_update_disabled`: 自动升级状态强校验。当前已支持 macOS：直接解析磁盘上的 `~/Library/Containers/com.tencent.xinWeChat/Data/Library/Preferences/com.tencent.xinWeChat.plist`，读取 `SUEnableAutomaticChecks` 与 `SUAutomaticallyUpdate`；只有两者都为 `false` 才算关闭。不要用 `defaults read` 作为门禁依据，因为它可能读到 `cfprefsd` 的过期缓存。其他平台暂未实现。
+- `require_update_disabled`: 自动升级状态强校验，默认应为 `false`。macOS 微信 3.x 可通过旧 Sparkle plist 辅助判断；微信 4.x 的界面开关已迁移到微信自己的设置系统，旧 plist 无法反映真实状态，因此启用此项会 fail-closed。其他平台暂未实现。该字段不能替代实际版本门禁。
 
 ## 版本读取策略
 
@@ -106,6 +106,7 @@ Linux：
 - 版本读取失败。
 - `short_version` 不在任一允许区间内。
 - 要求自动升级状态校验，但当前平台暂未实现。
+- 在微信 4.x 上要求自动升级状态强校验，但真实界面开关无法可靠读取。
 
 ## 命令行为
 
@@ -134,7 +135,7 @@ Linux：
   build         = 23110
 ```
 
-启用 `require_update_disabled` 后，`doctor` 还会输出 `prefs_source=plist_file`、`prefs_path`、`last_check` 和 `skipped_ver` 等诊断字段。若这些结果与 `defaults read com.tencent.xinWeChat ...` 不一致，以 `doctor`/plist 文件结果为准；`defaults` 可能被 macOS 偏好缓存误导。
+微信 3.x 启用 `require_update_disabled` 后，`doctor` 还会输出 `prefs_source=legacy_sparkle_plist`、`prefs_path`、`last_check` 和 `skipped_ver` 等诊断字段。微信 4.x 不读取这些旧字段作为界面开关，而是输出 `update_check=unsupported (WeChat 4.x)` 和手动关闭提示。
 
 失败示例：
 
@@ -145,7 +146,7 @@ Linux：
   version       = 4.0.20
   build         = 23897
   reasons       = 当前微信版本不在允许区间: 4.0.20
-[!] 非指定微信版本，拒绝执行。请安装允许区间内的版本后重试。
+[!] 微信安全门禁拒绝执行，请根据 reasons 处理后重试。
 ```
 
 ## MCP Server 运行期控制
@@ -165,7 +166,8 @@ Linux：
 
 ## 自动升级策略
 
-- 优先在微信客户端设置中关闭自动更新。macOS 当前会读取本地偏好里的 `SUEnableAutomaticChecks` 与 `SUAutomaticallyUpdate` 作为门禁依据。
+- 用户应在微信“设置 > 通用”中手动关闭“有更新时自动升级微信”；工具不修改微信设置、updater、客户端二进制或网络规则。
+- 微信 4.x 无法通过旧 Sparkle plist 准确读取该界面开关，因此默认不启用自动升级状态强校验，也不根据 `MacUpdate` 插件存在与否推断开关状态。
 - 多人或受管设备建议用设备管理策略限制用户自行升级。
 - 不建议删除 updater、修改微信二进制或依赖域名屏蔽作为主控制手段。
 - 即使自动升级开关已关闭，工具仍必须每次执行前校验真实版本。

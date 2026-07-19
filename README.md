@@ -163,7 +163,9 @@ python main.py update --check
 }
 ```
 
-生产环境应启用 `version_guard.enabled=true` 并填写 `allowed_version_ranges`。当只允许单一版本时，可把 `min_version` 和 `max_version` 配成相同值；如果后续确认多个连续版本都安全，再适当放宽区间。共享版本规则建议提交 `version-guard.policy.json`，本机 `config.json` 继续只保存 `db_dir`、key、本机路径等运行态信息。`wechat_app_path`、`installer_path`、`installer_sha256` 仍然支持放在本机 `config.json` 中，但默认门禁只关注真实版本号，不再强制要求运行中的微信必须来自某个固定安装目录，也不再依赖安装包 hash 校验；`wechat_app_path` 留空时程序也会尝试从运行中的微信进程自动发现。`build_version` 当前只作为诊断信息展示，不作为主门禁条件。`require_update_disabled=true` 现在在 macOS 上会直接解析磁盘上的微信偏好 plist，要求“自动检查更新”和“自动自动安装更新”都处于关闭状态；不要用 `defaults read` 判断该状态，因为它可能读到 macOS `cfprefsd` 的过期缓存。其他平台暂未实现。启用后，`serve`、`init`、`decrypt`、`export`、`all`、`decode-images` 会在任何密钥提取、解密或查询前校验真实微信版本；版本未知或不匹配会直接拒绝执行。`python main.py doctor` 可用于安装后诊断。详细设计见 [docs/wechat-version-guard-design.md](docs/wechat-version-guard-design.md)。
+生产环境应启用 `version_guard.enabled=true` 并填写 `allowed_version_ranges`。当只允许单一版本时，可把 `min_version` 和 `max_version` 配成相同值；如果后续确认多个连续版本都安全，再适当放宽区间。共享版本规则建议提交 `version-guard.policy.json`，本机 `config.json` 继续只保存 `db_dir`、key、本机路径等运行态信息。`wechat_app_path`、`installer_path`、`installer_sha256` 仍然支持放在本机 `config.json` 中，但默认门禁只关注真实版本号，不再强制要求运行中的微信必须来自某个固定安装目录，也不再依赖安装包 hash 校验；`wechat_app_path` 留空时程序也会尝试从运行中的微信进程自动发现。`build_version` 当前只作为 `doctor` 的诊断信息，不作为主门禁条件。
+
+微信 4.x 的“有更新时自动升级微信”使用微信自己的设置系统，旧 Sparkle plist 中的 `SUEnableAutomaticChecks` 和 `SUAutomaticallyUpdate` 不能反映界面开关。工具不会替用户修改微信设置，也不会把旧字段或 `MacUpdate` 插件是否存在当成真实开关；请在微信“设置 > 通用”中手动关闭自动升级。默认共享策略保持 `require_update_disabled=false`，最终安全边界是实际版本门禁：`serve`、`init`、`decrypt`、`export`、`all`、`decode-images` 会在任何密钥提取、解密或查询前校验真实微信版本，MCP 工具调用期间也会按 30 秒 TTL 复检；版本未知或不匹配会直接拒绝执行。若在微信 4.x 上强行启用 `require_update_disabled=true`，工具会因无法可靠读取开关而 fail-closed。`python main.py doctor` 可用于安装后诊断。详细设计见 [docs/wechat-version-guard-design.md](docs/wechat-version-guard-design.md)。
 
 各平台默认路径：
 

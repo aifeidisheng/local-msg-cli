@@ -132,15 +132,23 @@ def _read_macos_update_settings(app_path: str) -> Dict[str, Any]:
     auto_update_enabled = prefs.get("SUAutomaticallyUpdate")
     if not isinstance(checks_enabled, bool) or not isinstance(auto_update_enabled, bool):
         raise RuntimeError("微信自动更新偏好缺失或格式异常")
+    update_disabled = (not checks_enabled) and (not auto_update_enabled)
     return {
         "prefs_path": prefs_path,
-        "prefs_source": "plist_file",
+        "prefs_source": "legacy_sparkle_plist",
         "enable_automatic_checks": checks_enabled,
         "automatically_update": auto_update_enabled,
         "last_check_time": prefs.get("SULastCheckTime"),
         "skipped_version": prefs.get("SUSkippedVersion"),
-        "update_disabled": (not checks_enabled) and (not auto_update_enabled),
+        "update_status": "disabled" if update_disabled else "enabled",
+        "update_disabled": update_disabled,
     }
+
+
+def _macos_update_setting_supported(detected: Dict[str, Any]) -> bool:
+    """Only WeChat 3.x exposes its UI update setting through the Sparkle plist."""
+    version = _version_tuple(str(detected.get("short_version") or ""))
+    return bool(version and version[0] < 4)
 
 
 def _read_windows_app(app_path: str) -> Dict[str, Any]:
@@ -331,16 +339,23 @@ def check_version(cfg: Dict[str, Any]) -> VersionCheckResult:
             f"{detected.get('short_version') or '?'}"
         )
 
+    if detected and _platform_key() == "darwin" and not _macos_update_setting_supported(detected):
+        details["update_notice"] = (
+            "微信 4.x 自动升级开关无法可靠读取；请在微信“设置 > 通用”中手动关闭。"
+        )
+
     if guard.get("require_update_disabled", False):
         current = _platform_key()
         if current != "darwin":
             reasons.append(f"当前平台未实现自动升级状态检测: {current}")
+        elif detected and not _macos_update_setting_supported(detected):
+            reasons.append("微信 4.x 自动升级开关无法可靠检测")
         elif detected:
             try:
                 update_settings = _read_macos_update_settings(str(detected.get("app_path") or ""))
                 details["update_settings"] = update_settings
                 if not update_settings.get("update_disabled", False):
-                    reasons.append("当前微信自动更新未关闭")
+                    reasons.append("旧版微信 Sparkle 自动更新未关闭")
             except Exception as exc:
                 details["update_settings_error"] = str(exc)
                 reasons.append(f"读取微信自动更新状态失败: {exc}")
@@ -364,6 +379,9 @@ def format_report(result: VersionCheckResult) -> str:
         )
     if result.reasons:
         lines.append("  reasons       = " + "；".join(result.reasons))
+    if result.details.get("update_notice"):
+        lines.append("  update_check  = unsupported (WeChat 4.x)")
+        lines.append(f"  update_action = {result.details['update_notice']}")
     update_settings = result.details.get("update_settings") or {}
     if update_settings:
         lines.append(
@@ -376,6 +394,8 @@ def format_report(result: VersionCheckResult) -> str:
         )
         lines.append(f"  prefs_source  = {update_settings.get('prefs_source') or '?'}")
         lines.append(f"  prefs_path    = {update_settings.get('prefs_path') or '?'}")
+        if update_settings.get("update_status"):
+            lines.append(f"  update_status = {update_settings.get('update_status')}")
         if update_settings.get("last_check_time"):
             lines.append(f"  last_check    = {update_settings.get('last_check_time')}")
         if update_settings.get("skipped_version"):
@@ -388,7 +408,7 @@ def enforce_or_exit(cfg: Dict[str, Any]) -> None:
     if result.enabled:
         print(format_report(result), flush=True)
     if result.enabled and not result.ok:
-        print("[!] 非指定微信版本，拒绝执行。请安装允许区间内的版本后重试。", flush=True)
+        print("[!] 微信安全门禁拒绝执行，请根据 reasons 处理后重试。", flush=True)
         sys.exit(2)
 
 

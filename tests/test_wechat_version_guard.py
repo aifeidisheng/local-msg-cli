@@ -173,7 +173,7 @@ class WechatVersionGuardTests(unittest.TestCase):
                      "update_disabled": True,
                  },
              ):
-            app_path = _make_macos_app(td)
+            app_path = _make_macos_app(td, short_version="3.8.9")
             cfg = {
                 "wechat_app_path": app_path,
                 "version_guard": {
@@ -182,8 +182,8 @@ class WechatVersionGuardTests(unittest.TestCase):
                     "allowed_version_ranges": [
                         {
                             "platform": "darwin",
-                            "min_version": "4.0.18",
-                            "max_version": "4.0.18",
+                            "min_version": "3.8.9",
+                            "max_version": "3.8.9",
                         }
                     ],
                 },
@@ -207,7 +207,7 @@ class WechatVersionGuardTests(unittest.TestCase):
                      "update_disabled": False,
                  },
              ):
-            app_path = _make_macos_app(td)
+            app_path = _make_macos_app(td, short_version="3.8.9")
             cfg = {
                 "wechat_app_path": app_path,
                 "version_guard": {
@@ -216,8 +216,8 @@ class WechatVersionGuardTests(unittest.TestCase):
                     "allowed_version_ranges": [
                         {
                             "platform": "darwin",
-                            "min_version": "4.0.18",
-                            "max_version": "4.0.18",
+                            "min_version": "3.8.9",
+                            "max_version": "3.8.9",
                         }
                     ],
                 },
@@ -226,7 +226,7 @@ class WechatVersionGuardTests(unittest.TestCase):
             result = guard.check_version(cfg)
 
         self.assertFalse(result.ok)
-        self.assertIn("自动更新未关闭", result.reason_text)
+        self.assertIn("Sparkle 自动更新未关闭", result.reason_text)
 
     def test_macos_update_settings_reads_diagnostic_fields_from_plist_file(self):
         with tempfile.TemporaryDirectory() as td, \
@@ -245,9 +245,37 @@ class WechatVersionGuardTests(unittest.TestCase):
 
             settings = guard._read_macos_update_settings("/Applications/WeChat.app")
 
-        self.assertEqual(settings["prefs_source"], "plist_file")
+        self.assertEqual(settings["prefs_source"], "legacy_sparkle_plist")
         self.assertEqual(settings["skipped_version"], "269110")
         self.assertEqual(settings["last_check_time"], "2026-07-10 18:50:54 +0000")
+
+    def test_macos_4x_update_requirement_fails_when_setting_cannot_be_read(self):
+        with tempfile.TemporaryDirectory() as td, \
+             patch.object(guard.platform, "system", return_value="Darwin"), \
+             patch.object(guard, "_process_paths", return_value=[]), \
+             patch.object(guard, "_read_macos_update_settings") as read_settings:
+            app_path = _make_macos_app(td, short_version="4.1.8")
+            cfg = {
+                "wechat_app_path": app_path,
+                "version_guard": {
+                    "enabled": True,
+                    "require_update_disabled": True,
+                    "allowed_version_ranges": [
+                        {
+                            "platform": "darwin",
+                            "min_version": "4.1.8",
+                            "max_version": "4.1.8",
+                        }
+                    ],
+                },
+            }
+
+            result = guard.check_version(cfg)
+
+        self.assertFalse(result.ok)
+        self.assertIn("微信 4.x 自动升级开关无法可靠检测", result.reason_text)
+        self.assertIn("手动关闭", result.details["update_notice"])
+        read_settings.assert_not_called()
 
     def test_non_macos_update_disabled_requirement_fails_closed(self):
         cfg = {

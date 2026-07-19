@@ -2,7 +2,7 @@
     "version_guard": {
         "enabled": true,
         "block_on_unknown_version": true,
-        "require_update_disabled": true,
+        "require_update_disabled": false,
         "allowed_version_ranges": [
             {
                 "platform": "windows",
