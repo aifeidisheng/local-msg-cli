@@ -1,4 +1,4 @@
-.PHONY: setup build keys init serve decrypt export all status clean help
+.PHONY: setup build sign-wechat keys init serve decrypt export all status clean help
 
 PYTHON ?= .venv/bin/python3
 export SHELL := /bin/bash
@@ -8,6 +8,7 @@ help:
 	@echo ""
 	@echo "  make setup    一键安装所有依赖 + 编译 + 初始配置"
 	@echo "  make build    编译 macOS 密钥扫描器"
+	@echo "  make sign-wechat 校验版本后重签名微信"
 	@echo "  make keys     提取密钥（需要 root）"
 	@echo "  make init     预解密 MCP 查询缓存"
 	@echo "  make serve    启动 MCP Server"
@@ -24,6 +25,9 @@ setup:
 build:
 	cc -O2 -o find_all_keys_macos find_all_keys_macos.c -framework Foundation
 	codesign -s - find_all_keys_macos
+
+sign-wechat:
+	$(PYTHON) wechat_risk_actions.py sign-wechat
 
 keys:
 	sudo ./find_all_keys_macos

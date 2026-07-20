@@ -166,6 +166,12 @@ def main():
 
     # 2. 找到微信进程
     pids = get_pids()
+    from wechat_version_guard import enforce_risky_action_or_exit
+    enforce_risky_action_or_exit(
+        _cfg,
+        action="读取微信进程内存获取数据库密钥",
+        pids=[pid for pid, _ in pids],
+    )
 
     hex_re = re.compile(rb"x'([0-9a-fA-F]{64,192})'")
     key_map = {}  # salt_hex -> enc_key_hex

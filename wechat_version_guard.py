@@ -226,6 +226,46 @@ def _process_paths(cfg: Dict[str, Any]) -> List[str]:
     return []
 
 
+def _process_path_for_pid(pid: int) -> str:
+    """Resolve the executable that will be touched by a risky action."""
+    current = _platform_key()
+    if current == "darwin":
+        proc = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        command = (proc.stdout or "").strip()
+        if proc.returncode != 0 or not command:
+            raise RuntimeError(f"无法读取微信进程 PID={pid} 的可执行文件路径")
+        return _expand_path(command.split()[0])
+    if current == "linux":
+        try:
+            return os.path.realpath(os.readlink(f"/proc/{pid}/exe"))
+        except OSError as exc:
+            raise RuntimeError(f"无法读取微信进程 PID={pid} 的可执行文件路径: {exc}") from exc
+    if current == "windows":
+        script = (
+            "$p=Get-CimInstance Win32_Process -Filter \"ProcessId=$($args[0])\"; "
+            "if ($null -ne $p) { $p.ExecutablePath }"
+        )
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script, str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        path = (proc.stdout or "").strip()
+        if proc.returncode != 0 or not path:
+            raise RuntimeError(
+                (proc.stderr or "").strip()
+                or f"无法读取微信进程 PID={pid} 的可执行文件路径"
+            )
+        return _expand_path(path.splitlines()[0])
+    raise RuntimeError(f"暂不支持校验进程版本的平台: {current}")
+
+
 def _same_app_path(expected: str, actual: str) -> bool:
     expected_bundle = _macos_bundle_path(expected) if _platform_key() == "darwin" else expected
     actual_bundle = _macos_bundle_path(actual) if _platform_key() == "darwin" else actual
@@ -409,6 +449,90 @@ def enforce_or_exit(cfg: Dict[str, Any]) -> None:
         print(format_report(result), flush=True)
     if result.enabled and not result.ok:
         print("[!] 微信安全门禁拒绝执行，请根据 reasons 处理后重试。", flush=True)
+        sys.exit(2)
+
+
+def check_risky_action(
+    cfg: Dict[str, Any],
+    *,
+    action: str,
+    pids: Optional[Iterable[int]] = None,
+    app_path: Optional[str] = None,
+) -> VersionCheckResult:
+    """Fail-closed version check for signing and key extraction.
+
+    Unlike MCP checks, this never uses a cached result. When PIDs are supplied,
+    the executable behind every PID is checked instead of trusting a configured
+    installation path that may have become stale after a background update.
+    """
+    if not is_enabled(cfg):
+        return VersionCheckResult(
+            enabled=True,
+            ok=False,
+            reasons=[f"风险动作“{action}”要求 version_guard.enabled=true"],
+            details={"action": action, "status": "guard_required"},
+        )
+
+    targets: List[Dict[str, Any]] = []
+    if pids is not None:
+        pid_list = [int(pid) for pid in pids]
+        if not pid_list:
+            return VersionCheckResult(
+                enabled=True,
+                ok=False,
+                reasons=[f"风险动作“{action}”未提供可校验的微信进程 PID"],
+                details={"action": action, "status": "missing_pid"},
+            )
+        for pid in pid_list:
+            try:
+                target_path = _process_path_for_pid(pid)
+            except Exception as exc:
+                targets.append({"pid": pid, "error": str(exc)})
+                continue
+            targets.append({"pid": pid, "app_path": target_path})
+    elif app_path:
+        targets.append({"app_path": _expand_path(app_path)})
+    else:
+        targets.append({"app_path": None})
+
+    reasons: List[str] = []
+    checked_targets: List[Dict[str, Any]] = []
+    for target in targets:
+        label = f"PID={target['pid']}" if target.get("pid") is not None else "目标应用"
+        if target.get("error"):
+            reasons.append(f"{label}: {target['error']}")
+            checked_targets.append(target)
+            continue
+
+        target_cfg = dict(cfg)
+        if target.get("app_path"):
+            target_cfg["wechat_app_path"] = target["app_path"]
+        result = check_version(target_cfg)
+        checked = dict(target)
+        checked["result"] = result.details
+        checked_targets.append(checked)
+        if not result.ok:
+            reasons.extend(f"{label}: {reason}" for reason in result.reasons)
+
+    return VersionCheckResult(
+        enabled=True,
+        ok=not reasons,
+        reasons=reasons,
+        details={"action": action, "targets": checked_targets},
+    )
+
+
+def enforce_risky_action_or_exit(
+    cfg: Dict[str, Any],
+    *,
+    action: str,
+    pids: Optional[Iterable[int]] = None,
+    app_path: Optional[str] = None,
+) -> None:
+    result = check_risky_action(cfg, action=action, pids=pids, app_path=app_path)
+    print(format_report(result), flush=True)
+    if not result.ok:
+        print(f"[!] 风险动作“{action}”已被版本门禁拒绝。", flush=True)
         sys.exit(2)
 
 

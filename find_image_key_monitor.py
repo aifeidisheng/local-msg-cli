@@ -261,9 +261,15 @@ def main():
     if not pids:
         print("WeChat not running!")
         return
+    from wechat_version_guard import enforce_risky_action_or_exit
 
     # Find the main PID (largest memory footprint)
     main_pid = pids[0]
+    enforce_risky_action_or_exit(
+        config,
+        action="持续读取微信进程内存获取图片密钥",
+        pids=[main_pid],
+    )
     print(f"\nMonitoring PID {main_pid} (main WeChat process)", flush=True)
     print("=" * 60, flush=True)
     print("NOW: Open WeChat and tap to view 2-3 images (full size)", flush=True)
@@ -315,6 +321,11 @@ def main():
 
             # Refresh regions periodically (every 5 scans)
             if scan_count % 5 == 0:
+                enforce_risky_action_or_exit(
+                    config,
+                    action="持续读取微信进程内存获取图片密钥",
+                    pids=[main_pid],
+                )
                 regions = get_rw_regions(h_process)
 
     except KeyboardInterrupt:

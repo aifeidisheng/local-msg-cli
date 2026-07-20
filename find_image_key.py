@@ -382,6 +382,12 @@ def main():
     if not pids:
         print("WeChat not running!")
         return
+    from wechat_version_guard import enforce_risky_action_or_exit
+    enforce_risky_action_or_exit(
+        config,
+        action="读取微信进程内存获取图片密钥",
+        pids=pids,
+    )
     print(f"PIDs: {pids}", flush=True)
     print("Tip: View 2-3 images in WeChat first, then run this script immediately\n", flush=True)
 

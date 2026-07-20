@@ -627,6 +627,10 @@ def main(config_path=None):
                   f"{len(templates)} 个模板上仍然有效，无需重新派生", flush=True)
             return
 
+    from config import load_config
+    from wechat_version_guard import enforce_risky_action_or_exit
+    enforce_risky_action_or_exit(load_config(), action="派生微信图片密钥")
+
     result = find_image_key_macos(db_dir)
     if result is None:
         sys.exit(1)

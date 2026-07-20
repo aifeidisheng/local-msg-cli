@@ -206,8 +206,8 @@ def get_pids():
 def main():
     cfg = load_config()
 
-    from wechat_version_guard import enforce_or_exit
-    enforce_or_exit(cfg)
+    from wechat_version_guard import enforce_risky_action_or_exit
+    enforce_risky_action_or_exit(cfg, action="获取微信密钥")
 
     find_image_key_offline(cfg)
 

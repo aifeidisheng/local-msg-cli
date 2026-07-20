@@ -94,6 +94,12 @@ def main():
 
     # 2. 打开所有微信进程
     pids = get_pids()
+    from wechat_version_guard import enforce_risky_action_or_exit
+    enforce_risky_action_or_exit(
+        _cfg,
+        action="读取微信进程内存获取数据库密钥",
+        pids=[pid for pid, _ in pids],
+    )
 
     hex_re = re.compile(b"x'([0-9a-fA-F]{64,192})'")
     key_map = {}

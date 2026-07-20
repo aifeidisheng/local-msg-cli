@@ -82,9 +82,8 @@ if [ "$PLATFORM" = "macos" ]; then
 
     # 微信重签名提示
     echo ""
-    echo "[注意] 首次使用需要重签名微信:"
-    echo "  killall WeChat"
-    echo "  sudo codesign --force --deep --sign - /Applications/WeChat.app"
+    echo "[注意] 首次使用需要重签名微信，请通过版本门禁入口执行:"
+    echo "  make sign-wechat"
 fi
 
 # ── Linux 特有 ────────────────────────────────────────────────
