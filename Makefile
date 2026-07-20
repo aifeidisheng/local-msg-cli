@@ -22,7 +22,7 @@ help:
 setup:
 	@bash setup.sh
 
-build:
+build: wechat_risk_guard_macos.h wechat_risk_actions.py
 	cc -O2 -o find_all_keys_macos find_all_keys_macos.c -framework Foundation
 	codesign -s - find_all_keys_macos
 

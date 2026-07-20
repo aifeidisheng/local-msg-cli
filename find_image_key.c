@@ -30,6 +30,7 @@
 #include <mach/mach_vm.h>
 #include <unistd.h>
 #include <CommonCrypto/CommonCryptor.h>
+#include "wechat_risk_guard_macos.h"
 
 #define MAX_PATH    4096
 #define MAX_PATTERNS 8192
@@ -838,6 +839,10 @@ int main(int argc, char *argv[]) {
 
         printf("\n--- Round %d: %d unsolved / %d total, %d PIDs ---\n",
                round, unsolved, npatterns, npids);
+        if (enforce_wechat_pid_version_guard(pids, npids) != 0) {
+            fprintf(stderr, "Refusing to scan WeChat memory in round %d\n", round);
+            return 2;
+        }
 
         int found_round = 0;
         for (int i = 0; i < npids && !stop_flag; i++) {

@@ -71,13 +71,15 @@ if [ "$PLATFORM" = "macos" ]; then
     fi
 
     # 编译 C 扫描器
-    if [ ! -f find_all_keys_macos ]; then
+    if [ ! -f find_all_keys_macos ] || \
+       [ find_all_keys_macos.c -nt find_all_keys_macos ] || \
+       [ wechat_risk_guard_macos.h -nt find_all_keys_macos ]; then
         echo "[编译] find_all_keys_macos..."
         cc -O2 -o find_all_keys_macos find_all_keys_macos.c -framework Foundation 2>/dev/null && \
             codesign -s - find_all_keys_macos 2>/dev/null && \
             echo "[编译] ✓" || echo "[编译] 跳过（c 源文件不存在？）"
     else
-        echo "[编译] find_all_keys_macos 已存在（重新编译: make build）"
+        echo "[编译] find_all_keys_macos 已是最新"
     fi
 
     # 微信重签名提示

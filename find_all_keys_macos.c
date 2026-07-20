@@ -28,6 +28,7 @@
 #include <sys/stat.h>
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
+#include "wechat_risk_guard_macos.h"
 
 #define MAX_KEYS 256
 #define KEY_SIZE 32
@@ -121,6 +122,12 @@ int main(int argc, char *argv[]) {
     printf("  macOS WeChat Memory Key Scanner (C version)\n");
     printf("============================================================\n");
     printf("WeChat PID: %d\n", pid);
+    fflush(stdout);
+
+    if (enforce_wechat_pid_version_guard(&pid, 1) != 0) {
+        fprintf(stderr, "Refusing to call task_for_pid for PID %d\n", pid);
+        return 2;
+    }
 
     /* Get task port */
     mach_port_t task;
