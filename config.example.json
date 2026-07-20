@@ -3,5 +3,6 @@
     "keys_file": "all_keys.json",
     "decrypted_dir": "decrypted",
     "decoded_image_dir": "decoded_images",
-    "wechat_process": "Weixin.exe"
+    "wechat_process": "Weixin.exe",
+    "wechat_app_path": "C:\\Program Files\\Tencent\\Weixin\\Weixin.exe"
 }

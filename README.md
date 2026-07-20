@@ -20,7 +20,8 @@
 - Python 3.10+
 - 允许区间内的 WeChat 版本正在运行
 - macOS 需 Xcode Command Line Tools: `xcode-select --install`
-- 读取进程内存需要管理员/root 权限
+- Windows 首次提取密钥需使用“以管理员身份运行”的 PowerShell
+- macOS/Linux 读取进程内存需要 root 权限（Linux 也可使用 `CAP_SYS_PTRACE`）
 
 若使用 Desktop 内置 Python（≥3.10 即可），仍需通过 `pip install -r requirements.txt` 安装依赖。
 
@@ -37,6 +38,44 @@ pip install -r requirements.txt
 ```bash
 /path/to/desktop/python3 -m pip install -r requirements.txt
 ```
+
+Windows 建议使用 PowerShell 和 Python Launcher：
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+## Windows 快速开始
+
+当前共享策略只允许 Windows 微信 `4.1.9`。先在微信“设置 → 关于微信”确认版本，并关闭自动更新；不要通过放宽策略绕过尚未验证的新版本。
+
+```powershell
+# 1. 以管理员身份打开 PowerShell，进入项目目录并安装依赖
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+
+# 2. 启动并登录微信，然后生成 config.json
+python setup.py
+
+# 3. 编辑 config.json，确认 db_dir，并设置 Weixin.exe 的实际路径
+#    可用下面的命令查询路径：
+(Get-Process Weixin | Select-Object -First 1).Path
+
+# 4. 先确认版本门禁通过
+python main.py doctor
+
+# 5. 提取密钥并预解密 MCP 查询缓存
+python main.py init
+
+# 6. 启动 MCP Server
+python main.py serve --port 8765
+```
+
+Windows 不需要重签名微信。首次执行 `init` 或 `decrypt` 时会读取 `Weixin.exe` 进程内存，因此必须使用管理员 PowerShell；已有有效 `all_keys.json` 后的离线解密通常不再需要管理员权限。完整配置示例、数据目录定位和故障排查见 [Windows 使用指南](docs/windows-guide.md)。
 
 ## macOS 快速开始
 
@@ -154,9 +193,14 @@ python main.py update --check
     "require_update_disabled": false,
     "allowed_version_ranges": [
       {
+        "platform": "windows",
+        "min_version": "4.1.9",
+        "max_version": "4.1.9"
+      },
+      {
         "platform": "darwin",
-        "min_version": "4.0.18",
-        "max_version": "4.0.18"
+        "min_version": "4.1.8",
+        "max_version": "4.1.8"
       }
     ]
   }
@@ -170,7 +214,7 @@ python main.py update --check
 各平台默认路径：
 
 - macOS: `~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/<wxid>/db_storage`
-- Windows: 微信设置 -> 文件管理中查看
+- Windows: 微信“设置 → 文件管理”中查看数据根目录，最终选择 `xwechat_files\<wxid>\db_storage`
 - Linux: `~/Documents/xwechat_files/<wxid>/db_storage`
 
 ## 安全提示
