@@ -180,14 +180,18 @@ def show_status():
     config_file = _config_file_path()
     if os.path.exists(config_file):
         with open(config_file, encoding="utf-8") as f:
-            cfg = json.load(f)
+            raw_cfg = json.load(f)
+        from config import load_config
+        cfg = load_config()
         print(f"[config] {config_file}")
-        print(f"         db_dir = {cfg.get('db_dir', '?')}")
+        print(f"         db_dir = {raw_cfg.get('db_dir', cfg.get('db_dir', '?'))}")
         try:
             from wechat_version_guard import check_version, format_report
-            print(format_report(check_version(cfg)))
+            print(format_report(check_version(cfg), cfg))
         except Exception as e:
-            print(f"[version] 检测失败: {e}")
+            print("[版本门禁] 检查失败")
+            print(f"失败原因：无法完成版本检查：{e}")
+            print("处理建议：运行 `python3 main.py doctor` 查看完整诊断。")
     else:
         print(f"[config] 未找到 {config_file}")
 
@@ -329,7 +333,7 @@ def main():
     if cmd == "doctor":
         from wechat_version_guard import check_version, format_report
         result = check_version(cfg)
-        print(format_report(result))
+        print(format_report(result, cfg))
         if result.enabled and not result.ok:
             sys.exit(2)
         return
@@ -342,7 +346,15 @@ def main():
         sys.exit(1)
 
     from wechat_version_guard import enforce_or_exit
-    enforce_or_exit(cfg)
+    action_names = {
+        "serve": "启动 MCP Server",
+        "init": "提取密钥并初始化查询缓存",
+        "decrypt": "提取密钥并解密数据库",
+        "export": "解密并导出聊天记录",
+        "all": "执行密钥提取、解密和导出全流程",
+        "decode-images": "批量解密微信图片",
+    }
+    enforce_or_exit(cfg, action=action_names[cmd])
 
     if cmd == "serve":
         parser = argparse.ArgumentParser(

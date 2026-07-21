@@ -403,53 +403,263 @@ def check_version(cfg: Dict[str, Any]) -> VersionCheckResult:
     return VersionCheckResult(enabled=True, ok=not reasons, reasons=reasons, details=details)
 
 
-def format_report(result: VersionCheckResult) -> str:
-    if not result.enabled:
-        return "[version] 微信版本门禁: DISABLED"
-    lines = [f"[version] 微信版本门禁: {'PASS' if result.ok else 'FAIL'}"]
-    detected = result.details.get("detected") or {}
-    if detected:
+def _allowed_version_summary(cfg: Dict[str, Any]) -> str:
+    guard = _guard_config(cfg)
+    current = _platform_key()
+    platform_name = {
+        "darwin": "macOS",
+        "windows": "Windows",
+        "linux": "Linux",
+    }.get(current, current)
+    versions: List[str] = []
+
+    for item in _allowed_version_ranges(guard):
+        if item.get("platform") and str(item["platform"]).lower() != current:
+            continue
+        exact = item.get("version") or item.get("short_version")
+        minimum = item.get("min_version") or item.get("start_version")
+        maximum = item.get("max_version") or item.get("end_version")
+        if exact or (minimum and maximum and str(minimum) == str(maximum)):
+            versions.append(str(exact or minimum))
+        elif minimum and maximum:
+            versions.append(f"{minimum} 至 {maximum}")
+        elif minimum:
+            versions.append(f"{minimum} 及以上")
+        elif maximum:
+            versions.append(f"{maximum} 及以下")
+
+    for item in _allowed_versions(guard):
+        if item.get("platform") and str(item["platform"]).lower() != current:
+            continue
+        version = item.get("short_version") or item.get("version")
+        if version:
+            versions.append(str(version))
+
+    unique_versions = list(dict.fromkeys(versions))
+    return f"{platform_name} {'、'.join(unique_versions)}" if unique_versions else f"{platform_name}（未配置）"
+
+
+def _doctor_command() -> str:
+    return "python main.py doctor" if _platform_key() == "windows" else "python3 main.py doctor"
+
+
+def _humanize_reason(reason: str) -> str:
+    reason = str(reason or "未知原因")
+    if "version_guard.enabled=true 但未配置 allowed_version_ranges" in reason:
+        return "版本门禁已经启用，但没有配置当前平台允许使用的微信版本。"
+    if "未配置 wechat_app_path" in reason:
+        return (
+            "没有找到微信安装位置。请先启动微信，或在 config.json 中设置 "
+            "wechat_app_path。"
+        )
+    if "当前微信版本不在允许区间" in reason:
+        version = reason.rsplit(":", 1)[-1].strip() if "：" not in reason else reason.rsplit("：", 1)[-1].strip()
+        return f"检测到的微信版本 {version} 不在本项目已经验证的安全范围内。"
+    if "要求 version_guard.enabled=true" in reason:
+        return "风险操作必须启用版本门禁；当前门禁未启用，因此已按安全策略停止。"
+    if "未提供可校验的微信进程 PID" in reason:
+        return "没有找到可以校验版本的微信进程，无法安全执行后续操作。"
+    if "当前平台未实现自动升级状态检测" in reason:
+        return "当前平台无法可靠确认微信自动更新是否关闭。"
+    if "微信 4.x 自动升级开关无法可靠检测" in reason:
+        return "微信 4.x 的自动更新开关无法可靠读取，请在微信设置中手动关闭。"
+    if "旧版微信 Sparkle 自动更新未关闭" in reason:
+        return "检测到微信自动更新仍然开启，请先关闭自动更新。"
+    return reason
+
+
+def _detected_version_lines(detected: Dict[str, Any], label: str = "当前微信") -> List[str]:
+    if not detected:
+        return []
+    lines = [
+        f"检测到：{label}，版本 {detected.get('short_version') or '未知'}"
+        f"（build {detected.get('build_version') or '未知'}）"
+    ]
+    if detected.get("app_path"):
+        lines.append(f"程序路径：{detected['app_path']}")
+    return lines
+
+
+def _failure_guidance(cfg: Dict[str, Any], result: VersionCheckResult) -> List[str]:
+    reasons = [_humanize_reason(reason) for reason in result.reasons]
+    lines = ["失败原因："]
+    lines.extend(f"  - {reason}" for reason in reasons)
+    lines.extend(["", "处理建议："])
+
+    raw_reasons = "；".join(result.reasons)
+    if "要求 version_guard.enabled=true" in raw_reasons:
         lines.extend(
             [
-                f"  app_path      = {detected.get('app_path') or '?'}",
-                f"  bundle_id     = {detected.get('bundle_id') or '?'}",
-                f"  version       = {detected.get('short_version') or '?'}",
-                f"  build         = {detected.get('build_version') or '?'}",
+                "  1. 确认程序目录中存在 version-guard.policy.json。",
+                "  2. 确认其中的 version_guard.enabled 为 true，并配置当前平台允许版本。",
+                f"  3. 运行 `{_doctor_command()}` 重新检查。",
             ]
         )
-    if result.reasons:
-        lines.append("  reasons       = " + "；".join(result.reasons))
+    elif "未配置 allowed_version_ranges" in raw_reasons:
+        lines.extend(
+            [
+                "  1. 检查 version-guard.policy.json 是否随程序一起部署。",
+                "  2. 为当前平台配置经过验证的微信版本。",
+                f"  3. 运行 `{_doctor_command()}` 重新检查。",
+            ]
+        )
+    elif (
+        "未提供可校验的微信进程 PID" in raw_reasons
+        or "无法读取微信进程 PID" in raw_reasons
+        or "进程已退出" in raw_reasons
+    ):
+        lines.extend(
+            [
+                "  1. 确认微信已经启动并完成登录。",
+                "  2. 如果微信刚刚更新或重启，请等待进程稳定后再试。",
+                f"  3. 运行 `{_doctor_command()}` 确认版本通过，再重新执行。",
+            ]
+        )
+    elif "未配置 wechat_app_path" in raw_reasons or "安装路径不存在" in raw_reasons:
+        lines.extend(
+            [
+                "  1. 启动并登录微信。",
+                "  2. 检查 config.json 中的 wechat_app_path 是否指向实际微信程序。",
+                f"  3. 运行 `{_doctor_command()}` 重新检查。",
+            ]
+        )
+    elif "不在允许区间" in raw_reasons:
+        lines.extend(
+            [
+                "  1. 退出当前微信。",
+                f"  2. 安装当前允许的微信版本：{_allowed_version_summary(cfg)}。",
+                "  3. 在微信设置中关闭自动更新，避免再次后台升级。",
+                "  4. 重新启动并登录微信。",
+                f"  5. 运行 `{_doctor_command()}`，看到“检查通过”后再重试。",
+                "",
+                "不要直接修改 version-guard.policy.json 放行未验证的新版本。",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "  1. 按上面的失败原因修正微信版本或门禁配置。",
+                f"  2. 运行 `{_doctor_command()}`，看到“检查通过”后再重试。",
+            ]
+        )
+    return lines
+
+
+def format_report(
+    result: VersionCheckResult,
+    cfg: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Human-readable diagnostic report used by status and doctor."""
+    cfg = cfg or {}
+    if not result.enabled:
+        return "\n".join(
+            [
+                "[版本门禁] 未启用",
+                "安全提示：普通离线操作可以继续，但获取密钥等风险操作仍会要求启用门禁。",
+                "处理建议：检查 version-guard.policy.json 是否存在并已启用。",
+            ]
+        )
+
+    title = "[版本门禁] 检查通过" if result.ok else "[版本门禁] 检查失败"
+    lines = [title]
+    lines.extend(_detected_version_lines(result.details.get("detected") or {}))
+    lines.append(f"当前允许：{_allowed_version_summary(cfg)}")
+
+    if result.ok:
+        lines.append("检查结果：当前微信版本符合安全策略。")
+    else:
+        lines.extend(_failure_guidance(cfg, result))
+
     if result.details.get("update_notice"):
-        lines.append("  update_check  = unsupported (WeChat 4.x)")
-        lines.append(f"  update_action = {result.details['update_notice']}")
+        lines.append(f"自动更新提示：{result.details['update_notice']}")
     update_settings = result.details.get("update_settings") or {}
     if update_settings:
-        lines.append(
-            "  auto_update   = "
-            + (
-                "disabled"
-                if update_settings.get("update_disabled")
-                else "enabled"
-            )
-        )
-        lines.append(f"  prefs_source  = {update_settings.get('prefs_source') or '?'}")
-        lines.append(f"  prefs_path    = {update_settings.get('prefs_path') or '?'}")
-        if update_settings.get("update_status"):
-            lines.append(f"  update_status = {update_settings.get('update_status')}")
-        if update_settings.get("last_check_time"):
-            lines.append(f"  last_check    = {update_settings.get('last_check_time')}")
-        if update_settings.get("skipped_version"):
-            lines.append(f"  skipped_ver   = {update_settings.get('skipped_version')}")
+        status = "已关闭" if update_settings.get("update_disabled") else "仍开启"
+        lines.append(f"自动更新状态：{status}")
+        if update_settings.get("prefs_path"):
+            lines.append(f"设置来源：{update_settings['prefs_path']}")
     return "\n".join(lines)
 
 
-def enforce_or_exit(cfg: Dict[str, Any]) -> None:
+def format_block_report(
+    cfg: Dict[str, Any],
+    result: VersionCheckResult,
+    *,
+    action: str,
+) -> str:
+    lines = [
+        "",
+        "============================================================",
+        f"[安全拦截] 已停止：{action}",
+        "============================================================",
+    ]
+    lines.extend(_detected_version_lines(result.details.get("detected") or {}))
+    lines.append(f"当前允许：{_allowed_version_summary(cfg)}")
+    lines.extend(_failure_guidance(cfg, result))
+    lines.extend(
+        [
+            "",
+            f"安全状态：版本检查未通过，尚未执行“{action}”。",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def format_risky_action_report(
+    cfg: Dict[str, Any],
+    result: VersionCheckResult,
+) -> str:
+    action = str(result.details.get("action") or "风险操作")
+    lines = [
+        "",
+        "============================================================",
+        f"[安全拦截] 已停止：{action}" if not result.ok else f"[安全检查] 可以执行：{action}",
+        "============================================================",
+    ]
+
+    targets = result.details.get("targets") or []
+    detected_any = False
+    for target in targets:
+        detected = ((target.get("result") or {}).get("detected") or {})
+        if not detected:
+            continue
+        detected_any = True
+        pid = target.get("pid")
+        label = f"PID {pid}" if pid is not None else "目标微信"
+        lines.append(
+            f"检测到：{label}，微信 {detected.get('short_version') or '未知版本'}"
+            f"（build {detected.get('build_version') or '未知'}）"
+        )
+        if detected.get("app_path"):
+            lines.append(f"程序路径：{detected['app_path']}")
+
+    lines.append(f"当前允许：{_allowed_version_summary(cfg)}")
+
+    if result.ok:
+        lines.append("检查结果：版本符合安全策略，继续执行。")
+        return "\n".join(lines)
+
+    lines.extend(_failure_guidance(cfg, result))
+    if "进程内存" in action or "密钥" in action:
+        lines.extend(
+            [
+                "",
+                "安全状态：门禁未放行；本次检查后没有调用 task_for_pid/OpenProcess，"
+                "没有继续读取微信进程内存，也没有提取密钥。",
+            ]
+        )
+    else:
+        lines.extend(["", "安全状态：该操作尚未执行，请先处理上述版本问题。"])
+    return "\n".join(lines)
+
+
+def enforce_or_exit(cfg: Dict[str, Any], *, action: str = "继续执行当前操作") -> None:
     result = check_version(cfg)
-    if result.enabled:
-        print(format_report(result), flush=True)
     if result.enabled and not result.ok:
-        print("[!] 微信安全门禁拒绝执行，请根据 reasons 处理后重试。", flush=True)
+        print(format_block_report(cfg, result, action=action), flush=True)
         sys.exit(2)
+    if result.enabled:
+        print(format_report(result, cfg), flush=True)
 
 
 def check_risky_action(
@@ -530,13 +740,17 @@ def enforce_risky_action_or_exit(
     app_path: Optional[str] = None,
 ) -> None:
     result = check_risky_action(cfg, action=action, pids=pids, app_path=app_path)
-    print(format_report(result), flush=True)
+    print(format_risky_action_report(cfg, result), flush=True)
     if not result.ok:
-        print(f"[!] 风险动作“{action}”已被版本门禁拒绝。", flush=True)
         sys.exit(2)
 
 
-def check_or_raise(cfg: Dict[str, Any], ttl_seconds: int = 30) -> None:
+def check_or_raise(
+    cfg: Dict[str, Any],
+    ttl_seconds: int = 30,
+    *,
+    action: str = "调用 MCP 工具",
+) -> None:
     if not is_enabled(cfg):
         return
     now = time.time()
@@ -548,4 +762,4 @@ def check_or_raise(cfg: Dict[str, Any], ttl_seconds: int = 30) -> None:
         _MCP_CACHE["result"] = result
         _MCP_CACHE["expires_at"] = now + ttl_seconds
     if not result.ok:
-        raise RuntimeError(f"微信版本门禁拒绝执行: {result.reason_text}")
+        raise RuntimeError(format_block_report(cfg, result, action=action))

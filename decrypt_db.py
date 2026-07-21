@@ -123,7 +123,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     from wechat_version_guard import enforce_or_exit
-    enforce_or_exit(_cfg)
+    enforce_or_exit(_cfg, action="解密微信数据库")
 
     print("=" * 60)
     print("  WeChat 4.0 数据库解密器")

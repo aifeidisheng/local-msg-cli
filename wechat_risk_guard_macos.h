@@ -22,21 +22,26 @@ static int wechat_guard_executable_dir(char *out, size_t out_size) {
     char resolved[PATH_MAX];
     uint32_t raw_size = (uint32_t)sizeof(raw_path);
     if (_NSGetExecutablePath(raw_path, &raw_size) != 0) {
-        fprintf(stderr, "[version] cannot resolve scanner executable path\n");
+        fprintf(stderr,
+                "[安全拦截] 无法确定密钥扫描器所在目录，已停止操作。\n"
+                "安全状态：尚未读取微信进程内存，也未提取密钥。\n");
         return -1;
     }
     if (!realpath(raw_path, resolved)) {
-        fprintf(stderr, "[version] cannot resolve scanner path: %s\n", strerror(errno));
+        fprintf(stderr,
+                "[安全拦截] 无法解析密钥扫描器路径，已停止操作：%s\n"
+                "安全状态：尚未读取微信进程内存，也未提取密钥。\n",
+                strerror(errno));
         return -1;
     }
     char *slash = strrchr(resolved, '/');
     if (!slash) {
-        fprintf(stderr, "[version] invalid scanner path: %s\n", resolved);
+        fprintf(stderr, "[安全拦截] 密钥扫描器路径格式异常，已停止操作：%s\n", resolved);
         return -1;
     }
     *slash = '\0';
     if (snprintf(out, out_size, "%s", resolved) >= (int)out_size) {
-        fprintf(stderr, "[version] scanner directory path is too long\n");
+        fprintf(stderr, "[安全拦截] 密钥扫描器目录路径过长，已停止操作。\n");
         return -1;
     }
     return 0;
@@ -44,7 +49,9 @@ static int wechat_guard_executable_dir(char *out, size_t out_size) {
 
 static int enforce_wechat_pid_version_guard(const pid_t *pids, int count) {
     if (!pids || count <= 0 || count > 64) {
-        fprintf(stderr, "[version] no valid WeChat PID supplied; refusing risky action\n");
+        fprintf(stderr,
+                "[安全拦截] 没有找到可校验版本的微信进程，无法安全提取密钥。\n"
+                "处理建议：确认微信已经启动并登录，然后重新运行。\n");
         return -1;
     }
 
@@ -55,8 +62,10 @@ static int enforce_wechat_pid_version_guard(const pid_t *pids, int count) {
     if (snprintf(guard_script, sizeof(guard_script), "%s/wechat_risk_actions.py", app_dir)
             >= (int)sizeof(guard_script) || access(guard_script, R_OK) != 0) {
         fprintf(stderr,
-                "[version] guard script missing beside scanner: %s\n"
-                "[version] refusing to access WeChat process memory\n",
+                "[安全拦截] 缺少版本门禁脚本，无法安全提取密钥。\n"
+                "缺少文件：%s\n"
+                "处理建议：重新部署完整程序，并执行 make build。\n"
+                "安全状态：尚未读取微信进程内存，也未提取密钥。\n",
                 guard_script);
         return -1;
     }
@@ -66,7 +75,10 @@ static int enforce_wechat_pid_version_guard(const pid_t *pids, int count) {
             < (int)sizeof(venv_python) && access(venv_python, X_OK) == 0) {
         python = venv_python;
     } else if (access(python, X_OK) != 0) {
-        fprintf(stderr, "[version] Python 3 not found; refusing risky action\n");
+        fprintf(stderr,
+                "[安全拦截] 找不到 Python 3，无法运行版本门禁。\n"
+                "处理建议：安装 Python 3，或在程序目录创建 .venv。\n"
+                "安全状态：尚未读取微信进程内存，也未提取密钥。\n");
         return -1;
     }
 
@@ -83,23 +95,28 @@ static int enforce_wechat_pid_version_guard(const pid_t *pids, int count) {
 
     pid_t child = fork();
     if (child < 0) {
-        fprintf(stderr, "[version] cannot start version guard: %s\n", strerror(errno));
+        fprintf(stderr,
+                "[安全拦截] 无法启动版本门禁进程，已停止操作：%s\n"
+                "安全状态：尚未读取微信进程内存，也未提取密钥。\n",
+                strerror(errno));
         return -1;
     }
     if (child == 0) {
         setenv("WECHAT_DECRYPT_APP_DIR", app_dir, 1);
         execv(python, args);
-        fprintf(stderr, "[version] cannot execute version guard: %s\n", strerror(errno));
+        fprintf(stderr, "[安全拦截] 无法执行版本门禁脚本：%s\n", strerror(errno));
         _exit(127);
     }
 
     int status = 0;
     if (waitpid(child, &status, 0) < 0) {
-        fprintf(stderr, "[version] cannot wait for version guard: %s\n", strerror(errno));
+        fprintf(stderr,
+                "[安全拦截] 版本门禁执行状态异常，已停止操作：%s\n"
+                "安全状态：尚未读取微信进程内存，也未提取密钥。\n",
+                strerror(errno));
         return -1;
     }
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        fprintf(stderr, "[version] WeChat version guard rejected process memory access\n");
         return -1;
     }
     return 0;

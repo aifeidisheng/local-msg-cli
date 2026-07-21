@@ -74,6 +74,126 @@ class RiskyActionGuardTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("进程已退出", result.reason_text)
 
+    def test_risky_action_report_explains_block_and_next_steps(self):
+        cfg = {
+            "version_guard": {
+                "enabled": True,
+                "allowed_version_ranges": [
+                    {
+                        "platform": "darwin",
+                        "min_version": "4.1.8",
+                        "max_version": "4.1.8",
+                    }
+                ],
+            }
+        }
+        result = guard.VersionCheckResult(
+            enabled=True,
+            ok=False,
+            reasons=["PID=9333: 当前微信版本不在允许区间: 4.1.11"],
+            details={
+                "action": "读取微信进程内存获取密钥",
+                "targets": [
+                    {
+                        "pid": 9333,
+                        "result": {
+                            "detected": {
+                                "app_path": "/Applications/WeChat.app",
+                                "short_version": "4.1.11",
+                                "build_version": "269111",
+                            }
+                        },
+                    }
+                ],
+            },
+        )
+
+        with patch.object(guard.platform, "system", return_value="Darwin"):
+            report = guard.format_risky_action_report(cfg, result)
+
+        self.assertIn("[安全拦截] 已停止：读取微信进程内存获取密钥", report)
+        self.assertIn("检测到：PID 9333，微信 4.1.11（build 269111）", report)
+        self.assertIn("当前允许：macOS 4.1.8", report)
+        self.assertIn("本次检查后没有调用 task_for_pid/OpenProcess", report)
+        self.assertIn("python3 main.py doctor", report)
+        self.assertIn("不要直接修改 version-guard.policy.json", report)
+        self.assertEqual(report.count("处理建议："), 1)
+
+    def test_standard_block_report_names_action_and_uses_plain_language(self):
+        cfg = {
+            "version_guard": {
+                "enabled": True,
+                "allowed_version_ranges": [
+                    {"platform": "darwin", "version": "4.1.8"}
+                ],
+            }
+        }
+        result = guard.VersionCheckResult(
+            enabled=True,
+            ok=False,
+            reasons=["当前微信版本不在允许区间: 4.1.11"],
+            details={
+                "detected": {
+                    "app_path": "/Applications/WeChat.app",
+                    "short_version": "4.1.11",
+                    "build_version": "269111",
+                }
+            },
+        )
+
+        with patch.object(guard.platform, "system", return_value="Darwin"):
+            report = guard.format_block_report(cfg, result, action="启动 MCP Server")
+
+        self.assertIn("[安全拦截] 已停止：启动 MCP Server", report)
+        self.assertIn("当前允许：macOS 4.1.8", report)
+        self.assertIn("尚未执行“启动 MCP Server”", report)
+        self.assertNotIn("reasons", report)
+        self.assertNotIn("FAIL", report)
+
+    def test_doctor_report_explains_disabled_guard(self):
+        report = guard.format_report(
+            guard.VersionCheckResult(
+                enabled=False,
+                ok=True,
+                details={"status": "disabled"},
+            ),
+            {},
+        )
+
+        self.assertIn("[版本门禁] 未启用", report)
+        self.assertIn("version-guard.policy.json", report)
+        self.assertNotIn("DISABLED", report)
+
+    def test_mcp_exception_says_tool_was_not_executed(self):
+        cfg = {
+            "version_guard": {
+                "enabled": True,
+                "allowed_version_ranges": [
+                    {"platform": "darwin", "version": "4.1.8"}
+                ],
+            }
+        }
+        result = guard.VersionCheckResult(
+            enabled=True,
+            ok=False,
+            reasons=["当前微信版本不在允许区间: 4.1.11"],
+            details={"detected": {"short_version": "4.1.11"}},
+        )
+
+        with patch.object(guard.platform, "system", return_value="Darwin"), \
+             patch.object(guard, "check_version", return_value=result):
+            guard._MCP_CACHE["result"] = None
+            with self.assertRaises(RuntimeError) as caught:
+                guard.check_or_raise(
+                    cfg,
+                    ttl_seconds=0,
+                    action="调用 MCP 工具 search_messages",
+                )
+
+        message = str(caught.exception)
+        self.assertIn("已停止：调用 MCP 工具 search_messages", message)
+        self.assertIn("尚未执行“调用 MCP 工具 search_messages”", message)
+
 
 class NativeScannerGuardTests(unittest.TestCase):
     def test_database_scanner_guards_before_task_for_pid(self):

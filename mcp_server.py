@@ -2082,7 +2082,7 @@ def _guarded_tool(*decorator_args, **decorator_kwargs):
         @functools.wraps(fn)
         def guarded(*args, **kwargs):
             from wechat_version_guard import check_or_raise
-            check_or_raise(_cfg)
+            check_or_raise(_cfg, action=f"调用 MCP 工具 {fn.__name__}")
             return fn(*args, **kwargs)
 
         return decorator(guarded)
@@ -3835,7 +3835,7 @@ def serve(host: str = "127.0.0.1", port: int = 8765, enforce_version: bool = Tru
 
     if enforce_version:
         from wechat_version_guard import enforce_or_exit
-        enforce_or_exit(_cfg)
+        enforce_or_exit(_cfg, action="启动 MCP Server")
 
     app = _build_mcp_http_app()
     uvicorn.run(app, host=host, port=port, log_level="info")

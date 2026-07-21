@@ -656,7 +656,7 @@ if __name__ == "__main__":
 
     from config import load_config
     from wechat_version_guard import enforce_or_exit
-    enforce_or_exit(load_config())
+    enforce_or_exit(load_config(), action="解密微信图片")
 
     dat_file = sys.argv[1]
     out_file = sys.argv[2] if len(sys.argv) > 2 else None

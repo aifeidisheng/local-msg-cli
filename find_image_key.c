@@ -840,7 +840,6 @@ int main(int argc, char *argv[]) {
         printf("\n--- Round %d: %d unsolved / %d total, %d PIDs ---\n",
                round, unsolved, npatterns, npids);
         if (enforce_wechat_pid_version_guard(pids, npids) != 0) {
-            fprintf(stderr, "Refusing to scan WeChat memory in round %d\n", round);
             return 2;
         }
 

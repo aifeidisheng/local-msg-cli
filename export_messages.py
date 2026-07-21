@@ -25,7 +25,7 @@ from config import load_config
 from wechat_version_guard import enforce_or_exit
 
 _cfg = load_config()
-enforce_or_exit(_cfg)
+enforce_or_exit(_cfg, action="导出微信消息")
 MSG_DB_DIR = os.path.join(_cfg["decrypted_dir"], "message")
 CONTACT_DB_PATH = os.path.join(_cfg["decrypted_dir"], "contact", "contact.db")
 OUTPUT_DIR = _cfg["output_base_dir"]

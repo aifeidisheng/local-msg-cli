@@ -115,7 +115,7 @@ def main():
         sys.exit(1)
 
     from wechat_version_guard import enforce_or_exit
-    enforce_or_exit(_cfg)
+    enforce_or_exit(_cfg, action="批量解密微信图片")
 
     source_dir = os.path.abspath(sys.argv[1])
     if not os.path.isdir(source_dir):

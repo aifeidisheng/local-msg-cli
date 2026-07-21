@@ -125,7 +125,6 @@ int main(int argc, char *argv[]) {
     fflush(stdout);
 
     if (enforce_wechat_pid_version_guard(&pid, 1) != 0) {
-        fprintf(stderr, "Refusing to call task_for_pid for PID %d\n", pid);
         return 2;
     }
 

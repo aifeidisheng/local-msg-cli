@@ -1325,7 +1325,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     from wechat_version_guard import enforce_or_exit
-    enforce_or_exit(mcp_server._cfg)
+    enforce_or_exit(mcp_server._cfg, action="批量导出聊天记录")
 
     if args.write_plan_csv and args.from_plan_csv:
         parser.error("--write-plan-csv 和 --from-plan-csv 只能使用一个")
