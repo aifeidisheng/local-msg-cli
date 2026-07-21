@@ -1,3 +1,4 @@
+import hashlib
 import os
 import plistlib
 import tempfile
@@ -24,6 +25,143 @@ def _make_macos_app(root, short_version="4.0.18", build_version="23110"):
 
 
 class WechatVersionGuardTests(unittest.TestCase):
+    def test_default_policy_uses_pinned_trust_anchor(self):
+        policy_path = os.path.join(os.path.dirname(guard.__file__), "version-guard.policy.json")
+
+        with patch.dict(
+            os.environ,
+            {guard._POLICY_SHA256_ENV: "0" * 64},
+            clear=False,
+        ):
+            reasons, details = guard._check_policy_integrity(
+                {"version_guard_policy_path": policy_path}
+            )
+
+        self.assertEqual(reasons, [])
+        self.assertEqual(details["policy_sha256"], guard._DEFAULT_POLICY_SHA256)
+
+    def test_policy_integrity_rejects_modified_policy(self):
+        with tempfile.TemporaryDirectory() as td:
+            policy_path = os.path.join(td, "version-guard.policy.json")
+            with open(policy_path, "wb") as f:
+                f.write(b'{"version_guard":{"enabled":true}}')
+            with open(policy_path, "rb") as f:
+                expected = hashlib.sha256(f.read()).hexdigest()
+            with open(policy_path, "wb") as f:
+                f.write(b'{"version_guard":{"enabled":false}}')
+
+            with patch.dict(
+                os.environ,
+                {guard._POLICY_SHA256_ENV: expected},
+                clear=False,
+            ):
+                reasons, details = guard._check_policy_integrity(
+                    {"version_guard_policy_path": policy_path}
+                )
+
+        self.assertTrue(reasons)
+        self.assertIn("完整性校验失败", reasons[0])
+        self.assertNotEqual(details["policy_sha256"], expected)
+
+    def test_custom_policy_requires_external_trust_anchor(self):
+        with tempfile.TemporaryDirectory() as td:
+            policy_path = os.path.join(td, "custom-policy.json")
+            with open(policy_path, "w", encoding="utf-8") as f:
+                f.write('{"version_guard":{"enabled":true}}')
+
+            with patch.dict(os.environ, {guard._POLICY_SHA256_ENV: ""}, clear=False):
+                reasons, _ = guard._check_policy_integrity(
+                    {"version_guard_policy_path": policy_path}
+                )
+
+        self.assertTrue(reasons)
+        self.assertIn("未配置可信 SHA-256 摘要", reasons[0])
+
+    def test_policy_integrity_blocks_before_version_probe(self):
+        with tempfile.TemporaryDirectory() as td:
+            policy_path = os.path.join(td, "custom-policy.json")
+            with open(policy_path, "w", encoding="utf-8") as f:
+                f.write('{"version_guard":{"enabled":true}}')
+
+            cfg = {
+                "version_guard_policy_path": policy_path,
+                "version_guard": {
+                    "enabled": True,
+                    "allowed_version_ranges": [
+                        {"platform": "darwin", "version": "4.1.8"}
+                    ],
+                },
+            }
+            with patch.dict(os.environ, {guard._POLICY_SHA256_ENV: ""}, clear=False), \
+                 patch.object(guard, "read_installed_version") as read_version:
+                result = guard.check_version(cfg)
+
+        self.assertFalse(result.ok)
+        self.assertIn("可信 SHA-256 摘要", result.reason_text)
+        read_version.assert_not_called()
+
+    def test_policy_integrity_failure_does_not_display_untrusted_range(self):
+        with tempfile.TemporaryDirectory() as td:
+            policy_path = os.path.join(td, "custom-policy.json")
+            with open(policy_path, "w", encoding="utf-8") as f:
+                f.write(
+                    '{"version_guard":{"enabled":true,"allowed_version_ranges":'
+                    '[{"platform":"darwin","version":"4.1.11"}]}}'
+                )
+
+            cfg = {
+                "version_guard_policy_path": policy_path,
+                "version_guard": {
+                    "enabled": True,
+                    "allowed_version_ranges": [
+                        {"platform": "darwin", "version": "4.1.11"}
+                    ],
+                },
+            }
+            with patch.dict(os.environ, {guard._POLICY_SHA256_ENV: ""}, clear=False):
+                result = guard.check_version(cfg)
+                report = guard.format_report(result, cfg)
+
+        self.assertFalse(result.ok)
+        self.assertIn("策略完整性校验未通过", report)
+        self.assertNotIn("当前允许：macOS 4.1.11", report)
+
+    def test_mcp_rechecks_policy_integrity_around_version_cache(self):
+        with tempfile.TemporaryDirectory() as td:
+            policy_path = os.path.join(td, "custom-policy.json")
+            with open(policy_path, "wb") as f:
+                f.write(b"trusted-policy")
+            with open(policy_path, "rb") as f:
+                expected = hashlib.sha256(f.read()).hexdigest()
+
+            cfg = {
+                "version_guard_policy_path": policy_path,
+                "version_guard": {"enabled": True},
+            }
+            previous_cache = dict(guard._MCP_CACHE)
+            try:
+                with patch.dict(
+                    os.environ,
+                    {guard._POLICY_SHA256_ENV: expected},
+                    clear=False,
+                ), patch.object(
+                    guard,
+                    "check_version",
+                    return_value=guard.VersionCheckResult(enabled=True, ok=True),
+                ) as check_version:
+                    guard._MCP_CACHE.update({"result": None, "expires_at": 0.0})
+                    guard.check_or_raise(cfg, ttl_seconds=300, action="测试 MCP 工具")
+                    check_version.assert_called_once()
+
+                    with open(policy_path, "wb") as f:
+                        f.write(b"modified-policy")
+
+                    with self.assertRaisesRegex(RuntimeError, "策略文件内容已变化"):
+                        guard.check_or_raise(cfg, ttl_seconds=300, action="测试 MCP 工具")
+            finally:
+                guard._MCP_CACHE.clear()
+                guard._MCP_CACHE.update(previous_cache)
+
     def test_disabled_guard_allows_legacy_config(self):
         result = guard.check_version({})
 

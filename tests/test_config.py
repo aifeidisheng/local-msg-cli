@@ -38,6 +38,42 @@ class SaveConfigUpdatesTests(unittest.TestCase):
 
 
 class VersionGuardPolicyTests(unittest.TestCase):
+    def test_environment_policy_path_overrides_config_policy_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = os.path.join(tmp, "config.json")
+            configured_policy = os.path.join(tmp, "configured-policy.json")
+            trusted_policy = os.path.join(tmp, "trusted-policy.json")
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "db_dir": "/tmp/db_storage",
+                        "version_guard_policy_file": configured_policy,
+                    },
+                    f,
+                )
+            with open(trusted_policy, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "version_guard": {
+                            "enabled": True,
+                            "allowed_version_ranges": [],
+                        }
+                    },
+                    f,
+                )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "WECHAT_DECRYPT_APP_DIR": tmp,
+                    "WECHAT_DECRYPT_POLICY_FILE": trusted_policy,
+                },
+                clear=False,
+            ):
+                loaded = config.load_config()
+
+        self.assertEqual(loaded["version_guard_policy_path"], trusted_policy)
+
     def test_load_config_merges_version_guard_policy_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg_path = os.path.join(tmp, "config.json")

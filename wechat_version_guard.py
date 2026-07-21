@@ -6,6 +6,7 @@ missing app path, or out-of-range version blocks business actions.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
@@ -32,6 +33,12 @@ class VersionCheckResult:
 
 _MCP_CACHE: Dict[str, Any] = {"expires_at": 0.0, "result": None}
 
+# The default policy is intentionally pinned outside the policy file itself.
+# A mutable policy must not be able to redefine its own trust boundary.
+_POLICY_SHA256_ENV = "WECHAT_DECRYPT_POLICY_SHA256"
+_DEFAULT_POLICY_NAME = "version-guard.policy.json"
+_DEFAULT_POLICY_SHA256 = "bdc1acf67364314f7a2f07f80ce4ce47cc57fc3ec666568941368a917fcd220a"
+
 
 def _guard_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     guard = cfg.get("version_guard") or {}
@@ -42,6 +49,64 @@ def _guard_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 def is_enabled(cfg: Dict[str, Any]) -> bool:
     return bool(_guard_config(cfg).get("enabled", False))
+
+
+def _policy_path(cfg: Dict[str, Any]) -> str:
+    """Return the policy path recorded by config loading, if available."""
+    path = cfg.get("version_guard_policy_path")
+    return _expand_path(str(path)) if path else ""
+
+
+def _trusted_policy_sha256(policy_path: str) -> str:
+    """Resolve a trust anchor that is not read from the mutable policy file."""
+    default_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), _DEFAULT_POLICY_NAME)
+    if policy_path and os.path.realpath(policy_path) == os.path.realpath(default_path):
+        return _DEFAULT_POLICY_SHA256
+
+    configured = os.environ.get(_POLICY_SHA256_ENV, "").strip().lower()
+    if configured:
+        return configured
+    return ""
+
+
+def _check_policy_integrity(cfg: Dict[str, Any]) -> tuple[List[str], Dict[str, Any]]:
+    """Fail closed when a loaded policy is missing, invalid, or unexpectedly changed.
+
+    Direct unit callers may provide an in-memory version_guard without a policy
+    path; that remains supported. Production config loading records the policy
+    path, which activates this check for the real MCP workflow.
+    """
+    policy_path = _policy_path(cfg)
+    if not policy_path:
+        return [], {}
+
+    details: Dict[str, Any] = {"policy_path": policy_path}
+    if not os.path.isfile(policy_path):
+        return [f"版本门禁策略文件不存在: {policy_path}"], details
+
+    expected = _trusted_policy_sha256(policy_path)
+    if not expected:
+        return [
+            "版本门禁策略未配置可信 SHA-256 摘要；"
+            f"请通过 {_POLICY_SHA256_ENV} 注入固定摘要"
+        ], details
+    if len(expected) != 64 or any(char not in "0123456789abcdef" for char in expected):
+        return [f"{_POLICY_SHA256_ENV} 不是有效的 SHA-256 摘要"], details
+
+    try:
+        with open(policy_path, "rb") as policy_file:
+            actual = hashlib.sha256(policy_file.read()).hexdigest()
+    except OSError as exc:
+        return [f"无法读取版本门禁策略文件: {exc}"], details
+
+    details["policy_sha256"] = actual
+    details["expected_policy_sha256"] = expected
+    if actual != expected:
+        return [
+            "版本门禁策略完整性校验失败；文件可能已被修改，"
+            "拒绝继续执行"
+        ], details
+    return [], details
 
 
 def _expand_path(path: Optional[str]) -> str:
@@ -358,6 +423,17 @@ def check_version(cfg: Dict[str, Any]) -> VersionCheckResult:
 
     reasons: List[str] = []
     details: Dict[str, Any] = {}
+    integrity_reasons, integrity_details = _check_policy_integrity(cfg)
+    if integrity_reasons:
+        return VersionCheckResult(
+            enabled=True,
+            ok=False,
+            reasons=integrity_reasons,
+            details={"policy_integrity": integrity_details},
+        )
+    if integrity_details:
+        details["policy_integrity"] = integrity_details
+
     ranges = _allowed_version_ranges(guard)
     allowed = _allowed_versions(guard)
     if not ranges and not allowed:
@@ -447,6 +523,16 @@ def _humanize_reason(reason: str) -> str:
     reason = str(reason or "未知原因")
     if "version_guard.enabled=true 但未配置 allowed_version_ranges" in reason:
         return "版本门禁已经启用，但没有配置当前平台允许使用的微信版本。"
+    if "版本门禁策略文件不存在" in reason:
+        return "版本门禁策略文件不存在，无法确认允许的微信版本。"
+    if "版本门禁策略未配置可信 SHA-256 摘要" in reason:
+        return "版本门禁缺少可信摘要，无法确认策略文件没有被替换。"
+    if "不是有效的 SHA-256 摘要" in reason:
+        return "版本门禁的可信摘要格式无效，无法确认策略文件完整性。"
+    if "无法读取版本门禁策略文件" in reason:
+        return "版本门禁策略文件无法读取，已按安全策略停止。"
+    if "版本门禁策略完整性校验失败" in reason:
+        return "版本门禁策略文件内容已变化，不能通过修改策略来放行当前版本。"
     if "未配置 wechat_app_path" in reason:
         return (
             "没有找到微信安装位置。请先启动微信，或在 config.json 中设置 "
@@ -487,7 +573,18 @@ def _failure_guidance(cfg: Dict[str, Any], result: VersionCheckResult) -> List[s
     lines.extend(["", "处理建议："])
 
     raw_reasons = "；".join(result.reasons)
-    if "要求 version_guard.enabled=true" in raw_reasons:
+    if (
+        "版本门禁策略" in raw_reasons
+        or "WECHAT_DECRYPT_POLICY_SHA256" in raw_reasons
+    ):
+        lines.extend(
+            [
+                "  1. 恢复受信任的 version-guard.policy.json，不要通过修改策略放行新版本。",
+                "  2. 如果策略确实经过人工审核，请由启动 MCP 的宿主环境更新可信 SHA-256 摘要。",
+                f"  3. 运行 `{_doctor_command()}` 重新检查。",
+            ]
+        )
+    elif "要求 version_guard.enabled=true" in raw_reasons:
         lines.extend(
             [
                 "  1. 确认程序目录中存在 version-guard.policy.json。",
@@ -545,6 +642,13 @@ def _failure_guidance(cfg: Dict[str, Any], result: VersionCheckResult) -> List[s
     return lines
 
 
+def _allowed_summary_for_result(cfg: Dict[str, Any], result: VersionCheckResult) -> str:
+    """Never display an untrusted policy's version range as authoritative."""
+    if any("版本门禁策略" in str(reason) for reason in result.reasons):
+        return "未读取（策略完整性校验未通过）"
+    return _allowed_version_summary(cfg)
+
+
 def format_report(
     result: VersionCheckResult,
     cfg: Optional[Dict[str, Any]] = None,
@@ -563,7 +667,7 @@ def format_report(
     title = "[版本门禁] 检查通过" if result.ok else "[版本门禁] 检查失败"
     lines = [title]
     lines.extend(_detected_version_lines(result.details.get("detected") or {}))
-    lines.append(f"当前允许：{_allowed_version_summary(cfg)}")
+    lines.append(f"当前允许：{_allowed_summary_for_result(cfg, result)}")
 
     if result.ok:
         lines.append("检查结果：当前微信版本符合安全策略。")
@@ -594,7 +698,7 @@ def format_block_report(
         "============================================================",
     ]
     lines.extend(_detected_version_lines(result.details.get("detected") or {}))
-    lines.append(f"当前允许：{_allowed_version_summary(cfg)}")
+    lines.append(f"当前允许：{_allowed_summary_for_result(cfg, result)}")
     lines.extend(_failure_guidance(cfg, result))
     lines.extend(
         [
@@ -633,7 +737,7 @@ def format_risky_action_report(
         if detected.get("app_path"):
             lines.append(f"程序路径：{detected['app_path']}")
 
-    lines.append(f"当前允许：{_allowed_version_summary(cfg)}")
+    lines.append(f"当前允许：{_allowed_summary_for_result(cfg, result)}")
 
     if result.ok:
         lines.append("检查结果：版本符合安全策略，继续执行。")
@@ -753,6 +857,18 @@ def check_or_raise(
 ) -> None:
     if not is_enabled(cfg):
         return
+
+    # Do not let the normal version-result TTL cache hide a policy mutation.
+    integrity_reasons, integrity_details = _check_policy_integrity(cfg)
+    if integrity_reasons:
+        result = VersionCheckResult(
+            enabled=True,
+            ok=False,
+            reasons=integrity_reasons,
+            details={"policy_integrity": integrity_details},
+        )
+        raise RuntimeError(format_block_report(cfg, result, action=action))
+
     now = time.time()
     cached = _MCP_CACHE.get("result")
     if cached is not None and now < float(_MCP_CACHE.get("expires_at") or 0):
