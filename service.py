@@ -13,6 +13,7 @@ import plistlib
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -36,6 +37,7 @@ def service_paths(root: Path | None = None, home: Path | None = None) -> dict[st
         "root": root,
         "python": root / ".venv" / "bin" / "python3",
         "main": root / "main.py",
+        "service": root / "service.py",
         "plist_dir": home / "Library" / "LaunchAgents",
         "plist": home / "Library" / "LaunchAgents" / f"{DEFAULT_LABEL}.plist",
         "log_dir": home / "Library" / "Logs" / "WeChatDecryptLight",
@@ -58,8 +60,8 @@ def build_plist(paths: dict[str, Path], host: str = DEFAULT_HOST, port: int = DE
         "Label": DEFAULT_LABEL,
         "ProgramArguments": [
             str(paths["python"]),
-            str(paths["main"]),
-            "serve",
+            str(paths["service"]),
+            "run",
             "--host",
             host,
             "--port",
@@ -78,6 +80,41 @@ def build_plist(paths: dict[str, Path], host: str = DEFAULT_HOST, port: int = DE
         "StandardOutPath": str(paths["stdout"]),
         "StandardErrorPath": str(paths["stderr"]),
     }
+
+
+def run_service(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, retry_interval: int = 10) -> int:
+    """等待微信和版本门禁就绪后启动 MCP，供 launchd 作为常驻入口调用。"""
+    paths = service_paths()
+    print(f"[*] 常驻服务已启动，等待微信就绪后提供 MCP: {host}:{port}", flush=True)
+
+    while True:
+        try:
+            from config import load_config
+            from wechat_version_guard import check_version
+
+            result = check_version(load_config())
+            if result.ok:
+                print("[+] 微信环境和版本门禁已就绪，启动 MCP Server", flush=True)
+                os.execv(
+                    str(paths["python"]),
+                    [
+                        str(paths["python"]),
+                        str(paths["main"]),
+                        "serve",
+                        "--host",
+                        host,
+                        "--port",
+                        str(port),
+                    ],
+                )
+                return 0
+
+            reason = "；".join(result.reasons) or "微信尚未就绪"
+            print(f"[*] MCP 暂不启动：{reason}；{retry_interval} 秒后重试", flush=True)
+        except Exception as exc:
+            print(f"[*] MCP 启动前检查失败：{exc}；{retry_interval} 秒后重试", flush=True)
+
+        time.sleep(max(1, retry_interval))
 
 
 def _run_launchctl(args: list[str], *, check: bool = False) -> subprocess.CompletedProcess[str]:
@@ -111,6 +148,9 @@ def install_service(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> int:
     if not paths["main"].is_file():
         print(f"[错误] 未找到服务入口: {paths['main']}", file=sys.stderr)
         return 1
+    if not paths["service"].is_file():
+        print(f"[错误] 未找到常驻服务入口: {paths['service']}", file=sys.stderr)
+        return 1
 
     paths["plist_dir"].mkdir(parents=True, exist_ok=True)
     paths["log_dir"].mkdir(parents=True, exist_ok=True)
@@ -135,11 +175,25 @@ def install_service(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> int:
         print(f"[错误] MCP Server 启动失败: {started.stderr.strip()}", file=sys.stderr)
         return started.returncode or 1
 
-    print(f"[完成] 已安装并启动 macOS 常驻服务: {DEFAULT_LABEL}")
+    if not _wait_for_port(host, port):
+        print(f"[提示] 常驻服务已加载，但微信尚未就绪，MCP 暂未监听 {host}:{port}")
+        print("       微信启动并通过版本门禁后，服务会自动开始监听。")
+    else:
+        print(f"[完成] 已安装并启动 macOS 常驻服务: {DEFAULT_LABEL}")
     print(f"       MCP 地址: http://{host}:{port}/mcp")
     print(f"       日志目录: {paths['log_dir']}")
     print("       电脑重启或重新登录后会自动启动，无需再次执行命令。")
     return 0
+
+
+def _wait_for_port(host: str, port: int, timeout: float = 15.0) -> bool:
+    """等待 MCP 端口监听，避免仅凭 launchctl 成功就误报服务已可用。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _port_open(host, port):
+            return True
+        time.sleep(0.25)
+    return False
 
 
 def start_service() -> int:
@@ -220,6 +274,10 @@ def main(argv: list[str] | None = None) -> int:
     status.add_argument("--host", default=DEFAULT_HOST)
     status.add_argument("--port", type=int, default=DEFAULT_PORT)
     subparsers.add_parser("uninstall", help="移除常驻服务，不删除数据")
+    run = subparsers.add_parser("run", help="等待微信就绪后启动 MCP，供 launchd 调用")
+    run.add_argument("--host", default=DEFAULT_HOST)
+    run.add_argument("--port", type=int, default=DEFAULT_PORT)
+    run.add_argument("--retry-interval", type=int, default=10)
 
     args = parser.parse_args(argv)
     if args.command == "install":
@@ -235,6 +293,12 @@ def main(argv: list[str] | None = None) -> int:
         return status_service(host=args.host, port=args.port)
     if args.command == "uninstall":
         return uninstall_service()
+    if args.command == "run":
+        return run_service(
+            host=args.host,
+            port=args.port,
+            retry_interval=args.retry_interval,
+        )
     parser.error(f"未知命令: {args.command}")
     return 2
 

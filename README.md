@@ -93,7 +93,7 @@ sudo ./find_all_keys_macos
 .venv/bin/python3 main.py init
 ```
 
-在 macOS 上，`init` 成功后会自动安装常驻服务。之后 macOS 会在当前用户登录时自动启动 MCP Server，并在进程异常退出后自动重启。服务由项目自己的 `.venv/bin/python3` 运行，不依赖终端窗口、shell 激活状态或 AlphaClaw。常驻服务使用用户级 `launchd`，不需要 `sudo`。
+在 macOS 上，`init` 成功后会自动安装常驻服务。之后 macOS 会在当前用户登录时启动该服务；如果微信尚未启动，服务会先等待微信和版本门禁就绪，满足条件后再启动 MCP Server。MCP 进程异常退出时，服务会自动恢复。服务由项目自己的 `.venv/bin/python3` 运行，不依赖终端窗口、shell 激活状态或 AlphaClaw。常驻服务使用用户级 `launchd`，不需要 `sudo`。
 
 如果自动安装被跳过或需要重新生成 LaunchAgent，可以手动执行一次：
 
