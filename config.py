@@ -10,7 +10,6 @@ import sys
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 VERSION_GUARD_POLICY_FILE = "version-guard.policy.json"
-VERSION_GUARD_POLICY_PATH_ENV = "WECHAT_DECRYPT_POLICY_FILE"
 
 # 打包后 __file__ 指向临时目录，优先使用环境变量指定的 exe 所在目录。
 def _app_base_dir():
@@ -116,9 +115,6 @@ def _expand_path_value(path):
 
 
 def _version_guard_policy_path(cfg):
-    trusted = os.environ.get(VERSION_GUARD_POLICY_PATH_ENV, "").strip()
-    if trusted:
-        return _expand_path_value(trusted)
     custom = cfg.get("version_guard_policy_file", "")
     if custom:
         return _expand_path_value(custom)
@@ -356,6 +352,9 @@ def load_config():
         cfg["version_guard"] = _merge_dict(cfg.get("version_guard") or {}, policy_guard)
     if policy_path:
         cfg["version_guard_policy_path"] = policy_path
+    cfg["_version_guard_policy_required"] = bool(
+        (cfg.get("version_guard") or {}).get("enabled", False)
+    )
 
     # 将相对路径转为绝对路径
     base = _app_base_dir()

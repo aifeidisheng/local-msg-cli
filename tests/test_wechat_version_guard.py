@@ -1,4 +1,3 @@
-import hashlib
 import os
 import plistlib
 import tempfile
@@ -28,14 +27,9 @@ class WechatVersionGuardTests(unittest.TestCase):
     def test_default_policy_uses_pinned_trust_anchor(self):
         policy_path = os.path.join(os.path.dirname(guard.__file__), "version-guard.policy.json")
 
-        with patch.dict(
-            os.environ,
-            {guard._POLICY_SHA256_ENV: "0" * 64},
-            clear=False,
-        ):
-            reasons, details = guard._check_policy_integrity(
-                {"version_guard_policy_path": policy_path}
-            )
+        reasons, details = guard._check_policy_integrity(
+            {"version_guard_policy_path": policy_path}
+        )
 
         self.assertEqual(reasons, [])
         self.assertEqual(details["policy_sha256"], guard._DEFAULT_POLICY_SHA256)
@@ -43,39 +37,45 @@ class WechatVersionGuardTests(unittest.TestCase):
     def test_policy_integrity_rejects_modified_policy(self):
         with tempfile.TemporaryDirectory() as td:
             policy_path = os.path.join(td, "version-guard.policy.json")
-            with open(policy_path, "wb") as f:
-                f.write(b'{"version_guard":{"enabled":true}}')
-            with open(policy_path, "rb") as f:
-                expected = hashlib.sha256(f.read()).hexdigest()
-            with open(policy_path, "wb") as f:
-                f.write(b'{"version_guard":{"enabled":false}}')
+            with open(policy_path, "w", encoding="utf-8") as f:
+                f.write('{"version_guard":{"enabled":false}}')
 
-            with patch.dict(
-                os.environ,
-                {guard._POLICY_SHA256_ENV: expected},
-                clear=False,
-            ):
+            with patch.object(guard, "_default_policy_path", return_value=policy_path):
                 reasons, details = guard._check_policy_integrity(
                     {"version_guard_policy_path": policy_path}
                 )
 
         self.assertTrue(reasons)
         self.assertIn("完整性校验失败", reasons[0])
-        self.assertNotEqual(details["policy_sha256"], expected)
+        self.assertNotEqual(details["policy_sha256"], guard._DEFAULT_POLICY_SHA256)
 
-    def test_custom_policy_requires_external_trust_anchor(self):
+    def test_custom_policy_is_rejected_even_when_file_is_readable(self):
         with tempfile.TemporaryDirectory() as td:
             policy_path = os.path.join(td, "custom-policy.json")
             with open(policy_path, "w", encoding="utf-8") as f:
                 f.write('{"version_guard":{"enabled":true}}')
 
-            with patch.dict(os.environ, {guard._POLICY_SHA256_ENV: ""}, clear=False):
-                reasons, _ = guard._check_policy_integrity(
-                    {"version_guard_policy_path": policy_path}
-                )
+            reasons, _ = guard._check_policy_integrity(
+                {"version_guard_policy_path": policy_path}
+            )
 
         self.assertTrue(reasons)
-        self.assertIn("未配置可信 SHA-256 摘要", reasons[0])
+        self.assertIn("不是受信任的默认文件", reasons[0])
+
+    def test_policy_digest_is_stable_across_line_endings(self):
+        with tempfile.TemporaryDirectory() as td:
+            lf_path = os.path.join(td, "lf.json")
+            crlf_path = os.path.join(td, "crlf.json")
+            payload = '{"version_guard": {"enabled": true, "allowed_versions": []}}'
+            with open(lf_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(payload + "\n")
+            with open(crlf_path, "w", encoding="utf-8", newline="\r\n") as f:
+                f.write(payload + "\n")
+
+            self.assertEqual(
+                guard._canonical_policy_sha256(lf_path),
+                guard._canonical_policy_sha256(crlf_path),
+            )
 
     def test_policy_integrity_blocks_before_version_probe(self):
         with tempfile.TemporaryDirectory() as td:
@@ -92,12 +92,11 @@ class WechatVersionGuardTests(unittest.TestCase):
                     ],
                 },
             }
-            with patch.dict(os.environ, {guard._POLICY_SHA256_ENV: ""}, clear=False), \
-                 patch.object(guard, "read_installed_version") as read_version:
+            with patch.object(guard, "read_installed_version") as read_version:
                 result = guard.check_version(cfg)
 
         self.assertFalse(result.ok)
-        self.assertIn("可信 SHA-256 摘要", result.reason_text)
+        self.assertIn("不是受信任的默认文件", result.reason_text)
         read_version.assert_not_called()
 
     def test_policy_integrity_failure_does_not_display_untrusted_range(self):
@@ -118,49 +117,40 @@ class WechatVersionGuardTests(unittest.TestCase):
                     ],
                 },
             }
-            with patch.dict(os.environ, {guard._POLICY_SHA256_ENV: ""}, clear=False):
-                result = guard.check_version(cfg)
-                report = guard.format_report(result, cfg)
+            result = guard.check_version(cfg)
+            report = guard.format_report(result, cfg)
 
         self.assertFalse(result.ok)
         self.assertIn("策略完整性校验未通过", report)
         self.assertNotIn("当前允许：macOS 4.1.11", report)
 
     def test_mcp_rechecks_policy_integrity_around_version_cache(self):
-        with tempfile.TemporaryDirectory() as td:
-            policy_path = os.path.join(td, "custom-policy.json")
-            with open(policy_path, "wb") as f:
-                f.write(b"trusted-policy")
-            with open(policy_path, "rb") as f:
-                expected = hashlib.sha256(f.read()).hexdigest()
-
-            cfg = {
-                "version_guard_policy_path": policy_path,
-                "version_guard": {"enabled": True},
-            }
-            previous_cache = dict(guard._MCP_CACHE)
-            try:
-                with patch.dict(
-                    os.environ,
-                    {guard._POLICY_SHA256_ENV: expected},
-                    clear=False,
-                ), patch.object(
-                    guard,
-                    "check_version",
-                    return_value=guard.VersionCheckResult(enabled=True, ok=True),
-                ) as check_version:
-                    guard._MCP_CACHE.update({"result": None, "expires_at": 0.0})
+        cfg = {"version_guard": {"enabled": True}}
+        previous_cache = dict(guard._MCP_CACHE)
+        integrity_results = [
+            ([], {}),
+            (["版本门禁策略完整性校验失败；文件可能已被修改，拒绝继续执行"], {}),
+        ]
+        try:
+            with patch.object(
+                guard,
+                "_check_policy_integrity",
+                side_effect=integrity_results,
+            ) as check_integrity, patch.object(
+                guard,
+                "check_version",
+                return_value=guard.VersionCheckResult(enabled=True, ok=True),
+            ) as check_version:
+                guard._MCP_CACHE.update({"result": None, "expires_at": 0.0})
+                guard.check_or_raise(cfg, ttl_seconds=300, action="测试 MCP 工具")
+                guard._MCP_CACHE["expires_at"] = 10**12
+                with self.assertRaisesRegex(RuntimeError, "策略文件内容已变化"):
                     guard.check_or_raise(cfg, ttl_seconds=300, action="测试 MCP 工具")
-                    check_version.assert_called_once()
-
-                    with open(policy_path, "wb") as f:
-                        f.write(b"modified-policy")
-
-                    with self.assertRaisesRegex(RuntimeError, "策略文件内容已变化"):
-                        guard.check_or_raise(cfg, ttl_seconds=300, action="测试 MCP 工具")
-            finally:
-                guard._MCP_CACHE.clear()
-                guard._MCP_CACHE.update(previous_cache)
+                self.assertEqual(check_integrity.call_count, 2)
+                check_version.assert_called_once()
+        finally:
+            guard._MCP_CACHE.clear()
+            guard._MCP_CACHE.update(previous_cache)
 
     def test_disabled_guard_allows_legacy_config(self):
         result = guard.check_version({})

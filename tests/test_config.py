@@ -38,7 +38,7 @@ class SaveConfigUpdatesTests(unittest.TestCase):
 
 
 class VersionGuardPolicyTests(unittest.TestCase):
-    def test_environment_policy_path_overrides_config_policy_path(self):
+    def test_environment_policy_path_cannot_override_config_policy_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg_path = os.path.join(tmp, "config.json")
             configured_policy = os.path.join(tmp, "configured-policy.json")
@@ -61,6 +61,16 @@ class VersionGuardPolicyTests(unittest.TestCase):
                     },
                     f,
                 )
+            with open(configured_policy, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "version_guard": {
+                            "enabled": True,
+                            "allowed_version_ranges": [],
+                        }
+                    },
+                    f,
+                )
 
             with patch.dict(
                 os.environ,
@@ -72,7 +82,7 @@ class VersionGuardPolicyTests(unittest.TestCase):
             ):
                 loaded = config.load_config()
 
-        self.assertEqual(loaded["version_guard_policy_path"], trusted_policy)
+        self.assertEqual(loaded["version_guard_policy_path"], configured_policy)
 
     def test_load_config_merges_version_guard_policy_file(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -108,6 +118,7 @@ class VersionGuardPolicyTests(unittest.TestCase):
                 "4.1.8",
             )
             self.assertEqual(loaded["version_guard_policy_path"], policy_path)
+            self.assertTrue(loaded["_version_guard_policy_required"])
 
 
 if __name__ == "__main__":

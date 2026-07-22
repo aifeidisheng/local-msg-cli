@@ -334,8 +334,11 @@ def main():
         from wechat_version_guard import check_version, format_report
         result = check_version(cfg)
         print(format_report(result, cfg))
-        if result.enabled and not result.ok:
-            sys.exit(2)
+        print()
+        print(
+            "诊断模式：doctor 只报告当前状态，不会修改门禁策略，"
+            "也不会执行密钥提取、解密或消息查询。"
+        )
         return
 
     business_commands = {"serve", "init", "decrypt", "export", "all", "decode-images"}

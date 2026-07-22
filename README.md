@@ -209,17 +209,11 @@ python main.py update --check
 
 生产环境应启用 `version_guard.enabled=true` 并填写 `allowed_version_ranges`。当只允许单一版本时，可把 `min_version` 和 `max_version` 配成相同值；如果后续确认多个连续版本都安全，再适当放宽区间。共享版本规则建议提交 `version-guard.policy.json`，本机 `config.json` 继续只保存 `db_dir`、key、本机路径等运行态信息。`wechat_app_path`、`installer_path`、`installer_sha256` 仍然支持放在本机 `config.json` 中，但默认门禁只关注真实版本号，不再强制要求运行中的微信必须来自某个固定安装目录，也不再依赖安装包 hash 校验；`wechat_app_path` 留空时程序也会尝试从运行中的微信进程自动发现。`build_version` 当前只作为 `doctor` 的诊断信息，不作为主门禁条件。
 
-门禁策略文件现在会在 `doctor`、`init`、`serve` 和每次 MCP 工具调用前做 SHA-256 完整性校验。仓库内默认策略绑定到 MCP 代码中的受信摘要，修改它会直接 fail-closed；如果通过 `config.json` 指定了其他策略文件，必须由启动 MCP 的宿主环境注入摘要，不能把摘要写回 Agent 可修改的配置文件：
+门禁策略文件会在真正的敏感操作和 MCP 数据访问前做完整性校验。生产流程只接受仓库默认位置的 `version-guard.policy.json`，并使用 MCP 代码内置的规范化 JSON SHA-256 摘要；自定义策略路径、环境变量注入策略和运行时摘要覆盖均不受支持。这样 Windows 的 LF/CRLF 换行转换不会造成误报，但修改策略内容仍会 fail-closed。
 
-```bash
-export WECHAT_DECRYPT_POLICY_FILE="/Users/feijunwei/project/wechat-decrypt-light/version-guard.policy.json"
-export WECHAT_DECRYPT_POLICY_SHA256="$(shasum -a 256 "$WECHAT_DECRYPT_POLICY_FILE" | awk '{print $1}')"
-python3 main.py doctor
-```
+`doctor` 是只读诊断命令：即使版本不匹配或策略完整性失败，也只报告问题并明确不会执行密钥提取、解密或查询。不要为了让诊断命令返回“通过”而修改 `version-guard.policy.json`；需要支持新版本时，应发布包含新策略和新内置摘要的受信任版本。
 
-`WECHAT_DECRYPT_POLICY_FILE` 会优先于 `config.json` 的 `version_guard_policy_file`，`WECHAT_DECRYPT_POLICY_SHA256` 是外部策略的可信摘要；仓库内默认策略使用代码中的固定摘要，不接受环境变量覆盖。对于外部策略，路径或摘要变量缺失、摘要无效、或文件内容发生变化时，工具会 fail-closed。不要为了通过检查而修改 `version-guard.policy.json`，应恢复受信文件后再运行 `doctor`。
-
-微信 4.x 的“有更新时自动升级微信”使用微信自己的设置系统，旧 Sparkle plist 中的 `SUEnableAutomaticChecks` 和 `SUAutomaticallyUpdate` 不能反映界面开关。工具不会替用户修改微信设置，也不会把旧字段或 `MacUpdate` 插件是否存在当成真实开关；请在微信“设置 > 通用”中手动关闭自动升级。默认共享策略保持 `require_update_disabled=false`，最终安全边界是实际版本门禁：`serve`、`init`、`decrypt`、`export`、`all`、`decode-images` 会在任何密钥提取、解密或查询前校验真实微信版本，MCP 工具调用期间也会按 30 秒 TTL 复检；版本未知或不匹配会直接拒绝执行。若在微信 4.x 上强行启用 `require_update_disabled=true`，工具会因无法可靠读取开关而 fail-closed。`python main.py doctor` 可用于安装后诊断。详细设计见 [docs/wechat-version-guard-design.md](docs/wechat-version-guard-design.md)。
+微信 4.x 的“有更新时自动升级微信”使用微信自己的设置系统，旧 Sparkle plist 中的 `SUEnableAutomaticChecks` 和 `SUAutomaticallyUpdate` 不能反映界面开关。工具不会替用户修改微信设置，也不会把旧字段或 `MacUpdate` 插件是否存在当成真实开关；请在微信“设置 > 通用”中手动关闭自动升级。默认共享策略保持 `require_update_disabled=false`，最终安全边界是实际版本门禁：`init`、`decrypt`、`export`、`all`、`decode-images` 和 MCP 数据访问会在执行前校验真实微信版本；版本未知、不匹配或策略不可信会直接拒绝执行。`serve` 启动前也会检查，避免在未初始化或不兼容版本上暴露数据源。`python main.py doctor` 仅用于安装后诊断。详细设计见 [docs/wechat-version-guard-design.md](docs/wechat-version-guard-design.md)。
 
 各平台默认路径：
 
