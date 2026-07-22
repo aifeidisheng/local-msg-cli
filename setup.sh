@@ -21,15 +21,19 @@ esac
 echo "[平台] $PLATFORM"
 
 # ── Python / venv ────────────────────────────────────────────
-PYTHON="python3"
-if command -v python3 &>/dev/null; then
-    PYTHON="python3"
-elif command -v python &>/dev/null; then
-    PYTHON="python"
-else
-    echo "[错误] 未找到 Python 3。请安装: https://python.org"
+PYTHON=""
+for candidate in python3.13 python3.12 python3.11 python3 python; do
+    if command -v "$candidate" &>/dev/null && \
+       "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+        PYTHON="$candidate"
+        break
+    fi
+done
+if [ -z "$PYTHON" ]; then
+    echo "[错误] 未找到 Python 3.10+。请安装: https://python.org"
     exit 1
 fi
+echo "[Python] 使用 $PYTHON ($($PYTHON --version 2>&1))"
 
 if [ ! -d .venv ]; then
     echo "[venv] 创建虚拟环境..."
@@ -139,9 +143,10 @@ echo "  1. 编辑 config.json 确认 db_dir 路径"
 echo "     如需启用版本门禁，编辑 version-guard.policy.json"
 echo "  2. 预解密 MCP 查询缓存："
 echo "     $VENV_PY main.py init"
+echo "     macOS 上 init 成功后会自动安装登录自启服务"
 echo ""
-echo "  3. 启动 MCP Server："
-echo "     $VENV_PY main.py serve --port 8765"
+echo "  如需手动修复或重新安装服务："
+echo "     $VENV_PY service.py install"
 echo ""
-echo "  或使用 Makefile:  make init / make serve"
+echo "  或使用 Makefile:  make init / make serve / make service-install"
 echo "========================================================"

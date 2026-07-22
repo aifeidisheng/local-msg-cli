@@ -89,11 +89,35 @@ cc -O2 -o find_all_keys_macos find_all_keys_macos.c -framework Foundation
 sudo ./find_all_keys_macos
 
 # 3. 首次使用前预解密 MCP 查询缓存
-python3 main.py init
-
-# 4. 启动 MCP Server
-python3 main.py serve --port 8765
+#    macOS 上 init 成功后会自动安装登录自启服务
+.venv/bin/python3 main.py init
 ```
+
+在 macOS 上，`init` 成功后会自动安装常驻服务。之后 macOS 会在当前用户登录时自动启动 MCP Server，并在进程异常退出后自动重启。服务由项目自己的 `.venv/bin/python3` 运行，不依赖终端窗口、shell 激活状态或 AlphaClaw。常驻服务使用用户级 `launchd`，不需要 `sudo`。
+
+如果自动安装被跳过或需要重新生成 LaunchAgent，可以手动执行一次：
+
+```bash
+.venv/bin/python3 service.py install
+```
+
+常用管理命令：
+
+```bash
+# 查看 launchd 和 8765 端口状态
+.venv/bin/python3 service.py status
+
+# 手动重启服务
+.venv/bin/python3 service.py restart
+
+# 停止当前服务（不删除数据）
+.venv/bin/python3 service.py stop
+
+# 取消登录自启（不删除项目、配置或解密数据）
+.venv/bin/python3 service.py uninstall
+```
+
+服务日志位于：`~/Library/Logs/WeChatDecryptLight/`。如果服务未启动，优先查看 `mcp.stderr.log`。
 
 ## Desktop MCP 配置
 

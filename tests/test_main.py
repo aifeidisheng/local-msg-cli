@@ -29,5 +29,23 @@ class MainDoctorTests(unittest.TestCase):
         self.assertIn("不会执行密钥提取、解密或消息查询", output.getvalue())
 
 
+class MacServiceInstallHookTests(unittest.TestCase):
+    def test_macos_service_install_hook_is_opt_out(self):
+        with patch("main.platform.system", return_value="Darwin"), \
+             patch.dict("os.environ", {"WECHAT_DECRYPT_SKIP_SERVICE_INSTALL": "1"}, clear=False), \
+             patch("service.install_service") as install_service:
+            main._maybe_install_macos_service()
+
+        install_service.assert_not_called()
+
+    def test_macos_service_install_hook_calls_service_installer(self):
+        with patch("main.platform.system", return_value="Darwin"), \
+             patch.dict("os.environ", {}, clear=True), \
+             patch("service.install_service", return_value=0) as install_service:
+            main._maybe_install_macos_service()
+
+        install_service.assert_called_once_with()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -288,6 +288,28 @@ def _maybe_auto_update_before_serve(argv):
         print()
 
 
+def _maybe_install_macos_service():
+    """首次初始化成功后安装当前用户的 macOS 常驻服务。"""
+    if platform.system().lower() != "darwin":
+        return
+    if os.environ.get("WECHAT_DECRYPT_SKIP_SERVICE_INSTALL") == "1":
+        print("[*] 已跳过 macOS 常驻服务安装 (WECHAT_DECRYPT_SKIP_SERVICE_INSTALL=1)")
+        return
+
+    try:
+        from service import install_service
+
+        result = install_service()
+        if result == 0:
+            print("[+] macOS 常驻服务已安装：登录后会自动启动 MCP Server")
+        else:
+            print("[!] macOS 常驻服务安装失败，可稍后执行: .venv/bin/python3 service.py install")
+    except Exception as exc:
+        # 常驻服务安装属于 init 后的便利操作，不能让已经成功的数据库初始化失败。
+        print(f"[!] macOS 常驻服务安装失败: {exc}")
+        print("    可稍后执行: .venv/bin/python3 service.py install")
+
+
 def _call_with_argv(func, argv):
     """调用子命令 main() 时临时隔离 sys.argv，避免 argparse 读到外层命令。"""
     old_argv = sys.argv[:]
@@ -417,6 +439,7 @@ def main():
         stats = predecrypt_databases(target_db=args.target_db)
         if stats["failed"]:
             sys.exit(2)
+        _maybe_install_macos_service()
 
     elif cmd == "decrypt":
         print("[*] 开始解密全部数据库...")

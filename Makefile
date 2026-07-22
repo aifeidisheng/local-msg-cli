@@ -1,4 +1,4 @@
-.PHONY: setup build sign-wechat keys init serve decrypt export all status clean help
+.PHONY: setup build sign-wechat keys init serve service-install service-start service-stop service-restart service-status service-uninstall decrypt export all status clean help
 
 PYTHON ?= .venv/bin/python3
 export SHELL := /bin/bash
@@ -12,6 +12,12 @@ help:
 	@echo "  make keys     提取密钥（需要 root）"
 	@echo "  make init     预解密 MCP 查询缓存"
 	@echo "  make serve    启动 MCP Server"
+	@echo "  make service-install  安装 macOS 登录自启和异常重启服务"
+	@echo "  make service-start    启动已安装的 macOS 服务"
+	@echo "  make service-stop     停止 macOS 服务"
+	@echo "  make service-restart  重启 macOS 服务"
+	@echo "  make service-status   查看 macOS 服务状态"
+	@echo "  make service-uninstall 移除 macOS 服务（不删数据）"
 	@echo "  make decrypt  提取密钥 + 解密全部数据库"
 	@echo "  make export     解密 + 批量导出聊天记录"
 	@echo "  make all        从零到完成：setup → keys → decrypt → export"
@@ -40,6 +46,24 @@ init:
 
 serve:
 	$(PYTHON) main.py serve
+
+service-install:
+	$(PYTHON) service.py install
+
+service-start:
+	$(PYTHON) service.py start
+
+service-stop:
+	$(PYTHON) service.py stop
+
+service-restart:
+	$(PYTHON) service.py restart
+
+service-status:
+	$(PYTHON) service.py status
+
+service-uninstall:
+	$(PYTHON) service.py uninstall
 
 export:
 	$(PYTHON) main.py export
