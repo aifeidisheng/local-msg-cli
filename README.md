@@ -21,46 +21,28 @@
 - 允许区间内的 WeChat 版本正在运行
 - macOS 需 Xcode Command Line Tools: `xcode-select --install`
 - Windows 首次提取密钥需使用“以管理员身份运行”的 PowerShell
-- macOS/Linux 读取进程内存需要 root 权限（Linux 也可使用 `CAP_SYS_PTRACE`）
+- macOS 正式安装始终以普通用户运行管理 CLI，仅在密钥扫描时通过系统授权弹窗提权；Linux 读取进程内存需要 root 或 `CAP_SYS_PTRACE`
 
 正式安装会创建项目自己的 Python 虚拟环境，不依赖 Desktop/AEJarvis 内置 Python。用于启动服务的运行目录、Python 环境和敏感数据目录也都独立于 Git 暂存目录。
 
-## main 通道安装（macOS）
+## macOS 正式安装
 
 正式版本统一从独立仓库受保护的 `main` 分支安装。日常开发在功能分支进行，只有测试通过并允许发布的提交才能通过 PR 进入 `main`。安装器会自动记录 `main` 当前的完整 commit；远端 `main` 后续更新不会静默改变已经安装的运行版本。
 
+> **最终用户和对话 Agent 必须使用 `install.sh`。** 除非明确进行源码开发，不要在克隆目录创建 `.venv`，不要运行 `setup.sh`、`setup.py`、`main.py init` 或手动编译/执行密钥扫描器。
+
+从仓库任意工作树运行统一引导入口即可。引导脚本不会部署当前工作树；它会重新拉取并校验受保护的 `main`，然后交给正式安装器：
+
 ```bash
-# 发布源必须由用户提供或确认。第一个是主源，后续可加入团队维护的官方镜像。
-REPOSITORIES=(
-  'https://github.com/aifeidisheng/local-msg-cli.git'
-  # 'https://gitee.com/aifeidisheng/local-msg-cli.git'
-)
+./install.sh
+```
 
-INSTALL_SOURCE=''
-for repository in "${REPOSITORIES[@]}"; do
-  for attempt in 1 2; do
-    candidate="$(mktemp -d "${TMPDIR:-/tmp}/wechat-decrypt-light.XXXXXX")"
-    if git -c http.lowSpeedLimit=1024 -c http.lowSpeedTime=15 \
-      clone --depth 1 --branch main --single-branch \
-      "$repository" "$candidate"; then
-      INSTALL_SOURCE="$candidate"
-      break 2
-    fi
-  done
-done
+如团队维护了经过确认的备用发布源，可显式传入；只有主源不可达时才会使用备用源：
 
-test -n "$INSTALL_SOURCE" || { echo '所有可信发布源均不可达' >&2; exit 1; }
-
-INSTALL_ARGS=(
-  install --json
-  --source "$INSTALL_SOURCE"
-  --repository "${REPOSITORIES[0]}"
-  --branch main
-)
-for repository in "${REPOSITORIES[@]:1}"; do
-  INSTALL_ARGS+=(--fallback-repository "$repository")
-done
-python3 "$INSTALL_SOURCE/installer.py" "${INSTALL_ARGS[@]}"
+```bash
+./install.sh \
+  --repository 'https://github.com/aifeidisheng/local-msg-cli.git' \
+  --fallback-repository 'https://gitee.com/aifeidisheng/local-msg-cli.git'
 ```
 
 `main` 必须禁止 force push 和删除，并限制为通过测试的 PR 更新。安装器会校验实际克隆的 `origin` 是否位于用户确认的可信源列表中，并校验 `origin/main`、当前 `HEAD` 和干净工作树。最终完整 commit、可信源列表和本次实际使用的源都会写入本机安装记录。
@@ -92,9 +74,17 @@ Git 网络操作会重试一次，并在持续低于 1 KiB/s 达 15 秒时快速
 
 只有返回的 `service.status` 为 `ready`，才可以把 `http://127.0.0.1:8765/mcp` 注册到 mcporter。`waiting_for_wechat` 表示常驻机制正常，但 MCP 尚不可调用，不能提前报告接入完成。
 
-## 源码开发安装
+## 源码开发安装（非最终用户）
 
-直接在 Git 工作树运行和调试时，可以使用传统虚拟环境：
+只有需要修改、测试或调试本仓库时才使用本节。不要用这套流程为最终用户或对话任务部署 MCP。
+
+推荐通过带有显式开发确认的脚本配置工作树：
+
+```bash
+./setup.sh --development
+```
+
+也可以手动创建传统虚拟环境：
 
 ```bash
 python3 -m venv .venv
@@ -156,7 +146,7 @@ sudo ./find_all_keys_macos --output "$PWD/all_keys.json"
 .venv/bin/python3 main.py init
 ```
 
-在源码调试模式下，`init` 成功后会自动安装指向当前工作树的常驻服务。正式安装应使用上面的 `installer.py install`，LaunchAgent 才会指向固定版本运行目录，不会依赖可能被删除的 Git 暂存目录。电脑登录后 launchd 自动加载服务；进程异常退出时会自动恢复。常驻服务不依赖终端窗口、shell 激活状态或 AEJarvis，也不需要 `sudo`。
+在源码调试模式下，`init` 成功后会自动安装指向当前工作树的常驻服务。正式安装应使用上面的 `./install.sh`，LaunchAgent 才会指向固定版本运行目录，不会依赖可能被删除的 Git 暂存目录。电脑登录后 launchd 自动加载服务；进程异常退出时会自动恢复。常驻服务不依赖终端窗口、shell 激活状态或 AEJarvis，也不需要 `sudo`。
 
 服务使用单实例锁防止手动启动和 LaunchAgent 同时运行两份 MCP。安装和状态检查会同时核对 LaunchAgent 路径、launchd 管理的 PID 与端口监听 PID；如果旧项目或其他进程占用了目标端口，安装器会拒绝自动终止该进程并报告 PID，避免把“其他服务正在监听”误判为安装成功。`status` 将“等待微信”视为正常状态，并会单独报告旧项目配置、端口冲突和恢复中等状态。
 

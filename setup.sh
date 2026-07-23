@@ -1,13 +1,21 @@
 #!/usr/bin/env bash
-# setup.sh — 一键安装所有依赖 + 编译 + 初始配置
+# setup.sh — 仅用于源码开发的依赖、编译和初始配置
 # 幂等（可重复运行）。适用 macOS / Linux / Windows (Git Bash / WSL)
 set -euo pipefail
+
+if [ "${1:-}" != "--development" ]; then
+    echo "[错误] setup.sh 仅用于源码开发，不是最终用户安装入口。" >&2
+    echo "       macOS 正式安装请运行: ./install.sh" >&2
+    echo "       确需配置源码工作树时运行: ./setup.sh --development" >&2
+    exit 2
+fi
+shift
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 echo "========================================================"
-echo "  WeChat Decrypt — 环境配置"
+echo "  WeChat Decrypt — 源码开发环境配置"
 echo "========================================================"
 
 # ── 检测平台 ──────────────────────────────────────────────────
@@ -68,7 +76,7 @@ if [ "$PLATFORM" = "macos" ]; then
     if ! xcode-select -p &>/dev/null; then
         echo "[xcode] 安装 Command Line Tools..."
         xcode-select --install || true
-        echo "[xcode] 安装完成后请重新运行 setup.sh"
+        echo "[xcode] 安装完成后请重新运行: ./setup.sh --development"
         exit 0
     else
         echo "[xcode] ✓"
