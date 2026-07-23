@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 
 
 APP_DIR_NAME = "WeChatDecryptLight"
-MANIFEST_SCHEMA_VERSION = 1
+MANIFEST_SCHEMA_VERSION = 2
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 REQUIRED_SOURCE_FILES = {
@@ -101,16 +101,21 @@ def _run(
     env: dict[str, str] | None = None,
     error_context: str,
     allow_failure: bool = False,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        command,
-        cwd=str(cwd) if cwd else None,
-        env=env,
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    try:
+        result = subprocess.run(
+            command,
+            cwd=str(cwd) if cwd else None,
+            env=env,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise InstallerError(f"{error_context}：操作超时") from exc
     if result.returncode != 0 and not allow_failure:
         details = (result.stderr or result.stdout).strip().splitlines()
         tail = "\n".join(details[-12:])
@@ -148,18 +153,32 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _validate_branch(value: str) -> str:
+    value = value.strip()
+    result = _run(
+        ["/usr/bin/git", "check-ref-format", "--branch", value],
+        error_context="发布通道分支名称无效",
+        allow_failure=True,
+    )
+    if result.returncode != 0:
+        raise InstallerError(f"发布通道分支名称无效：{value or '<empty>'}")
+    return value
+
+
 def verify_source(
     source: Path,
     *,
-    expected_commit: str,
     expected_repository: str,
-    expected_installer_sha256: str,
+    branch: str = "main",
+    expected_commit: str | None = None,
+    expected_installer_sha256: str | None = None,
     allow_dirty_source: bool = False,
 ) -> dict[str, str]:
     source = source.resolve()
     if not (source / ".git").exists():
         raise InstallerError("安装来源不是 Git 工作树")
 
+    branch = _validate_branch(branch)
     commit = _git(source, "rev-parse", "HEAD", error_context="无法读取源码提交")
     repository = _git(
         source,
@@ -167,6 +186,14 @@ def verify_source(
         "get-url",
         "origin",
         error_context="无法读取 origin 仓库地址",
+    )
+    branch_ref = f"refs/remotes/origin/{branch}"
+    branch_commit = _git(
+        source,
+        "rev-parse",
+        "--verify",
+        f"{branch_ref}^{{commit}}",
+        error_context=f"未找到 origin/{branch}，请按 main 发布通道安装流程重新拉取",
     )
     dirty = _git(
         source,
@@ -177,18 +204,24 @@ def verify_source(
     )
     installer_hash = _sha256(source / "installer.py")
 
-    if commit.lower() != expected_commit.lower():
+    if commit.lower() != branch_commit.lower():
+        raise InstallerError(
+            f"当前源码不是 origin/{branch} 的发布版本："
+            f"发布提交 {branch_commit}，实际 {commit}"
+        )
+    if expected_commit and commit.lower() != expected_commit.lower():
         raise InstallerError(f"源码提交不匹配：期望 {expected_commit}，实际 {commit}")
     if _repository_identity(repository) != _repository_identity(expected_repository):
-        raise InstallerError("origin 仓库与可信安装清单不匹配")
-    if installer_hash.lower() != expected_installer_sha256.lower():
-        raise InstallerError("installer.py 校验和与可信安装清单不匹配")
+        raise InstallerError("origin 仓库与指定发布仓库不匹配")
+    if expected_installer_sha256 and installer_hash.lower() != expected_installer_sha256.lower():
+        raise InstallerError("installer.py 校验和与指定摘要不匹配")
     if dirty and not allow_dirty_source:
         raise InstallerError("源码工作树存在未提交或未跟踪文件，拒绝部署不可复现版本")
 
     return {
         "commit": commit,
         "repository": repository,
+        "branch": branch,
         "installer_sha256": installer_hash,
     }
 
@@ -367,18 +400,21 @@ def install(args: argparse.Namespace, reporter: Reporter) -> dict:
         raise InstallerError("敏感本机 MCP 只允许监听回环地址")
     if not 1 <= args.port <= 65535:
         raise InstallerError("MCP 端口必须位于 1-65535")
-    if not re.fullmatch(r"[0-9a-fA-F]{40}", args.expected_commit):
-        raise InstallerError("可信安装清单中的 commit 必须是完整 40 位 Git SHA")
-    if not re.fullmatch(r"[0-9a-fA-F]{64}", args.expected_installer_sha256):
-        raise InstallerError("可信安装清单中的 installer SHA-256 格式错误")
+    if args.expected_commit and not re.fullmatch(r"[0-9a-fA-F]{40}", args.expected_commit):
+        raise InstallerError("指定的 commit 必须是完整 40 位 Git SHA")
+    if args.expected_installer_sha256 and not re.fullmatch(
+        r"[0-9a-fA-F]{64}", args.expected_installer_sha256
+    ):
+        raise InstallerError("指定的 installer SHA-256 格式错误")
 
     source = Path(args.source).expanduser().resolve()
     layout = default_layout(Path(args.home).expanduser() if args.home else None)
-    reporter.progress("verify", "校验 Git 来源、固定提交和安装器摘要")
+    reporter.progress("verify", f"校验 Git 来源和 {args.branch} 发布通道")
     source_info = verify_source(
         source,
+        expected_repository=args.repository,
+        branch=args.branch,
         expected_commit=args.expected_commit,
-        expected_repository=args.expected_repository,
         expected_installer_sha256=args.expected_installer_sha256,
         allow_dirty_source=args.allow_dirty_source,
     )
@@ -439,9 +475,9 @@ def install(args: argparse.Namespace, reporter: Reporter) -> dict:
     manifest = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "installation_id": installation_id,
-        "version": version,
+        "commit": version,
         "repository": source_info["repository"],
-        "installer_sha256": source_info["installer_sha256"],
+        "branch": source_info["branch"],
         "runtime_dir": str(final_runtime),
         "data_dir": str(layout.data_dir),
         "endpoint": f"http://{args.host}:{args.port}/mcp",
@@ -498,11 +534,157 @@ def status(args: argparse.Namespace, reporter: Reporter) -> dict:
         "ok": bool(service_payload.get("ok")),
         "command": "status",
         "installation_id": manifest.get("installation_id"),
-        "version": manifest.get("version"),
+        "commit": manifest.get("commit") or manifest.get("version"),
+        "branch": manifest.get("branch") or manifest.get("release_branch") or "main",
         "endpoint": manifest.get("endpoint"),
         "runtime_dir": str(runtime),
         "data_dir": str(layout.data_dir),
         "service": service_payload,
+    }
+
+
+def _remote_branch_commit(repository: str, branch: str) -> str:
+    branch = _validate_branch(branch)
+    if not repository or repository.startswith("-"):
+        raise InstallerError("安装清单中的发布仓库地址无效")
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    result = _run(
+        ["/usr/bin/git", "ls-remote", "--exit-code", repository, f"refs/heads/{branch}"],
+        env=env,
+        error_context=f"无法查询远端 {branch} 发布通道",
+        timeout=15,
+    )
+    lines = [line.split() for line in result.stdout.splitlines() if line.strip()]
+    if len(lines) != 1 or len(lines[0]) != 2 or not re.fullmatch(r"[0-9a-fA-F]{40}", lines[0][0]):
+        raise InstallerError("远端发布分支返回了无法解析的提交信息")
+    return lines[0][0].lower()
+
+
+def check_update(args: argparse.Namespace, reporter: Reporter) -> dict:
+    layout = default_layout(Path(args.home).expanduser() if args.home else None)
+    manifest = _read_manifest(layout)
+    _installed_runtime(layout, manifest)
+    repository = str(manifest.get("repository") or "")
+    branch = str(manifest.get("branch") or manifest.get("release_branch") or "main")
+    installed_commit = str(manifest.get("commit") or manifest.get("version") or "").lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", installed_commit):
+        raise InstallerError("安装清单缺少有效的 Git commit，请重新安装当前版本")
+    reporter.progress("update", f"查询远端 {branch} 发布通道")
+    remote_commit = _remote_branch_commit(repository, branch)
+    return {
+        "ok": True,
+        "command": "check-update",
+        "installed_commit": installed_commit,
+        "remote_commit": remote_commit,
+        "branch": branch,
+        "update_available": remote_commit != installed_commit,
+    }
+
+
+def _clone_branch(repository: str, branch: str, destination: Path) -> None:
+    branch = _validate_branch(branch)
+    if not repository or repository.startswith("-"):
+        raise InstallerError("安装清单中的发布仓库地址无效")
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    _run(
+        [
+            "/usr/bin/git",
+            "clone",
+            "--quiet",
+            "--depth",
+            "1",
+            "--branch",
+            branch,
+            "--single-branch",
+            repository,
+            str(destination),
+        ],
+        env=env,
+        error_context=f"拉取远端 {branch} 发布版本失败",
+        timeout=60,
+    )
+
+
+def _parse_json_result(result: subprocess.CompletedProcess[str], error_context: str) -> dict:
+    try:
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError) as exc:
+        raise InstallerError(f"{error_context}：安装器返回了无法解析的结果") from exc
+    if not isinstance(payload, dict):
+        raise InstallerError(f"{error_context}：安装器返回了无效结果")
+    if result.returncode != 0 or not payload.get("ok"):
+        raise InstallerError(f"{error_context}：{payload.get('error') or '未知错误'}")
+    return payload
+
+
+def upgrade(args: argparse.Namespace, reporter: Reporter) -> dict:
+    layout = default_layout(Path(args.home).expanduser() if args.home else None)
+    manifest = _read_manifest(layout)
+    _installed_runtime(layout, manifest)
+    repository = str(manifest.get("repository") or "")
+    branch = str(manifest.get("branch") or manifest.get("release_branch") or "main")
+    installed_commit = str(manifest.get("commit") or manifest.get("version") or "").lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", installed_commit):
+        raise InstallerError("安装清单缺少有效的 Git commit，请重新安装当前版本")
+
+    reporter.progress("update", f"检查远端 {branch} 发布通道")
+    remote_commit = _remote_branch_commit(repository, branch)
+    if remote_commit == installed_commit:
+        return {
+            "ok": True,
+            "command": "upgrade",
+            "upgraded": False,
+            "commit": installed_commit,
+            "message": "当前已是最新版本",
+        }
+
+    with tempfile.TemporaryDirectory(prefix="wechat-decrypt-light-upgrade-") as temporary:
+        source = Path(temporary) / "source"
+        reporter.progress("download", f"拉取 {branch} 最新发布版本")
+        _clone_branch(repository, branch, source)
+        source_info = verify_source(
+            source,
+            expected_repository=repository,
+            branch=branch,
+        )
+        reporter.progress("install", f"升级到提交 {source_info['commit'][:12]}")
+        result = _run(
+            [
+                sys.executable,
+                str(source / "installer.py"),
+                "--home",
+                str(Path(args.home).expanduser()) if args.home else str(Path.home()),
+                "install",
+                "--json",
+                "--source",
+                str(source),
+                "--repository",
+                repository,
+                "--branch",
+                branch,
+                "--expected-commit",
+                source_info["commit"],
+                "--host",
+                str(manifest.get("host") or DEFAULT_HOST),
+                "--port",
+                str(manifest.get("port") or DEFAULT_PORT),
+            ],
+            error_context="执行新版本安装器失败",
+            allow_failure=True,
+        )
+        install_payload = _parse_json_result(result, "升级失败")
+
+    installation = install_payload.get("installation") or {}
+    return {
+        "ok": True,
+        "command": "upgrade",
+        "upgraded": True,
+        "from_commit": installed_commit,
+        "to_commit": installation.get("commit"),
+        "installation": installation,
+        "service": install_payload.get("service"),
     }
 
 
@@ -596,9 +778,26 @@ def build_parser() -> argparse.ArgumentParser:
     install_parser = subparsers.add_parser("install", help="部署独立运行时并安装 LaunchAgent")
     install_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
     install_parser.add_argument("--source", default=str(Path(__file__).resolve().parent))
-    install_parser.add_argument("--expected-commit", required=True)
-    install_parser.add_argument("--expected-repository", required=True)
-    install_parser.add_argument("--expected-installer-sha256", required=True)
+    install_parser.add_argument(
+        "--repository",
+        "--expected-repository",
+        dest="repository",
+        required=True,
+        help="独立 MCP 的发布仓库地址",
+    )
+    install_parser.add_argument(
+        "--branch",
+        "--release-branch",
+        dest="branch",
+        default="main",
+        help="受保护的发布通道分支，默认 main",
+    )
+    install_parser.add_argument("--expected-commit", default=None, help="可选的额外 commit 固定校验")
+    install_parser.add_argument(
+        "--expected-installer-sha256",
+        default=None,
+        help="可选的额外安装器摘要校验",
+    )
     install_parser.add_argument("--python", default=sys.executable)
     install_parser.add_argument("--host", default=DEFAULT_HOST)
     install_parser.add_argument("--port", type=int, default=DEFAULT_PORT)
@@ -606,6 +805,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     status_parser = subparsers.add_parser("status", help="读取安装和服务状态")
     status_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
+    update_parser = subparsers.add_parser("check-update", help="检查 main 发布通道是否有新版本")
+    update_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
+    upgrade_parser = subparsers.add_parser("upgrade", help="经用户确认后升级到 main 最新版本")
+    upgrade_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
     repair_parser = subparsers.add_parser("repair", help="按安装清单修复 LaunchAgent")
     repair_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
     initialize_parser = subparsers.add_parser("initialize", help="经用户确认后提取密钥并预解密本机数据库")
@@ -628,6 +831,8 @@ def main(argv: list[str] | None = None) -> int:
         handlers = {
             "install": install,
             "status": status,
+            "check-update": check_update,
+            "upgrade": upgrade,
             "repair": repair,
             "initialize": initialize,
             "uninstall": uninstall,

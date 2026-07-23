@@ -25,36 +25,35 @@
 
 正式安装会创建项目自己的 Python 虚拟环境，不依赖 Desktop/AEJarvis 内置 Python。用于启动服务的运行目录、Python 环境和敏感数据目录也都独立于 Git 暂存目录。
 
-## 可信版本安装（macOS）
+## main 通道安装（macOS）
 
-Agent 或自动安装程序必须先从可信安装清单取得固定的仓库地址、完整 commit 和 `installer.py` SHA-256，再拉取该 commit。不能使用分支名、`latest` 或下载后临时计算出的摘要代替可信清单。
+正式版本统一从独立仓库受保护的 `main` 分支安装。日常开发在功能分支进行，只有测试通过并允许发布的提交才能通过 PR 进入 `main`。安装器会自动记录 `main` 当前的完整 commit；远端 `main` 后续更新不会静默改变已经安装的运行版本。
 
 ```bash
-# 下面三个值必须来自产品随版本发布的可信安装清单
-REPOSITORY='<trusted-repository-url>'
-COMMIT='<40-character-git-commit>'
-INSTALLER_SHA256='<64-character-sha256>'
+# 仓库地址由用户提供，或由独立于 AEJarvis 的 MCP 安装入口下发
+REPOSITORY='https://github.com/aifeidisheng/local-msg-cli.git'
+INSTALL_SOURCE="$(mktemp -d "${TMPDIR:-/tmp}/wechat-decrypt-light.XXXXXX")"
 
-git init /tmp/wechat-decrypt-light-install
-git -C /tmp/wechat-decrypt-light-install remote add origin "$REPOSITORY"
-git -C /tmp/wechat-decrypt-light-install fetch --depth 1 origin "$COMMIT"
-git -C /tmp/wechat-decrypt-light-install checkout --detach "$COMMIT"
+git clone --depth 1 --branch main --single-branch \
+  "$REPOSITORY" "$INSTALL_SOURCE"
 
-python3 /tmp/wechat-decrypt-light-install/installer.py install --json \
-  --source /tmp/wechat-decrypt-light-install \
-  --expected-repository "$REPOSITORY" \
-  --expected-commit "$COMMIT" \
-  --expected-installer-sha256 "$INSTALLER_SHA256"
+python3 "$INSTALL_SOURCE/installer.py" install --json \
+  --source "$INSTALL_SOURCE" \
+  --repository "$REPOSITORY" \
+  --branch main
 ```
+
+`main` 必须禁止 force push 和删除，并限制为通过测试的 PR 更新。安装器会校验 `origin`、`origin/main`、当前 `HEAD` 和干净工作树，并把完整 commit 写入本机安装记录。
 
 安装器会完成以下工作：
 
-- 复核 `origin`、完整 commit、安装器摘要和干净工作树。
+- 复核 `origin`、`main` 发布通道、完整 commit 和干净工作树。
 - 部署到 `~/Library/Application Support/WeChatDecryptLight/runtime/<commit>/`。
 - 创建该版本独立的 `.venv`，安装项目固定版本的直接依赖并编译本地扫描器。
 - 将配置、密钥和解密缓存保存在独立 `data/` 目录，升级时不覆盖已有数据。
 - 安装用户级 LaunchAgent，并核对 launchd PID 与监听端口 PID。
 - 生成稳定管理入口 `~/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light`。
+- 记录安装 commit，支持检查和升级到 `main` 的最新提交。
 
 密钥提取和数据库预解密属于独立的敏感步骤。只有用户明确确认后，才执行：
 
@@ -160,11 +159,15 @@ sudo ./find_all_keys_macos
 MCPCTL="$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light"
 
 "$MCPCTL" status --json
+"$MCPCTL" check-update --json
+"$MCPCTL" upgrade --json
 "$MCPCTL" repair --json
 "$MCPCTL" uninstall --json
 # 同时删除版本运行目录，但仍保留 data/ 中的敏感数据
 "$MCPCTL" uninstall --remove-runtime --json
 ```
+
+`check-update` 只查询远端 `main` 并比较本机安装 commit，不下载代码、不修改运行目录。返回 `update_available=true` 后，只有用户明确确认才执行 `upgrade`。升级会浅克隆最新 `main`、重新校验来源并部署新的固定 commit；配置、密钥和解密缓存继续保存在独立数据目录，安装或服务验证失败时保留原运行版本。
 
 服务日志位于：`~/Library/Logs/WeChatDecryptLight/`。如果服务未启动，优先查看 `mcp.stderr.log`。
 
