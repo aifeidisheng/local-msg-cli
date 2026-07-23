@@ -23,20 +23,55 @@
 - Windows 首次提取密钥需使用“以管理员身份运行”的 PowerShell
 - macOS/Linux 读取进程内存需要 root 权限（Linux 也可使用 `CAP_SYS_PTRACE`）
 
-若使用 Desktop 内置 Python（≥3.10 即可），仍需通过 `pip install -r requirements.txt` 安装依赖。
+正式安装会创建项目自己的 Python 虚拟环境，不依赖 Desktop/AEJarvis 内置 Python。用于启动服务的运行目录、Python 环境和敏感数据目录也都独立于 Git 暂存目录。
 
-## 安装
+## 可信版本安装（macOS）
+
+Agent 或自动安装程序必须先从可信安装清单取得固定的仓库地址、完整 commit 和 `installer.py` SHA-256，再拉取该 commit。不能使用分支名、`latest` 或下载后临时计算出的摘要代替可信清单。
+
+```bash
+# 下面三个值必须来自产品随版本发布的可信安装清单
+REPOSITORY='<trusted-repository-url>'
+COMMIT='<40-character-git-commit>'
+INSTALLER_SHA256='<64-character-sha256>'
+
+git init /tmp/wechat-decrypt-light-install
+git -C /tmp/wechat-decrypt-light-install remote add origin "$REPOSITORY"
+git -C /tmp/wechat-decrypt-light-install fetch --depth 1 origin "$COMMIT"
+git -C /tmp/wechat-decrypt-light-install checkout --detach "$COMMIT"
+
+python3 /tmp/wechat-decrypt-light-install/installer.py install --json \
+  --source /tmp/wechat-decrypt-light-install \
+  --expected-repository "$REPOSITORY" \
+  --expected-commit "$COMMIT" \
+  --expected-installer-sha256 "$INSTALLER_SHA256"
+```
+
+安装器会完成以下工作：
+
+- 复核 `origin`、完整 commit、安装器摘要和干净工作树。
+- 部署到 `~/Library/Application Support/WeChatDecryptLight/runtime/<commit>/`。
+- 创建该版本独立的 `.venv`，安装项目固定版本的直接依赖并编译本地扫描器。
+- 将配置、密钥和解密缓存保存在独立 `data/` 目录，升级时不覆盖已有数据。
+- 安装用户级 LaunchAgent，并核对 launchd PID 与监听端口 PID。
+- 生成稳定管理入口 `~/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light`。
+
+密钥提取和数据库预解密属于独立的敏感步骤。只有用户明确确认后，才执行：
+
+```bash
+"$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light" initialize --json
+```
+
+只有返回的 `service.status` 为 `ready`，才可以把 `http://127.0.0.1:8765/mcp` 注册到 mcporter。`waiting_for_wechat` 表示常驻机制正常，但 MCP 尚不可调用，不能提前报告接入完成。
+
+## 源码开发安装
+
+直接在 Git 工作树运行和调试时，可以使用传统虚拟环境：
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-也可以使用 Desktop 内置 Python：
-
-```bash
-/path/to/desktop/python3 -m pip install -r requirements.txt
 ```
 
 Windows 建议使用 PowerShell 和 Python Launcher：
@@ -77,7 +112,7 @@ python main.py serve --port 8765
 
 Windows 不需要重签名微信。首次执行 `init` 或 `decrypt` 时会读取 `Weixin.exe` 进程内存，因此必须使用管理员 PowerShell；已有有效 `all_keys.json` 后的离线解密通常不再需要管理员权限。完整配置示例、数据目录定位和故障排查见 [Windows 使用指南](docs/windows-guide.md)。
 
-## macOS 快速开始
+## macOS 源码调试
 
 ```bash
 # 1. 退出微信并重签名
@@ -93,7 +128,9 @@ sudo ./find_all_keys_macos
 .venv/bin/python3 main.py init
 ```
 
-在 macOS 上，`init` 成功后会自动安装常驻服务。之后 macOS 会在当前用户登录时启动该服务；如果微信尚未启动，服务会先等待微信和版本门禁就绪，满足条件后再启动 MCP Server。MCP 进程异常退出时，服务会自动恢复。服务由项目自己的 `.venv/bin/python3` 运行，不依赖终端窗口、shell 激活状态或 AlphaClaw。常驻服务使用用户级 `launchd`，不需要 `sudo`。
+在源码调试模式下，`init` 成功后会自动安装指向当前工作树的常驻服务。正式安装应使用上面的 `installer.py install`，LaunchAgent 才会指向固定版本运行目录，不会依赖可能被删除的 Git 暂存目录。电脑登录后 launchd 自动加载服务；进程异常退出时会自动恢复。常驻服务不依赖终端窗口、shell 激活状态或 AEJarvis，也不需要 `sudo`。
+
+服务使用单实例锁防止手动启动和 LaunchAgent 同时运行两份 MCP。安装和状态检查会同时核对 LaunchAgent 路径、launchd 管理的 PID 与端口监听 PID；如果旧项目或其他进程占用了目标端口，安装器会拒绝自动终止该进程并报告 PID，避免把“其他服务正在监听”误判为安装成功。`status` 将“等待微信”视为正常状态，并会单独报告旧项目配置、端口冲突和恢复中等状态。
 
 如果自动安装被跳过或需要重新生成 LaunchAgent，可以手动执行一次：
 
@@ -115,6 +152,18 @@ sudo ./find_all_keys_macos
 
 # 取消登录自启（不删除项目、配置或解密数据）
 .venv/bin/python3 service.py uninstall
+```
+
+正式安装后的管理命令：
+
+```bash
+MCPCTL="$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light"
+
+"$MCPCTL" status --json
+"$MCPCTL" repair --json
+"$MCPCTL" uninstall --json
+# 同时删除版本运行目录，但仍保留 data/ 中的敏感数据
+"$MCPCTL" uninstall --remove-runtime --json
 ```
 
 服务日志位于：`~/Library/Logs/WeChatDecryptLight/`。如果服务未启动，优先查看 `mcp.stderr.log`。

@@ -401,8 +401,25 @@ def main():
         print(f"[*] 启动 MCP Server: http://{args.host}:{args.port}/mcp")
         print("    Desktop 工具配置类型请选择 streamablehttp")
         print()
-        from mcp_server import serve
-        serve(host=args.host, port=args.port, enforce_version=False)
+        service_lock_fd = None
+        if (
+            platform.system().lower() == "darwin"
+            and os.environ.get("WECHAT_DECRYPT_SERVICE_LOCK_HELD") != "1"
+        ):
+            from service import ServiceAlreadyRunningError, acquire_instance_lock
+
+            try:
+                service_lock_fd = acquire_instance_lock()
+            except ServiceAlreadyRunningError as exc:
+                print(f"[!] {exc}，请先运行 `.venv/bin/python3 service.py status` 查看状态")
+                sys.exit(3)
+        try:
+            from mcp_server import serve
+
+            serve(host=args.host, port=args.port, enforce_version=False)
+        finally:
+            if service_lock_fd is not None:
+                os.close(service_lock_fd)
         return
 
     # 早路由:decode-images 不需要微信进程在运行,也不需要 DB 密钥

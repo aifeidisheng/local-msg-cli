@@ -2,9 +2,11 @@ import contextlib
 import io
 import sys
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import main
+import service
 from wechat_version_guard import VersionCheckResult
 
 
@@ -45,6 +47,26 @@ class MacServiceInstallHookTests(unittest.TestCase):
             main._maybe_install_macos_service()
 
         install_service.assert_called_once_with()
+
+
+class MainServeLockTests(unittest.TestCase):
+    def test_manual_serve_refuses_when_service_lock_is_held(self):
+        fake_mcp_server = SimpleNamespace(serve=Mock())
+        with patch.object(sys, "argv", ["main.py", "serve"]), \
+             patch("main.platform.system", return_value="Darwin"), \
+             patch("config.load_config", return_value={"keys_file": "all_keys.json"}), \
+             patch("wechat_version_guard.enforce_or_exit"), \
+             patch("main.os.path.exists", return_value=True), \
+             patch(
+                 "service.acquire_instance_lock",
+                 side_effect=service.ServiceAlreadyRunningError("已有本地 MCP 实例正在运行"),
+             ), \
+             patch.dict(sys.modules, {"mcp_server": fake_mcp_server}):
+            with self.assertRaises(SystemExit) as raised:
+                main.main()
+
+        self.assertEqual(raised.exception.code, 3)
+        fake_mcp_server.serve.assert_not_called()
 
 
 if __name__ == "__main__":

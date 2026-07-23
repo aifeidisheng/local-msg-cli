@@ -19,7 +19,17 @@ def _app_base_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def _data_base_dir():
+    """返回敏感配置和运行数据目录；源码运行时保持原有目录结构。"""
+    configured = os.environ.get("WECHAT_DECRYPT_DATA_DIR")
+    if configured:
+        return os.path.abspath(os.path.expanduser(os.path.expandvars(configured)))
+    return _app_base_dir()
+
+
 def _config_file_path():
+    if os.environ.get("WECHAT_DECRYPT_DATA_DIR"):
+        return os.path.join(_data_base_dir(), "config.json")
     if os.environ.get("WECHAT_DECRYPT_APP_DIR"):
         return os.path.join(_app_base_dir(), "config.json")
     p = os.path.join(_app_base_dir(), "config.json")
@@ -82,8 +92,13 @@ def _read_raw_config(config_file):
 
 
 def _write_raw_config(config_file, data):
+    os.makedirs(os.path.dirname(os.path.abspath(config_file)), mode=0o700, exist_ok=True)
     with open(config_file, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
+    try:
+        os.chmod(config_file, 0o600)
+    except OSError:
+        pass
 
 
 def _merge_dict(base, updates):
@@ -111,7 +126,7 @@ def _expand_path_value(path):
     path = os.path.expanduser(os.path.expandvars(path))
     if os.path.isabs(path):
         return path
-    return os.path.join(_app_base_dir(), path)
+    return os.path.join(_data_base_dir(), path)
 
 
 def _version_guard_policy_path(cfg):
@@ -357,7 +372,7 @@ def load_config():
     )
 
     # 将相对路径转为绝对路径
-    base = _app_base_dir()
+    base = _data_base_dir()
     for key in (
         "keys_file", "decrypted_dir", "decoded_image_dir",
     ):
@@ -368,7 +383,7 @@ def load_config():
     # "all_keys.json"(项目根相对),也能写 "~/Documents/wechat_decrypted" /
     # "$HOME/wechat" / "%USERPROFILE%\\wechat"(跨用户便携)。
     # 空字串 / null 不再触发 TypeError(用 cfg.get 而非 in)。
-    base = _app_base_dir()
+    base = _data_base_dir()
     if cfg.get("db_dir"):
         cfg["db_dir"] = os.path.expanduser(os.path.expandvars(cfg["db_dir"]))
     for key in ("keys_file", "decrypted_dir", "decoded_image_dir", "wechat_app_path", "installer_path"):

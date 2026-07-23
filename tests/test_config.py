@@ -36,6 +36,37 @@ class SaveConfigUpdatesTests(unittest.TestCase):
             self.assertNotIn("version_guard", saved)
             self.assertNotIn("wechat_app_path", saved)
 
+    def test_installed_runtime_keeps_sensitive_paths_in_data_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app_dir = os.path.join(tmp, "runtime")
+            data_dir = os.path.join(tmp, "data")
+            os.makedirs(app_dir)
+            os.makedirs(data_dir)
+            with open(os.path.join(data_dir, "config.json"), "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "db_dir": "/tmp/db_storage",
+                        "keys_file": "all_keys.json",
+                        "decrypted_dir": "decrypted",
+                    },
+                    f,
+                )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "WECHAT_DECRYPT_APP_DIR": app_dir,
+                    "WECHAT_DECRYPT_DATA_DIR": data_dir,
+                },
+                clear=False,
+            ):
+                loaded = config.load_config()
+
+            self.assertEqual(config._config_file_path(), config.CONFIG_FILE)
+            self.assertEqual(loaded["keys_file"], os.path.join(data_dir, "all_keys.json"))
+            self.assertEqual(loaded["decrypted_dir"], os.path.join(data_dir, "decrypted"))
+            self.assertTrue(loaded["output_base_dir"].startswith(data_dir + os.sep))
+
 
 class VersionGuardPolicyTests(unittest.TestCase):
     def test_environment_policy_path_cannot_override_config_policy_path(self):

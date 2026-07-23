@@ -59,7 +59,7 @@ try:
         _cfg = json.load(f)
 except FileNotFoundError:
     _cfg = dict(_DEFAULT)
-for _key in ("keys_file", "decrypted_dir"):
+for _key in ("keys_file", "decrypted_dir", "decoded_image_dir", "mcp_cache_dir"):
     if _key in _cfg and not os.path.isabs(_cfg[_key]):
         _cfg[_key] = os.path.join(os.path.dirname(CONFIG_FILE), _cfg[_key])
 
@@ -78,7 +78,7 @@ DECODED_IMAGE_DIR = _cfg.get("decoded_image_dir")
 if not DECODED_IMAGE_DIR:
     DECODED_IMAGE_DIR = os.path.join(SCRIPT_DIR, "decoded_images")
 elif not os.path.isabs(DECODED_IMAGE_DIR):
-    DECODED_IMAGE_DIR = os.path.join(SCRIPT_DIR, DECODED_IMAGE_DIR)
+    DECODED_IMAGE_DIR = os.path.join(os.path.dirname(CONFIG_FILE), DECODED_IMAGE_DIR)
 
 try:
     with open(KEYS_FILE, encoding="utf-8") as f:
@@ -156,8 +156,12 @@ def decrypt_wal(wal_path, out_path, enc_key):
 class DBCache:
     """缓存解密后的 DB，通过 mtime 检测变化。使用固定文件名，重启后可复用。"""
 
-    CACHE_DIR = os.path.join(tempfile.gettempdir(), "wechat_mcp_cache")
-    MTIME_FILE = os.path.join(tempfile.gettempdir(), "wechat_mcp_cache", "_mtimes.json")
+    CACHE_DIR = _cfg.get("mcp_cache_dir") or (
+        os.path.join(os.path.dirname(CONFIG_FILE), "mcp_cache")
+        if os.environ.get("WECHAT_DECRYPT_DATA_DIR")
+        else os.path.join(tempfile.gettempdir(), "wechat_mcp_cache")
+    )
+    MTIME_FILE = os.path.join(CACHE_DIR, "_mtimes.json")
 
     def __init__(self):
         self._cache = {}  # rel_key -> (db_mtime, wal_mtime, tmp_path)
@@ -2075,8 +2079,9 @@ def _tool_text(name):
 _mcp_tool = mcp.tool
 
 
-def _guarded_tool(*decorator_args, **decorator_kwargs):
-    decorator = _mcp_tool(*decorator_args, **decorator_kwargs)
+def _guarded_tool(name_or_fn=None, **decorator_kwargs):
+    """注册带版本门禁的工具，同时保留可直接测试调用的 Python 函数。"""
+    explicit_name = name_or_fn if isinstance(name_or_fn, str) else None
 
     def wrap(fn):
         @functools.wraps(fn)
@@ -2085,8 +2090,15 @@ def _guarded_tool(*decorator_args, **decorator_kwargs):
             check_or_raise(_cfg, action=f"调用 MCP 工具 {fn.__name__}")
             return fn(*args, **kwargs)
 
-        return decorator(guarded)
+        registration_kwargs = dict(decorator_kwargs)
+        if explicit_name is not None:
+            registration_kwargs["name"] = explicit_name
+        # 直接传函数可避免 FastMCP 2.x 的无参 partial 再次调用已替换的 mcp.tool。
+        _mcp_tool(guarded, **registration_kwargs)
+        return guarded
 
+    if callable(name_or_fn):
+        return wrap(name_or_fn)
     return wrap
 
 

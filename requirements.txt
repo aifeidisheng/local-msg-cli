@@ -1,5 +1,5 @@
-pycryptodome>=3.19,<4
-zstandard>=0.22,<1
-fastmcp>=2.0,<3
-uvicorn>=0.29,<1
+pycryptodome==3.23.0
+zstandard==0.25.0
+fastmcp==2.14.7
+uvicorn==0.51.0
 # 可选：进度条 (pip install tqdm)
