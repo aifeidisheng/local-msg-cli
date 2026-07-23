@@ -12,10 +12,12 @@
  *   cc -O2 -o find_all_keys_macos find_all_keys_macos.c -framework Foundation
  *
  * Usage:
- *   sudo ./find_all_keys_macos [pid]
- *   If pid is omitted, automatically finds WeChat PID.
+ *   sudo ./find_all_keys_macos [--output /path/to/all_keys.json]
+ *       [--home /Users/name] [--owner-uid uid --owner-gid gid] [pid]
+ *   If pid is omitted, automatically finds WeChat PID. The installed
+ *   management CLI supplies an output path in its private data directory.
  *
- * Output: JSON file at ./all_keys.json (compatible with decrypt_db.py)
+ * Output: JSON compatible with decrypt_db.py. Defaults to ./all_keys.json.
  */
 
 #include <stdio.h>
@@ -25,6 +27,7 @@
 #include <dirent.h>
 #include <ftw.h>
 #include <pwd.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
@@ -107,10 +110,47 @@ static int read_db_salt(const char *path, char *salt_hex_out) {
 }
 
 int main(int argc, char *argv[]) {
-    pid_t pid;
-    if (argc >= 2)
-        pid = atoi(argv[1]);
-    else
+    pid_t pid = -1;
+    const char *out_path = "all_keys.json";
+    const char *requested_home = NULL;
+    uid_t owner_uid = (uid_t)-1;
+    gid_t owner_gid = (gid_t)-1;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--output") == 0) {
+            if (++i >= argc) {
+                fprintf(stderr, "--output requires a path\n");
+                return 64;
+            }
+            out_path = argv[i];
+        } else if (strcmp(argv[i], "--home") == 0) {
+            if (++i >= argc) {
+                fprintf(stderr, "--home requires a path\n");
+                return 64;
+            }
+            requested_home = argv[i];
+        } else if (strcmp(argv[i], "--owner-uid") == 0) {
+            if (++i >= argc) {
+                fprintf(stderr, "--owner-uid requires a numeric uid\n");
+                return 64;
+            }
+            owner_uid = (uid_t)strtoul(argv[i], NULL, 10);
+        } else if (strcmp(argv[i], "--owner-gid") == 0) {
+            if (++i >= argc) {
+                fprintf(stderr, "--owner-gid requires a numeric gid\n");
+                return 64;
+            }
+            owner_gid = (gid_t)strtoul(argv[i], NULL, 10);
+        } else if (strcmp(argv[i], "--pid") == 0) {
+            if (++i >= argc) {
+                fprintf(stderr, "--pid requires a process id\n");
+                return 64;
+            }
+            pid = atoi(argv[i]);
+        } else {
+            pid = atoi(argv[i]);
+        }
+    }
+    if (pid <= 0)
         pid = find_wechat_pid();
 
     if (pid <= 0) {
@@ -139,7 +179,7 @@ int main(int argc, char *argv[]) {
     printf("Got task port: %u\n", task);
 
     /* Resolve real user's HOME (sudo may change HOME to /var/root) */
-    const char *home = getenv("HOME");
+    const char *home = requested_home ? requested_home : getenv("HOME");
     const char *sudo_user = getenv("SUDO_USER");
     if (sudo_user) {
         struct passwd *pw = getpwnam(sudo_user);
@@ -288,18 +328,37 @@ int main(int argc, char *argv[]) {
                 break;
             }
         }
-        printf("%-25s %-66s %s\n",
-            db ? db : "(unknown)",
-            keys[i].key_hex,
-            keys[i].salt_hex);
+        printf("  %s: %s\n", db ? db : "(unknown)", db ? "matched" : "unmatched");
     }
     printf("\nMatched %d/%d keys to known DBs\n", matched, key_count);
 
     /* Save JSON: { "rel/path.db": { "enc_key": "hex" }, ... }
      * Uses forward slashes (native macOS paths, valid JSON without escaping).
      */
-    const char *out_path = "all_keys.json";
-    FILE *fp = fopen(out_path, "w");
+    int out_fd = open(out_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+    if (out_fd < 0) {
+        perror("Unable to open key output file");
+        return 3;
+    }
+    if (fchmod(out_fd, 0600) != 0) {
+        perror("Unable to protect key output file");
+        close(out_fd);
+        return 3;
+    }
+    const char *sudo_uid = getenv("SUDO_UID");
+    const char *sudo_gid = getenv("SUDO_GID");
+    if (owner_uid == (uid_t)-1 && sudo_uid)
+        owner_uid = (uid_t)strtoul(sudo_uid, NULL, 10);
+    if (owner_gid == (gid_t)-1 && sudo_gid)
+        owner_gid = (gid_t)strtoul(sudo_gid, NULL, 10);
+    if (geteuid() == 0 && owner_uid != (uid_t)-1 && owner_gid != (gid_t)-1) {
+        if (fchown(out_fd, owner_uid, owner_gid) != 0) {
+            perror("Unable to restore key file ownership");
+            close(out_fd);
+            return 3;
+        }
+    }
+    FILE *fp = fdopen(out_fd, "w");
     if (fp) {
         fprintf(fp, "{\n");
         int first = 1;
@@ -319,6 +378,10 @@ int main(int argc, char *argv[]) {
         fprintf(fp, "\n}\n");
         fclose(fp);
         printf("Saved to %s\n", out_path);
+    } else {
+        perror("Unable to write key output file");
+        close(out_fd);
+        return 3;
     }
 
     return 0;

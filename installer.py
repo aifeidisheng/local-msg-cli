@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -39,7 +40,18 @@ MIGRATED_DIRS = ("decrypted", "decoded_images", "wechat_files", "mcp_cache")
 
 
 class InstallerError(RuntimeError):
-    """可向 Agent 安全展示的安装错误。"""
+    """可向 Agent 安全展示、并可携带恢复动作的安装错误。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_code: str = "operation_failed",
+        next_action: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+        self.next_action = next_action
 
 
 @dataclass(frozen=True)
@@ -123,6 +135,123 @@ def _run(
     return result
 
 
+def _require_non_root_management() -> None:
+    if platform.system().lower() == "darwin" and hasattr(os, "geteuid") and os.geteuid() == 0:
+        raise InstallerError(
+            "不要使用 sudo 运行 wechat-decrypt-light；管理 CLI 会仅为密钥扫描器请求管理员权限",
+            error_code="management_cli_must_not_run_as_root",
+            next_action="run_the_same_command_without_sudo",
+        )
+
+
+def _valid_key_file(path: Path) -> bool:
+    try:
+        with path.open(encoding="utf-8") as key_file:
+            payload = json.load(key_file)
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return False
+    return isinstance(payload, dict) and any(
+        isinstance(value, dict) and bool(value.get("enc_key"))
+        for key, value in payload.items()
+        if not key.startswith("_")
+    )
+
+
+def _extract_macos_keys(runtime: Path, layout: InstallLayout, reporter: Reporter) -> None:
+    keys_file = layout.data_dir / "all_keys.json"
+    if _valid_key_file(keys_file):
+        return
+    if keys_file.exists() or keys_file.is_symlink():
+        try:
+            keys_file.unlink()
+        except PermissionError as exc:
+            raise InstallerError(
+                "现有密钥文件不属于当前用户；请勿使用 sudo 运行管理 CLI",
+                error_code="key_file_ownership_invalid",
+                next_action="restore_the_key_file_owner_then_retry_initialize_without_sudo",
+            ) from exc
+    scanner = runtime / "find_all_keys_macos"
+    if not scanner.is_file() or not os.access(scanner, os.X_OK):
+        raise InstallerError(
+            "已安装的 macOS 密钥扫描器不存在或不可执行，请重新安装当前版本",
+            error_code="scanner_missing",
+            next_action="reinstall_current_release",
+        )
+    layout.data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(layout.data_dir, 0o700)
+    reporter.progress("keys", "通过 macOS 系统授权读取 WeChat 进程并提取数据库密钥")
+    scanner_command = shlex.join(
+        [
+            str(scanner),
+            "--output",
+            str(keys_file),
+            "--home",
+            str(Path.home().resolve()),
+            "--owner-uid",
+            str(os.getuid()),
+            "--owner-gid",
+            str(os.getgid()),
+        ]
+    )
+    result = subprocess.run(
+        [
+            "/usr/bin/osascript",
+            "-e",
+            "on run argv",
+            "-e",
+            "do shell script (item 1 of argv) with administrator privileges",
+            "-e",
+            "end run",
+            scanner_command,
+        ],
+        cwd=str(runtime),
+        env=_runtime_env(runtime, layout),
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        # 扫描器的标准输出属于敏感操作过程信息，失败响应只使用 stderr。
+        details = result.stderr.strip()
+        normalized = details.lower()
+        if "wechat not running" in normalized:
+            code = "wechat_not_running"
+            action = "start_and_sign_in_to_wechat_then_retry_initialize"
+        elif "task_for_pid failed" in normalized:
+            code = "wechat_resign_required"
+            action = "quit_and_adhoc_resign_wechat_then_reopen_and_retry_initialize"
+        elif "user canceled" in normalized or "(-128)" in normalized:
+            code = "administrator_authorization_cancelled"
+            action = "retry_initialize_and_approve_the_macos_administrator_prompt"
+        elif "authorization" in normalized or "administrator" in normalized:
+            code = "administrator_authorization_required"
+            action = "retry_initialize_and_approve_the_macos_administrator_prompt"
+        else:
+            code = "key_extraction_failed"
+            action = "review_scanner_error_then_retry_initialize"
+        tail = "\n".join(details.splitlines()[-12:])
+        raise InstallerError(
+            f"macOS 数据库密钥提取失败{': ' + tail if tail else ''}",
+            error_code=code,
+            next_action=action,
+        )
+    if not _valid_key_file(keys_file):
+        raise InstallerError(
+            "密钥扫描器未生成有效的 all_keys.json",
+            error_code="empty_key_result",
+            next_action="confirm_the_running_wechat_account_matches_the_detected_data_directory",
+        )
+    try:
+        os.chmod(keys_file, 0o600)
+    except PermissionError as exc:
+        raise InstallerError(
+            "密钥文件所有者异常；请勿使用 sudo 运行管理 CLI",
+            error_code="key_file_ownership_invalid",
+            next_action="restore_the_key_file_owner_then_retry_initialize_without_sudo",
+        ) from exc
+
+
 def _git(source: Path, *args: str, error_context: str) -> str:
     return _run(
         ["/usr/bin/git", "-C", str(source), *args],
@@ -168,7 +297,7 @@ def _validate_branch(value: str) -> str:
 def verify_source(
     source: Path,
     *,
-    expected_repository: str,
+    expected_repository: str | list[str] | tuple[str, ...],
     branch: str = "main",
     expected_commit: str | None = None,
     expected_installer_sha256: str | None = None,
@@ -211,8 +340,15 @@ def verify_source(
         )
     if expected_commit and commit.lower() != expected_commit.lower():
         raise InstallerError(f"源码提交不匹配：期望 {expected_commit}，实际 {commit}")
-    if _repository_identity(repository) != _repository_identity(expected_repository):
-        raise InstallerError("origin 仓库与指定发布仓库不匹配")
+    expected_repositories = (
+        [expected_repository]
+        if isinstance(expected_repository, str)
+        else list(expected_repository)
+    )
+    if _repository_identity(repository) not in {
+        _repository_identity(candidate) for candidate in expected_repositories
+    }:
+        raise InstallerError("origin 仓库不在指定的可信发布源列表中")
     if expected_installer_sha256 and installer_hash.lower() != expected_installer_sha256.lower():
         raise InstallerError("installer.py 校验和与指定摘要不匹配")
     if dirty and not allow_dirty_source:
@@ -261,7 +397,19 @@ def _create_runtime_environment(runtime: Path, python: Path) -> None:
     _run([str(python), "-m", "venv", str(runtime / ".venv")], error_context="创建独立 Python 环境失败")
     runtime_python = runtime / ".venv" / "bin" / "python3"
     _run(
-        [str(runtime_python), "-m", "pip", "install", "--disable-pip-version-check", "-r", str(runtime / "requirements.txt")],
+        [
+            str(runtime_python),
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "--retries",
+            "3",
+            "--timeout",
+            "20",
+            "-r",
+            str(runtime / "requirements.txt"),
+        ],
         error_context="安装 Python 依赖失败",
     )
 
@@ -410,9 +558,10 @@ def install(args: argparse.Namespace, reporter: Reporter) -> dict:
     source = Path(args.source).expanduser().resolve()
     layout = default_layout(Path(args.home).expanduser() if args.home else None)
     reporter.progress("verify", f"校验 Git 来源和 {args.branch} 发布通道")
+    repositories = list(dict.fromkeys([args.repository, *getattr(args, "fallback_repositories", [])]))
     source_info = verify_source(
         source,
-        expected_repository=args.repository,
+        expected_repository=repositories,
         branch=args.branch,
         expected_commit=args.expected_commit,
         expected_installer_sha256=args.expected_installer_sha256,
@@ -476,7 +625,9 @@ def install(args: argparse.Namespace, reporter: Reporter) -> dict:
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "installation_id": installation_id,
         "commit": version,
-        "repository": source_info["repository"],
+        "repository": args.repository,
+        "repositories": repositories,
+        "source_repository": source_info["repository"],
         "branch": source_info["branch"],
         "runtime_dir": str(final_runtime),
         "data_dir": str(layout.data_dir),
@@ -543,17 +694,64 @@ def status(args: argparse.Namespace, reporter: Reporter) -> dict:
     }
 
 
+def _git_network_run(
+    command: list[str],
+    *,
+    error_context: str,
+    timeout: float,
+    retry_cleanup: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    network_command = [
+        "/usr/bin/git",
+        "-c",
+        "http.lowSpeedLimit=1024",
+        "-c",
+        "http.lowSpeedTime=15",
+        *command,
+    ]
+    errors: list[str] = []
+    for attempt in range(1, 3):
+        if attempt > 1 and retry_cleanup is not None and retry_cleanup.exists():
+            if retry_cleanup.is_dir() and not retry_cleanup.is_symlink():
+                shutil.rmtree(retry_cleanup)
+            else:
+                retry_cleanup.unlink()
+        try:
+            result = subprocess.run(
+                network_command,
+                env=env,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            errors.append(f"第 {attempt} 次尝试超时")
+        else:
+            if result.returncode == 0:
+                return result
+            details = (result.stderr or result.stdout).strip().splitlines()
+            errors.append(f"第 {attempt} 次尝试失败：{' | '.join(details[-3:]) or '未知 Git 错误'}")
+        if attempt == 1:
+            time.sleep(0.5)
+    raise InstallerError(
+        f"{error_context}：{'；'.join(errors)}",
+        error_code="git_source_unreachable",
+        next_action="retry_or_configure_an_official_fallback_repository",
+    )
+
+
 def _remote_branch_commit(repository: str, branch: str) -> str:
     branch = _validate_branch(branch)
     if not repository or repository.startswith("-"):
         raise InstallerError("安装清单中的发布仓库地址无效")
-    env = dict(os.environ)
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    result = _run(
-        ["/usr/bin/git", "ls-remote", "--exit-code", repository, f"refs/heads/{branch}"],
-        env=env,
+    result = _git_network_run(
+        ["ls-remote", "--exit-code", repository, f"refs/heads/{branch}"],
         error_context=f"无法查询远端 {branch} 发布通道",
-        timeout=15,
+        timeout=20,
     )
     lines = [line.split() for line in result.stdout.splitlines() if line.strip()]
     if len(lines) != 1 or len(lines[0]) != 2 or not re.fullmatch(r"[0-9a-fA-F]{40}", lines[0][0]):
@@ -561,22 +759,44 @@ def _remote_branch_commit(repository: str, branch: str) -> str:
     return lines[0][0].lower()
 
 
+def _manifest_repositories(manifest: dict) -> list[str]:
+    configured = manifest.get("repositories")
+    values = configured if isinstance(configured, list) else [manifest.get("repository")]
+    repositories = [str(value).strip() for value in values if str(value or "").strip()]
+    return list(dict.fromkeys(repositories))
+
+
+def _select_release_source(repositories: list[str], branch: str) -> tuple[str, str]:
+    failures: list[str] = []
+    for repository in repositories:
+        try:
+            return repository, _remote_branch_commit(repository, branch)
+        except InstallerError as exc:
+            failures.append(f"{repository}: {exc}")
+    raise InstallerError(
+        "所有可信发布源均不可达：" + "；".join(failures),
+        error_code="all_git_sources_unreachable",
+        next_action="retry_network_or_add_an_official_fallback_repository",
+    )
+
+
 def check_update(args: argparse.Namespace, reporter: Reporter) -> dict:
     layout = default_layout(Path(args.home).expanduser() if args.home else None)
     manifest = _read_manifest(layout)
     _installed_runtime(layout, manifest)
-    repository = str(manifest.get("repository") or "")
+    repositories = _manifest_repositories(manifest)
     branch = str(manifest.get("branch") or manifest.get("release_branch") or "main")
     installed_commit = str(manifest.get("commit") or manifest.get("version") or "").lower()
     if not re.fullmatch(r"[0-9a-f]{40}", installed_commit):
         raise InstallerError("安装清单缺少有效的 Git commit，请重新安装当前版本")
     reporter.progress("update", f"查询远端 {branch} 发布通道")
-    remote_commit = _remote_branch_commit(repository, branch)
+    repository, remote_commit = _select_release_source(repositories, branch)
     return {
         "ok": True,
         "command": "check-update",
         "installed_commit": installed_commit,
         "remote_commit": remote_commit,
+        "source_repository": repository,
         "branch": branch,
         "update_available": remote_commit != installed_commit,
     }
@@ -586,11 +806,8 @@ def _clone_branch(repository: str, branch: str, destination: Path) -> None:
     branch = _validate_branch(branch)
     if not repository or repository.startswith("-"):
         raise InstallerError("安装清单中的发布仓库地址无效")
-    env = dict(os.environ)
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    _run(
+    _git_network_run(
         [
-            "/usr/bin/git",
             "clone",
             "--quiet",
             "--depth",
@@ -601,9 +818,9 @@ def _clone_branch(repository: str, branch: str, destination: Path) -> None:
             repository,
             str(destination),
         ],
-        env=env,
         error_context=f"拉取远端 {branch} 发布版本失败",
-        timeout=60,
+        timeout=90,
+        retry_cleanup=destination,
     )
 
 
@@ -623,14 +840,14 @@ def upgrade(args: argparse.Namespace, reporter: Reporter) -> dict:
     layout = default_layout(Path(args.home).expanduser() if args.home else None)
     manifest = _read_manifest(layout)
     _installed_runtime(layout, manifest)
-    repository = str(manifest.get("repository") or "")
+    repositories = _manifest_repositories(manifest)
     branch = str(manifest.get("branch") or manifest.get("release_branch") or "main")
     installed_commit = str(manifest.get("commit") or manifest.get("version") or "").lower()
     if not re.fullmatch(r"[0-9a-f]{40}", installed_commit):
         raise InstallerError("安装清单缺少有效的 Git commit，请重新安装当前版本")
 
     reporter.progress("update", f"检查远端 {branch} 发布通道")
-    remote_commit = _remote_branch_commit(repository, branch)
+    repository, remote_commit = _select_release_source(repositories, branch)
     if remote_commit == installed_commit:
         return {
             "ok": True,
@@ -646,8 +863,9 @@ def upgrade(args: argparse.Namespace, reporter: Reporter) -> dict:
         _clone_branch(repository, branch, source)
         source_info = verify_source(
             source,
-            expected_repository=repository,
+            expected_repository=repositories,
             branch=branch,
+            expected_commit=remote_commit,
         )
         reporter.progress("install", f"升级到提交 {source_info['commit'][:12]}")
         result = _run(
@@ -661,7 +879,7 @@ def upgrade(args: argparse.Namespace, reporter: Reporter) -> dict:
                 "--source",
                 str(source),
                 "--repository",
-                repository,
+                repositories[0],
                 "--branch",
                 branch,
                 "--expected-commit",
@@ -670,6 +888,11 @@ def upgrade(args: argparse.Namespace, reporter: Reporter) -> dict:
                 str(manifest.get("host") or DEFAULT_HOST),
                 "--port",
                 str(manifest.get("port") or DEFAULT_PORT),
+                *[
+                    argument
+                    for fallback in repositories[1:]
+                    for argument in ("--fallback-repository", fallback)
+                ],
             ],
             error_context="执行新版本安装器失败",
             allow_failure=True,
@@ -711,12 +934,15 @@ def repair(args: argparse.Namespace, reporter: Reporter) -> dict:
 
 def initialize(args: argparse.Namespace, reporter: Reporter) -> dict:
     """在用户单独确认敏感操作后执行初始化，并重新验证常驻服务。"""
+    _require_non_root_management()
     layout = default_layout(Path(args.home).expanduser() if args.home else None)
     manifest = _read_manifest(layout)
     runtime = _installed_runtime(layout, manifest)
     runtime_python = runtime / ".venv" / "bin" / "python3"
     env = _runtime_env(runtime, layout)
     env["WECHAT_DECRYPT_SKIP_SERVICE_INSTALL"] = "1"
+    if platform.system().lower() == "darwin":
+        _extract_macos_keys(runtime, layout, reporter)
     reporter.progress("initialize", "执行密钥提取和本地数据库预解密")
     _run(
         [str(runtime_python), str(runtime / "main.py"), "init"],
@@ -786,6 +1012,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="独立 MCP 的发布仓库地址",
     )
     install_parser.add_argument(
+        "--fallback-repository",
+        dest="fallback_repositories",
+        action="append",
+        default=[],
+        help="用户明确确认的备用发布仓库，可重复指定",
+    )
+    install_parser.add_argument(
         "--branch",
         "--release-branch",
         dest="branch",
@@ -828,6 +1061,7 @@ def main(argv: list[str] | None = None) -> int:
     args.json = json_mode
     reporter = Reporter(json_mode)
     try:
+        _require_non_root_management()
         handlers = {
             "install": install,
             "status": status,
@@ -841,7 +1075,15 @@ def main(argv: list[str] | None = None) -> int:
         reporter.result(payload)
         return 0 if payload.get("ok") else 1
     except InstallerError as exc:
-        reporter.result({"ok": False, "command": args.command, "error": str(exc)})
+        payload = {
+            "ok": False,
+            "command": args.command,
+            "error_code": exc.error_code,
+            "error": str(exc),
+        }
+        if exc.next_action:
+            payload["next_action"] = exc.next_action
+        reporter.result(payload)
         return 1
     except Exception as exc:
         reporter.result(
