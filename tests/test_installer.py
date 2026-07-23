@@ -126,11 +126,12 @@ class RepositoryVerificationTests(unittest.TestCase):
         self.assertEqual(actual, remote_commit)
         self.assertEqual(run.call_args_list[-1].kwargs["timeout"], 20)
 
-    def test_git_network_run_retries_once_with_low_speed_limits(self):
+    def test_git_network_run_retries_with_low_speed_limits(self):
         failed = CompletedProcess(args=[], returncode=128, stdout="", stderr="connection timed out")
         succeeded = CompletedProcess(args=[], returncode=0, stdout="ok", stderr="")
 
-        with patch.object(installer.subprocess, "run", side_effect=[failed, succeeded]) as run, \
+        with patch.object(installer, "_detect_system_proxy", return_value=None), \
+             patch.object(installer.subprocess, "run", side_effect=[failed, succeeded]) as run, \
              patch.object(installer.time, "sleep") as sleep:
             result = installer._git_network_run(
                 ["ls-remote", "https://example.com/repo.git", "refs/heads/main"],
@@ -143,7 +144,7 @@ class RepositoryVerificationTests(unittest.TestCase):
         command = run.call_args_list[0].args[0]
         self.assertIn("http.lowSpeedLimit=1024", command)
         self.assertIn("http.lowSpeedTime=15", command)
-        sleep.assert_called_once_with(0.5)
+        sleep.assert_called_once_with(1)
 
     def test_git_network_run_cleans_partial_clone_before_retry(self):
         failed = CompletedProcess(args=[], returncode=128, stdout="", stderr="connection timed out")
@@ -152,7 +153,8 @@ class RepositoryVerificationTests(unittest.TestCase):
             partial = Path(tmp) / "source"
             partial.mkdir()
             (partial / ".git.partial").write_text("partial", encoding="utf-8")
-            with patch.object(installer.subprocess, "run", side_effect=[failed, succeeded]), \
+            with patch.object(installer, "_detect_system_proxy", return_value=None), \
+                 patch.object(installer.subprocess, "run", side_effect=[failed, succeeded]), \
                  patch.object(installer.time, "sleep"), \
                  patch.object(installer.shutil, "rmtree", wraps=installer.shutil.rmtree) as rmtree:
                 installer._git_network_run(

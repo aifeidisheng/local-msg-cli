@@ -25,6 +25,8 @@ For an end-user installation:
    key extraction.
 6. Register `http://127.0.0.1:8765/mcp` only when the returned service status is
    `ready` and `query_ready` is `true`.
+7. After registration, call `data_source_status` for a no-user-data connectivity
+   check. Do not query contacts or messages merely to verify installation.
 
 The source-development workflow is allowed only when the user explicitly asks
 to modify, test, or debug this repository. In that case, use

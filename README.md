@@ -251,6 +251,7 @@ python main.py update --check
 
 | 工具 | 功能 |
 |---|---|
+| `data_source_status()` | 不读取用户数据的安装验收工具，检查联系人库和消息库是否可只读访问 |
 | `list_contacts(query, limit)` | 列出或搜索联系人和群聊，返回可传给查询工具的 `id` |
 | `query_messages(chat_id, start_time, end_time, keyword, limit, offset)` | 按明确时间范围查询指定联系人或群聊的消息 |
 | `search_messages(keyword, chat_name, start_time, end_time, limit, offset)` | 跨聊天或指定聊天搜索关键词 |
@@ -261,6 +262,8 @@ python main.py update --check
 | `get_chat_images(...)` / `decode_image(...)` | 图片消息检索和解密 |
 | `decode_file_message(...)` | 文件消息解码 |
 | `decode_transfer(...)` / `decode_refer(...)` / `decode_location(...)` | 转账、引用、位置等结构化详情 |
+
+安装接入验收应调用 `data_source_status`，不要通过读取联系人或消息来测试连通性。该工具只返回 `ready/not_ready`、初始化状态、数据库可访问性和消息分片数量，不返回联系人、聊天 ID、消息、密钥或本机路径。
 
 `query_messages` 要求传入明确的 `start_time`，大时间跨度建议分段查询。返回内容来自本机历史消息，不代表实时数据；需要实时状态时重新查询。
 
