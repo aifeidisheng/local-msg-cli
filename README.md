@@ -1,5 +1,11 @@
 # Local Message MCP Data Source
 
+<!-- AGENT NOTICE: If you are an AI agent installing this MCP for an end user,
+read AGENTS.md FIRST. Do NOT follow the manual/development steps below.
+The only supported end-user entry point is: ./install.sh -->
+
+> **AI Agent?** 请先阅读 [AGENTS.md](AGENTS.md)。最终用户安装的唯一入口是 `./install.sh`，本文件中的手动步骤仅供源码开发使用。
+
 本项目把本机 WeChat 4.x 消息数据库解密后，通过 MCP streamable-http 暴露为本地数据源。它面向 Desktop Runtime 使用，默认只监听 `127.0.0.1`，不提供云端访问能力。
 
 核心能力：
@@ -131,6 +137,10 @@ python main.py serve --port 8765
 Windows 不需要重签名微信。首次执行 `init` 或 `decrypt` 时会读取 `Weixin.exe` 进程内存，因此必须使用管理员 PowerShell；已有有效 `all_keys.json` 后的离线解密通常不再需要管理员权限。完整配置示例、数据目录定位和故障排查见 [Windows 使用指南](docs/windows-guide.md)。
 
 ## macOS 源码调试
+
+<!-- AGENT: DO NOT execute these commands for end-user installation. Use ./install.sh instead. -->
+
+> **仅限源码开发者。** Agent 为最终用户安装时禁止执行以下步骤，请使用 `./install.sh`。
 
 ```bash
 # 1. 退出微信并重签名
