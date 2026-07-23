@@ -658,7 +658,36 @@ def status_service(host: str | None = None, port: int | None = None) -> int:
         print(f"[占用进程] {_format_pid_commands(inspection.port_pids)}")
     print(f"[配置] {paths['plist']}")
     print(f"[日志] {paths['log_dir']}")
+    print(f"[数据] {'已初始化' if _has_valid_keys(paths) else '未初始化'}")
     return 0 if inspection.status in (STATUS_READY, STATUS_WAITING, STATUS_STARTING) else 1
+
+
+def _has_valid_keys(paths: dict[str, Path]) -> bool:
+    """Check initialization readiness without exposing key names or values."""
+    config_path = paths["data_dir"] / "config.json"
+    keys_path = paths["data_dir"] / "all_keys.json"
+    try:
+        with config_path.open(encoding="utf-8") as config_file:
+            configured = json.load(config_file).get("keys_file")
+        if configured:
+            candidate = Path(str(configured)).expanduser()
+            keys_path = candidate if candidate.is_absolute() else paths["data_dir"] / candidate
+    except (FileNotFoundError, OSError, json.JSONDecodeError, AttributeError):
+        pass
+
+    try:
+        with keys_path.open(encoding="utf-8") as key_file:
+            payload = json.load(key_file)
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    return any(
+        isinstance(value, dict)
+        and bool(re.fullmatch(r"[0-9a-fA-F]{64}", str(value.get("enc_key") or "")))
+        for name, value in payload.items()
+        if not str(name).startswith("_")
+    )
 
 
 def service_status_payload(
@@ -668,9 +697,14 @@ def service_status_payload(
     port: int,
 ) -> dict:
     """生成不包含消息、密钥或本机账号信息的机器可读状态。"""
+    transport_ready = inspection.status == STATUS_READY
+    initialized = _has_valid_keys(paths)
     return {
         "ok": inspection.status in (STATUS_READY, STATUS_WAITING, STATUS_STARTING),
         "status": inspection.status,
+        "transport_ready": transport_ready,
+        "initialized": initialized,
+        "query_ready": transport_ready and initialized,
         "label": DEFAULT_LABEL,
         "endpoint": f"http://{host}:{port}/mcp",
         "launchd_loaded": inspection.job.loaded,

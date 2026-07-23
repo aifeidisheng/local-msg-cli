@@ -150,6 +150,35 @@ def _first_allowed_app_path(entries: Iterable[Dict[str, Any]]) -> str:
     return ""
 
 
+def _discover_macos_app_path() -> str:
+    """Find a locally installed WeChat bundle without requiring its process.
+
+    The MCP service only needs the bundle metadata for its startup version
+    gate.  Reading the bundle is safe while WeChat is closed; process memory
+    remains required by the separate key-extraction path.
+    """
+    if _platform_key() != "darwin":
+        return ""
+
+    candidates = (
+        "/Applications/WeChat.app",
+        os.path.expanduser("~/Applications/WeChat.app"),
+    )
+    for candidate in candidates:
+        bundle_path = _macos_bundle_path(candidate)
+        info_path = os.path.join(bundle_path, "Contents", "Info.plist")
+        if not os.path.isfile(info_path):
+            continue
+        try:
+            with open(info_path, "rb") as info_file:
+                info = plistlib.load(info_file)
+        except (OSError, plistlib.InvalidFileException, ValueError):
+            continue
+        if info.get("CFBundleIdentifier") == "com.tencent.xinWeChat":
+            return bundle_path
+    return ""
+
+
 def _configured_app_path(cfg: Dict[str, Any], guard: Dict[str, Any]) -> str:
     app_path = cfg.get("wechat_app_path") or guard.get("wechat_app_path")
     if not app_path:
@@ -160,6 +189,8 @@ def _configured_app_path(cfg: Dict[str, Any], guard: Dict[str, Any]) -> str:
         paths = _process_paths(cfg)
         if paths:
             app_path = paths[0]
+    if not app_path:
+        app_path = _discover_macos_app_path()
     return _expand_path(str(app_path)) if app_path else ""
 
 

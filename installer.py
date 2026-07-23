@@ -48,10 +48,12 @@ class InstallerError(RuntimeError):
         *,
         error_code: str = "operation_failed",
         next_action: str | None = None,
+        details: dict | None = None,
     ) -> None:
         super().__init__(message)
         self.error_code = error_code
         self.next_action = next_action
+        self.details = details or {}
 
 
 @dataclass(frozen=True)
@@ -157,6 +159,54 @@ def _valid_key_file(path: Path) -> bool:
     )
 
 
+def _parse_scanner_summary(output: str) -> dict[str, int]:
+    """Extract non-sensitive scanner counters from stdout/stderr."""
+    summary: dict[str, int] = {}
+    patterns = {
+        "encrypted_db_count": r"Found\s+(\d+)\s+encrypted DBs",
+        "scanned_region_count": r"Scan complete:\s+\d+MB scanned,\s+(\d+)\s+regions",
+        "unique_key_count": r"Scan complete:.*?,\s+(\d+)\s+unique keys",
+        "matched_key_count": r"Matched\s+(\d+)/(\d+)\s+keys to known DBs",
+    }
+    for key, pattern in patterns.items():
+        match = re.search(pattern, output, flags=re.IGNORECASE | re.DOTALL)
+        if not match:
+            continue
+        if key == "matched_key_count":
+            summary[key] = int(match.group(1))
+            summary["reported_key_count"] = int(match.group(2))
+        else:
+            summary[key] = int(match.group(1))
+    return summary
+
+
+def _empty_key_result(summary: dict[str, int]) -> tuple[str, str, str]:
+    """Map scanner counters to a stable error and one actionable recovery."""
+    if summary.get("encrypted_db_count") == 0:
+        return (
+            "wechat_database_not_found",
+            "confirm_wechat_data_access_and_retry_initialize",
+            "扫描器未发现加密数据库；请确认当前用户的数据目录可读，并确认微信已完成登录。",
+        )
+    if summary.get("unique_key_count") == 0:
+        return (
+            "wechat_key_not_found",
+            "keep_wechat_open_and_logged_in_then_retry_initialize",
+            "扫描器发现了数据库，但没有在微信进程中找到有效密钥；请保持微信登录后重试。",
+        )
+    if summary.get("matched_key_count") == 0:
+        return (
+            "wechat_key_database_mismatch",
+            "confirm_the_running_wechat_account_matches_the_detected_data_directory",
+            "扫描器找到密钥，但没有密钥与本机数据库 salt 匹配；请确认当前微信账号与数据目录一致。",
+        )
+    return (
+        "key_output_invalid",
+        "retry_initialize_and_report_the_structured_diagnostics",
+        "扫描器已找到匹配密钥，但输出文件无效；请重试初始化。",
+    )
+
+
 def _extract_macos_keys(runtime: Path, layout: InstallLayout, reporter: Reporter) -> None:
     keys_file = layout.data_dir / "all_keys.json"
     if _valid_key_file(keys_file):
@@ -235,12 +285,16 @@ def _extract_macos_keys(runtime: Path, layout: InstallLayout, reporter: Reporter
             f"macOS 数据库密钥提取失败{': ' + tail if tail else ''}",
             error_code=code,
             next_action=action,
+            details=_parse_scanner_summary("\n".join((result.stdout, result.stderr))),
         )
     if not _valid_key_file(keys_file):
+        summary = _parse_scanner_summary("\n".join((result.stdout, result.stderr)))
+        code, action, message = _empty_key_result(summary)
         raise InstallerError(
-            "密钥扫描器未生成有效的 all_keys.json",
-            error_code="empty_key_result",
-            next_action="confirm_the_running_wechat_account_matches_the_detected_data_directory",
+            message,
+            error_code=code,
+            next_action=action,
+            details=summary,
         )
     try:
         os.chmod(keys_file, 0o600)
@@ -960,13 +1014,14 @@ def initialize(args: argparse.Namespace, reporter: Reporter) -> dict:
         error_context="初始化完成，但 LaunchAgent 启动验证失败",
     )
     service_payload = service_status(layout, runtime)
+    query_ready = bool(service_payload.get("query_ready"))
     return {
-        "ok": service_payload.get("status") == "ready",
+        "ok": query_ready,
         "command": "initialize",
         "installation_id": manifest.get("installation_id"),
         "endpoint": manifest.get("endpoint"),
         "service": service_payload,
-        "next_step": "register_with_mcporter" if service_payload.get("status") == "ready" else "wait_until_ready",
+        "next_step": "register_with_mcporter" if query_ready else "wait_until_query_ready",
     }
 
 
@@ -1083,6 +1138,8 @@ def main(argv: list[str] | None = None) -> int:
         }
         if exc.next_action:
             payload["next_action"] = exc.next_action
+        if exc.details:
+            payload["details"] = exc.details
         reporter.result(payload)
         return 1
     except Exception as exc:

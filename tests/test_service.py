@@ -218,6 +218,11 @@ class ServiceInspectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             paths = service.service_paths(root=Path(tmp) / "app", home=Path(tmp) / "home")
             self._write_plist(paths, service.build_plist(paths))
+            paths["data_dir"].mkdir(parents=True)
+            (paths["data_dir"] / "all_keys.json").write_text(
+                '{"message/message_0.db":{"enc_key":"' + "a" * 64 + '"}}',
+                encoding="utf-8",
+            )
             output = StringIO()
             with patch.object(service, "_require_macos"), \
                  patch.object(service, "service_paths", return_value=paths), \
@@ -228,9 +233,26 @@ class ServiceInspectionTests(unittest.TestCase):
         self.assertEqual(result, 0)
         payload = __import__("json").loads(output.getvalue())
         self.assertTrue(payload["ok"])
+        self.assertTrue(payload["transport_ready"])
+        self.assertTrue(payload["initialized"])
+        self.assertTrue(payload["query_ready"])
         self.assertEqual(payload["launchd_pid"], 123)
         self.assertNotIn("keys", payload)
         self.assertNotIn("messages", payload)
+
+    def test_json_status_distinguishes_transport_from_query_readiness(self):
+        inspection = service.ServiceInspection(
+            status=service.STATUS_READY,
+            job=service.LaunchJobInfo(loaded=True, state="running", pid=123),
+            port_pids=frozenset({123}),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = service.service_paths(root=Path(tmp) / "app", home=Path(tmp) / "home")
+            payload = service.service_status_payload(paths, inspection, "127.0.0.1", 8765)
+
+        self.assertTrue(payload["transport_ready"])
+        self.assertFalse(payload["initialized"])
+        self.assertFalse(payload["query_ready"])
 
 
 class ServiceInstallTests(unittest.TestCase):

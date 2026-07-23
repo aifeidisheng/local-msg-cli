@@ -225,7 +225,8 @@ class WechatVersionGuardTests(unittest.TestCase):
 
     def test_missing_app_path_fails_closed(self):
         with patch.object(guard.platform, "system", return_value="Darwin"), \
-             patch.object(guard, "_process_paths", return_value=[]):
+             patch.object(guard, "_process_paths", return_value=[]), \
+             patch.object(guard, "_discover_macos_app_path", return_value=""):
             result = guard.check_version(
                 {
                     "version_guard": {
@@ -239,6 +240,31 @@ class WechatVersionGuardTests(unittest.TestCase):
 
         self.assertFalse(result.ok)
         self.assertIn("未配置 wechat_app_path", result.reason_text)
+
+    def test_macos_can_discover_installed_app_when_wechat_is_closed(self):
+        with tempfile.TemporaryDirectory() as td, \
+             patch.object(guard.platform, "system", return_value="Darwin"), \
+             patch.object(guard, "_process_paths", return_value=[]):
+            app_path = _make_macos_app(td, short_version="4.1.8", build_version="37335")
+            with patch.object(guard, "_discover_macos_app_path", return_value=app_path):
+                result = guard.check_version(
+                    {
+                        "version_guard": {
+                            "enabled": True,
+                            "allowed_version_ranges": [
+                                {
+                                    "platform": "darwin",
+                                    "bundle_id": "com.tencent.xinWeChat",
+                                    "min_version": "4.1.8",
+                                    "max_version": "4.1.8",
+                                }
+                            ],
+                        }
+                    }
+                )
+
+        self.assertTrue(result.ok, result.reason_text)
+        self.assertEqual(result.details["detected"]["app_path"], app_path)
 
     def test_macos_can_discover_running_process_path_when_unconfigured(self):
         with tempfile.TemporaryDirectory() as td, patch.object(guard.platform, "system", return_value="Darwin"):

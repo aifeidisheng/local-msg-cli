@@ -500,6 +500,53 @@ class JsonCliTests(unittest.TestCase):
 
 
 class MacInitializeTests(unittest.TestCase):
+    def test_scanner_summary_does_not_include_key_material(self):
+        summary = installer._parse_scanner_summary(
+            "Found 20 encrypted DBs\n"
+            "Scan complete: 5375MB scanned, 655 regions, 20 unique keys\n"
+            "Matched 17/20 keys to known DBs\n"
+            "x'" + "a" * 96 + "'\n"
+        )
+
+        self.assertEqual(
+            summary,
+            {
+                "encrypted_db_count": 20,
+                "scanned_region_count": 655,
+                "unique_key_count": 20,
+                "matched_key_count": 17,
+                "reported_key_count": 20,
+            },
+        )
+
+    def test_empty_scanner_result_reports_database_access_diagnostics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            runtime = base / "runtime"
+            runtime.mkdir()
+            scanner = runtime / "find_all_keys_macos"
+            scanner.write_text("", encoding="utf-8")
+            scanner.chmod(0o700)
+            layout = installer.default_layout(base / "home")
+            output = (
+                "Found 20 encrypted DBs\n"
+                "Scan complete: 5375MB scanned, 655 regions, 20 unique keys\n"
+                "Matched 0/20 keys to known DBs\n"
+            )
+            failed = CompletedProcess([], 0, output, "")
+
+            with patch.object(installer.subprocess, "run", return_value=failed):
+                with self.assertRaises(installer.InstallerError) as raised:
+                    installer._extract_macos_keys(runtime, layout, installer.Reporter(json_mode=True))
+
+        self.assertEqual(raised.exception.error_code, "wechat_key_database_mismatch")
+        self.assertEqual(
+            raised.exception.next_action,
+            "confirm_the_running_wechat_account_matches_the_detected_data_directory",
+        )
+        self.assertEqual(raised.exception.details["encrypted_db_count"], 20)
+        self.assertEqual(raised.exception.details["matched_key_count"], 0)
+
     def test_scanner_uses_macos_authorization_and_writes_to_data_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -549,7 +596,7 @@ class MacInitializeTests(unittest.TestCase):
                 },
             )
             args = argparse.Namespace(home=str(home))
-            ready = {"ok": True, "status": "ready"}
+            ready = {"ok": True, "status": "ready", "query_ready": True}
 
             with patch.object(installer.platform, "system", return_value="Darwin"), \
                  patch.object(installer.os, "geteuid", return_value=501), \
