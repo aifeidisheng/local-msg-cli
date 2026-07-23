@@ -814,6 +814,36 @@ def status(args: argparse.Namespace, reporter: Reporter) -> dict:
     }
 
 
+def _detect_system_proxy() -> str | None:
+    """尝试从 macOS scutil --proxy 检测已启用的 HTTPS 代理。"""
+    if platform.system().lower() != "darwin":
+        return None
+    try:
+        result = subprocess.run(
+            ["/usr/sbin/scutil", "--proxy"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return None
+        lines = result.stdout.splitlines()
+        https_enable = False
+        https_host = ""
+        https_port = ""
+        for line in lines:
+            stripped = line.strip()
+            if "HTTPSEnable" in stripped and "1" in stripped.split(":")[-1]:
+                https_enable = True
+            elif "HTTPSProxy" in stripped:
+                https_host = stripped.split(":")[-1].strip()
+            elif "HTTPSPort" in stripped:
+                https_port = stripped.split(":")[-1].strip()
+        if https_enable and https_host and https_port:
+            return f"http://{https_host}:{https_port}"
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    return None
+
+
 def _git_network_run(
     command: list[str],
     *,
@@ -823,6 +853,12 @@ def _git_network_run(
 ) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
+    # 代理检测：环境变量未设置时尝试读取 macOS 系统代理
+    if not env.get("https_proxy") and not env.get("HTTPS_PROXY"):
+        sys_proxy = _detect_system_proxy()
+        if sys_proxy:
+            env["https_proxy"] = sys_proxy
+            env["http_proxy"] = sys_proxy
     network_command = [
         "/usr/bin/git",
         "-c",
@@ -832,7 +868,7 @@ def _git_network_run(
         *command,
     ]
     errors: list[str] = []
-    for attempt in range(1, 3):
+    for attempt in range(1, 4):
         if attempt > 1 and retry_cleanup is not None and retry_cleanup.exists():
             if retry_cleanup.is_dir() and not retry_cleanup.is_symlink():
                 shutil.rmtree(retry_cleanup)
@@ -855,10 +891,13 @@ def _git_network_run(
                 return result
             details = (result.stderr or result.stdout).strip().splitlines()
             errors.append(f"第 {attempt} 次尝试失败：{' | '.join(details[-3:]) or '未知 Git 错误'}")
-        if attempt == 1:
-            time.sleep(0.5)
+        if attempt < 3:
+            time.sleep(1)
+    proxy_hint = ""
+    if not env.get("https_proxy") and not env.get("HTTPS_PROXY"):
+        proxy_hint = "。提示: 如使用代理工具请设置 https_proxy=http://127.0.0.1:<端口>"
     raise InstallerError(
-        f"{error_context}：{'；'.join(errors)}",
+        f"{error_context}：{'；'.join(errors)}{proxy_hint}",
         error_code="git_source_unreachable",
         next_action="retry_or_configure_an_official_fallback_repository",
     )
@@ -1079,13 +1118,20 @@ def initialize(args: argparse.Namespace, reporter: Reporter) -> dict:
         ["install", "--host", host, "--port", str(port)],
         error_context="初始化完成，但 LaunchAgent 启动验证失败",
     )
+    # 等待服务完全就绪（端口绑定需要数秒），最多轮询 20 秒
+    deadline = time.monotonic() + 20
     service_payload = service_status(layout, runtime)
+    while not service_payload.get("query_ready") and time.monotonic() < deadline:
+        time.sleep(1)
+        service_payload = service_status(layout, runtime)
+    initialized = bool(service_payload.get("initialized"))
     query_ready = bool(service_payload.get("query_ready"))
     return {
-        "ok": query_ready,
+        "ok": initialized,
         "command": "initialize",
         "installation_id": manifest.get("installation_id"),
         "endpoint": manifest.get("endpoint"),
+        "query_ready": query_ready,
         "service": service_payload,
         "next_step": "register_with_mcporter" if query_ready else "wait_until_query_ready",
     }

@@ -12,6 +12,7 @@ import wave
 import hmac as hmac_mod
 from contextlib import closing
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional, List, Union
 import xml.etree.ElementTree as ET
 from Crypto.Cipher import AES
@@ -2065,7 +2066,8 @@ def _search_all_messages(keyword, start_ts, end_ts, start_time, end_time, limit,
 mcp = FastMCP(
     "local-message-source",
     instructions=(
-        "查询本机消息联系人和历史消息。优先使用 list_contacts 获取聊天 ID，"
+        "安装验收优先使用 data_source_status，不要为连通性测试读取联系人或消息。"
+        "查询本机消息时优先使用 list_contacts 获取聊天 ID，"
         "再用 query_messages 按明确时间范围查询；跨聊天检索使用 search_messages。"
     ),
 )
@@ -2106,6 +2108,55 @@ mcp.tool = _guarded_tool
 
 # 新消息追踪
 _last_check_state = {}  # {username: last_timestamp}
+
+
+def _sqlite_schema_readable(path) -> bool:
+    """Probe a SQLite cache in read-only mode without reading user rows."""
+    if not path or not os.path.isfile(path):
+        return False
+    try:
+        uri = Path(path).resolve().as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True, timeout=1)) as conn:
+            conn.execute("PRAGMA query_only = ON")
+            conn.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
+        return True
+    except (OSError, ValueError, sqlite3.Error):
+        return False
+
+
+@mcp.tool()
+def data_source_status() -> str:
+    """验证本机消息数据源是否可查询，不返回联系人、消息、密钥或本机路径。
+
+    用于安装后的最小化验收。工具只检查联系人数据库和至少一个消息数据库
+    分片能否以只读方式打开，并返回非敏感的布尔状态和分片数量。
+    """
+    try:
+        contact_ready = _sqlite_schema_readable(_get_contact_db_path())
+    except Exception:
+        contact_ready = False
+
+    message_ready = False
+    for rel_key in MSG_DB_KEYS:
+        try:
+            cached_path = _cache.get(rel_key)
+        except Exception:
+            continue
+        if _sqlite_schema_readable(cached_path):
+            message_ready = True
+            break
+
+    database_accessible = contact_ready and message_ready
+    payload = {
+        "ok": database_accessible,
+        "status": "ready" if database_accessible else "not_ready",
+        "initialized": bool(ALL_KEYS),
+        "database_accessible": database_accessible,
+        "contact_database_ready": contact_ready,
+        "message_database_ready": message_ready,
+        "configured_message_shards": len(MSG_DB_KEYS),
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 @mcp.tool()
@@ -2457,7 +2508,7 @@ def list_contacts(query: str = "", limit: int = 100) -> str:
     - 需要枚举可分析的数据源，例如“有哪些投研群可以查询”
     - 后续 query_messages 的 chat_id 参数必须从这里获取或确认
 
-    参数：
+    参数（注意：搜索参数名为 query，不是 keyword/search/name）：
     - query: 可选搜索词，匹配备注、昵称、别名、描述和 ID；为空时列出前 limit 个
     - limit: 返回数量，默认 100；结果过多时请加 query 缩小范围
 
