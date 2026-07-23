@@ -207,6 +207,60 @@ def _empty_key_result(summary: dict[str, int]) -> tuple[str, str, str]:
     )
 
 
+def _discover_db_salts(home: Path) -> Path | None:
+    """Pre-discover encrypted DB salts from user context (has FDA).
+
+    Returns a temp file path containing JSON array of {name, salt} entries,
+    or None if no encrypted databases were found.
+    This allows the elevated scanner to skip filesystem access entirely.
+    """
+    base = home / "Library" / "Containers" / "com.tencent.xinWeChat" / "Data" / "Documents" / "xwechat_files"
+    if not base.is_dir():
+        return None
+
+    entries: list[dict[str, str]] = []
+    for account_dir in base.iterdir():
+        if account_dir.name.startswith(".") or not account_dir.is_dir():
+            continue
+        db_storage = account_dir / "db_storage"
+        if not db_storage.is_dir():
+            continue
+        for db_file in db_storage.rglob("*.db"):
+            if not db_file.is_file():
+                continue
+            try:
+                with db_file.open("rb") as f:
+                    header = f.read(16)
+            except OSError:
+                continue
+            if len(header) < 16:
+                continue
+            # Skip unencrypted SQLite files
+            if header[:15] == b"SQLite format 3":
+                continue
+            salt_hex = header.hex()
+            # Relative name from db_storage/ (matches scanner's output format)
+            rel = str(db_file.relative_to(db_storage))
+            entries.append({"name": rel, "salt": salt_hex})
+
+    if not entries:
+        return None
+
+    # Write to a secure temp file readable by root
+    tmp_fd, tmp_path = tempfile.mkstemp(prefix="hf_db_salts_", suffix=".json")
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            json.dump(entries, f, ensure_ascii=False)
+        os.chmod(tmp_path, 0o644)  # root needs to read this
+    except OSError:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        return None
+    return Path(tmp_path)
+
+
 def _extract_macos_keys(runtime: Path, layout: InstallLayout, reporter: Reporter) -> None:
     keys_file = layout.data_dir / "all_keys.json"
     if _valid_key_file(keys_file):
@@ -229,20 +283,26 @@ def _extract_macos_keys(runtime: Path, layout: InstallLayout, reporter: Reporter
         )
     layout.data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(layout.data_dir, 0o700)
+
+    # Pre-discover DB salts in user context (has FDA) to avoid requiring
+    # Full Disk Access for the elevated scanner binary.
+    db_salts_file = _discover_db_salts(Path.home().resolve())
+
     reporter.progress("keys", "通过 macOS 系统授权读取 WeChat 进程并提取数据库密钥")
-    scanner_command = shlex.join(
-        [
-            str(scanner),
-            "--output",
-            str(keys_file),
-            "--home",
-            str(Path.home().resolve()),
-            "--owner-uid",
-            str(os.getuid()),
-            "--owner-gid",
-            str(os.getgid()),
-        ]
-    )
+    scanner_args = [
+        str(scanner),
+        "--output",
+        str(keys_file),
+        "--home",
+        str(Path.home().resolve()),
+        "--owner-uid",
+        str(os.getuid()),
+        "--owner-gid",
+        str(os.getgid()),
+    ]
+    if db_salts_file:
+        scanner_args.extend(["--db-salts", str(db_salts_file)])
+    scanner_command = shlex.join(scanner_args)
     result = subprocess.run(
         [
             "/usr/bin/osascript",
@@ -261,6 +321,12 @@ def _extract_macos_keys(runtime: Path, layout: InstallLayout, reporter: Reporter
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+    # Clean up temporary salts file regardless of scanner outcome.
+    if db_salts_file:
+        try:
+            db_salts_file.unlink()
+        except OSError:
+            pass
     if result.returncode != 0:
         # 扫描器的标准输出属于敏感操作过程信息，失败响应只使用 stderr。
         details = result.stderr.strip()

@@ -79,6 +79,62 @@ static int nftw_collect_db(const char *fpath, const struct stat *sb,
     return 0;
 }
 
+/* Load pre-discovered DB salts from a JSON file produced by the Python installer.
+ * Expected format: [{"name": "relative/path.db", "salt": "hex32"}, ...]
+ * This eliminates the need for the elevated scanner to have Full Disk Access. */
+static int load_db_salts_from_file(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        fprintf(stderr, "Cannot open --db-salts file: %s\n", path);
+        return -1;
+    }
+    /* Simple JSON array parser - entries are small and well-structured */
+    fseek(f, 0, SEEK_END);
+    long fsize = ftell(f);
+    if (fsize <= 0 || fsize > 1024 * 1024) { fclose(f); return -1; }
+    fseek(f, 0, SEEK_SET);
+    char *buf = malloc(fsize + 1);
+    if (!buf) { fclose(f); return -1; }
+    if ((long)fread(buf, 1, fsize, f) != fsize) { free(buf); fclose(f); return -1; }
+    buf[fsize] = '\0';
+    fclose(f);
+
+    /* Parse entries: find "name": "..." and "salt": "..." pairs */
+    const char *p = buf;
+    while ((p = strstr(p, "\"name\"")) != NULL && g_db_count < MAX_DBS) {
+        /* Find name value */
+        const char *colon = strchr(p + 6, ':');
+        if (!colon) break;
+        const char *q1 = strchr(colon + 1, '"');
+        if (!q1) break;
+        const char *q2 = strchr(q1 + 1, '"');
+        if (!q2) break;
+        size_t nlen = q2 - q1 - 1;
+        if (nlen >= 256) nlen = 255;
+        memcpy(g_db_names[g_db_count], q1 + 1, nlen);
+        g_db_names[g_db_count][nlen] = '\0';
+
+        /* Find salt value after name */
+        const char *sp = strstr(q2, "\"salt\"");
+        if (!sp) break;
+        const char *sc = strchr(sp + 6, ':');
+        if (!sc) break;
+        const char *s1 = strchr(sc + 1, '"');
+        if (!s1) break;
+        const char *s2 = strchr(s1 + 1, '"');
+        if (!s2 || (s2 - s1 - 1) != 32) { p = q2 + 1; continue; }
+        memcpy(g_db_salts[g_db_count], s1 + 1, 32);
+        g_db_salts[g_db_count][32] = '\0';
+
+        printf("  %s: salt=%s (pre-discovered)\n",
+               g_db_names[g_db_count], g_db_salts[g_db_count]);
+        g_db_count++;
+        p = s2 + 1;
+    }
+    free(buf);
+    return g_db_count > 0 ? 0 : -1;
+}
+
 static int is_hex_char(unsigned char c) {
     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 }
@@ -113,6 +169,7 @@ int main(int argc, char *argv[]) {
     pid_t pid = -1;
     const char *out_path = "all_keys.json";
     const char *requested_home = NULL;
+    const char *db_salts_path = NULL;  /* Pre-discovered salts from Python */
     uid_t owner_uid = (uid_t)-1;
     gid_t owner_gid = (gid_t)-1;
     for (int i = 1; i < argc; i++) {
@@ -128,6 +185,12 @@ int main(int argc, char *argv[]) {
                 return 64;
             }
             requested_home = argv[i];
+        } else if (strcmp(argv[i], "--db-salts") == 0) {
+            if (++i >= argc) {
+                fprintf(stderr, "--db-salts requires a path\n");
+                return 64;
+            }
+            db_salts_path = argv[i];
         } else if (strcmp(argv[i], "--owner-uid") == 0) {
             if (++i >= argc) {
                 fprintf(stderr, "--owner-uid requires a numeric uid\n");
@@ -189,30 +252,38 @@ int main(int argc, char *argv[]) {
     if (!home) home = "/root";
     printf("User home: %s\n", home);
 
-    /* Collect DB salts by recursively walking db_storage directories.
-     * Note: POSIX glob() does not support ** recursive matching on macOS,
-     * so we use nftw() to walk the directory tree instead. */
+    /* Collect DB salts: prefer pre-discovered salts from Python (no FDA needed),
+     * fall back to recursive disk walk (requires Full Disk Access). */
     printf("\nScanning for DB files...\n");
-    char db_base_dir[512];
-    snprintf(db_base_dir, sizeof(db_base_dir),
-        "%s/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files",
-        home);
-
-    /* Walk each account's db_storage directory */
-    DIR *xdir = opendir(db_base_dir);
-    if (xdir) {
-        struct dirent *ent;
-        while ((ent = readdir(xdir)) != NULL) {
-            if (ent->d_name[0] == '.') continue;
-            char storage_path[768];
-            snprintf(storage_path, sizeof(storage_path),
-                "%s/%s/db_storage", db_base_dir, ent->d_name);
-            struct stat st;
-            if (stat(storage_path, &st) == 0 && S_ISDIR(st.st_mode)) {
-                nftw(storage_path, nftw_collect_db, 20, FTW_PHYS);
-            }
+    if (db_salts_path) {
+        printf("  Loading pre-discovered salts from: %s\n", db_salts_path);
+        if (load_db_salts_from_file(db_salts_path) != 0) {
+            fprintf(stderr, "Failed to load --db-salts file; falling back to disk scan\n");
+            db_salts_path = NULL;  /* fall through to nftw */
         }
-        closedir(xdir);
+    }
+    if (!db_salts_path) {
+        /* Legacy path: walk filesystem directly (requires FDA on macOS) */
+        char db_base_dir[512];
+        snprintf(db_base_dir, sizeof(db_base_dir),
+            "%s/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files",
+            home);
+
+        DIR *xdir = opendir(db_base_dir);
+        if (xdir) {
+            struct dirent *ent;
+            while ((ent = readdir(xdir)) != NULL) {
+                if (ent->d_name[0] == '.') continue;
+                char storage_path[768];
+                snprintf(storage_path, sizeof(storage_path),
+                    "%s/%s/db_storage", db_base_dir, ent->d_name);
+                struct stat st;
+                if (stat(storage_path, &st) == 0 && S_ISDIR(st.st_mode)) {
+                    nftw(storage_path, nftw_collect_db, 20, FTW_PHYS);
+                }
+            }
+            closedir(xdir);
+        }
     }
     printf("Found %d encrypted DBs\n", g_db_count);
 
