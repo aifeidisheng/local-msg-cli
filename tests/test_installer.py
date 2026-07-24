@@ -234,6 +234,26 @@ class InstallerFlowTests(unittest.TestCase):
             port=8765,
         )
 
+    def test_discover_db_manifest_is_limited_to_configured_directory_and_contains_page1(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            current = root / "current"; current.mkdir()
+            historical = root / "historical"; historical.mkdir()
+            page1 = bytes(range(256)) * 16
+            (current / "message.db").write_bytes(page1)
+            (historical / "old.db").write_bytes(page1)
+
+            manifest = installer._discover_db_salts(root, current)
+            self.assertIsNotNone(manifest)
+            try:
+                entries = json.loads(manifest.read_text(encoding="utf-8"))
+            finally:
+                manifest.unlink(missing_ok=True)
+
+            self.assertEqual([entry["name"] for entry in entries], ["message.db"])
+            self.assertEqual(entries[0]["salt"], page1[:16].hex())
+            self.assertEqual(entries[0]["page1"], page1.hex())
+
     def test_install_uses_versioned_runtime_and_writes_manifest_after_service_validation(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -607,7 +627,7 @@ class MacInitializeTests(unittest.TestCase):
                  patch.object(installer.os, "geteuid", return_value=501), \
                  patch.object(installer, "_extract_macos_keys") as extract, \
                  patch.object(installer, "_run", return_value=CompletedProcess([], 0, "", "")) as run, \
-                 patch.object(installer, "_service_command"), \
+                 patch.object(installer, "_service_command") as service_command, \
                  patch.object(installer, "service_status", return_value=ready):
                 payload = installer.initialize(args, installer.Reporter(json_mode=True))
 
@@ -616,7 +636,45 @@ class MacInitializeTests(unittest.TestCase):
             self.assertEqual(init_command, [str(runtime_python), str(runtime / "main.py"), "init"])
             self.assertNotIn("sudo", init_command)
             self.assertEqual(run.call_args.kwargs["env"]["WECHAT_DECRYPT_DATA_DIR"], str(layout.data_dir))
+            service_command.assert_not_called()
             self.assertEqual(payload["next_step"], "register_with_mcporter")
+
+    def test_initialize_starts_existing_service_without_reinstalling_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            layout = installer.default_layout(home)
+            runtime = layout.runtime_dir / ("a" * 40)
+            runtime_python = runtime / ".venv" / "bin" / "python3"
+            runtime_python.parent.mkdir(parents=True)
+            runtime_python.write_text("", encoding="utf-8")
+            installer._atomic_write_json(
+                layout.manifest,
+                {
+                    "runtime_dir": str(runtime),
+                    "host": "127.0.0.1",
+                    "port": 8765,
+                    "endpoint": "http://127.0.0.1:8765/mcp",
+                },
+            )
+            args = argparse.Namespace(home=str(home))
+            stopped = {"ok": False, "status": "stopped", "transport_ready": False}
+            ready = {"ok": True, "status": "ready", "transport_ready": True, "initialized": True, "query_ready": True}
+
+            with patch.object(installer.platform, "system", return_value="Darwin"), \
+                 patch.object(installer.os, "geteuid", return_value=501), \
+                 patch.object(installer, "_extract_macos_keys"), \
+                 patch.object(installer, "_run", return_value=CompletedProcess([], 0, "", "")), \
+                 patch.object(installer, "_service_command") as service_command, \
+                 patch.object(installer, "service_status", side_effect=[stopped, ready]):
+                payload = installer.initialize(args, installer.Reporter(json_mode=True))
+
+            service_command.assert_called_once_with(
+                runtime,
+                layout,
+                ["start"],
+                error_context="初始化完成，但 LaunchAgent 启动失败",
+            )
+            self.assertTrue(payload["query_ready"])
 
     def test_scanner_failure_returns_stable_wechat_resign_action(self):
         with tempfile.TemporaryDirectory() as tmp:

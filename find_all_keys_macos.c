@@ -31,11 +31,17 @@
 #include <sys/stat.h>
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
+#include <CommonCrypto/CommonCryptor.h>
+#include <CommonCrypto/CommonHMAC.h>
+#include <CommonCrypto/CommonKeyDerivation.h>
 #include "wechat_risk_guard_macos.h"
 
 #define MAX_KEYS 256
 #define KEY_SIZE 32
 #define SALT_SIZE 16
+#define DB_PAGE_SIZE 4096
+#define HMAC_SIZE 64
+#define RESERVE_SIZE 80
 #define HEX_PATTERN_LEN 96  /* 64 hex (key) + 32 hex (salt) */
 #define CHUNK_SIZE (2 * 1024 * 1024)
 
@@ -45,13 +51,21 @@ typedef struct {
     char full_pragma[100];
 } key_entry_t;
 
-/* Forward declaration */
-static int read_db_salt(const char *path, char *salt_hex_out);
+typedef struct {
+    char salt_hex[33];
+    char name[256];
+    unsigned char page1[DB_PAGE_SIZE];
+    int has_page1;
+} db_entry_t;
+
+/* Forward declarations */
+static int read_db_page1(const char *path, unsigned char *page1_out);
+static int verify_key_for_db(const char *key_hex, const db_entry_t *db);
+static int hex_to_bytes(const char *hex, unsigned char *out, size_t out_len);
 
 /* nftw callback state for collecting DB files */
 #define MAX_DBS 256
-static char g_db_salts[MAX_DBS][33];
-static char g_db_names[MAX_DBS][256];
+static db_entry_t g_dbs[MAX_DBS];
 static int g_db_count = 0;
 static int nftw_collect_db(const char *fpath, const struct stat *sb,
                            int typeflag, struct FTW *ftwbuf) {
@@ -61,10 +75,11 @@ static int nftw_collect_db(const char *fpath, const struct stat *sb,
     if (len < 3 || strcmp(fpath + len - 3, ".db") != 0) return 0;
     if (g_db_count >= MAX_DBS) return 0;
 
-    char salt[33];
-    if (read_db_salt(fpath, salt) != 0) return 0;
-
-    strcpy(g_db_salts[g_db_count], salt);
+    if (read_db_page1(fpath, g_dbs[g_db_count].page1) != 0) return 0;
+    for (int i = 0; i < SALT_SIZE; i++)
+        sprintf(g_dbs[g_db_count].salt_hex + i * 2, "%02x", g_dbs[g_db_count].page1[i]);
+    g_dbs[g_db_count].salt_hex[32] = '\0';
+    g_dbs[g_db_count].has_page1 = 1;
     /* Extract relative path from db_storage/ */
     const char *rel = strstr(fpath, "db_storage/");
     if (rel) rel += strlen("db_storage/");
@@ -72,15 +87,15 @@ static int nftw_collect_db(const char *fpath, const struct stat *sb,
         rel = strrchr(fpath, '/');
         rel = rel ? rel + 1 : fpath;
     }
-    strncpy(g_db_names[g_db_count], rel, 255);
-    g_db_names[g_db_count][255] = '\0';
-    printf("  %s: salt=%s\n", g_db_names[g_db_count], salt);
+    strncpy(g_dbs[g_db_count].name, rel, 255);
+    g_dbs[g_db_count].name[255] = '\0';
+    printf("  %s: salt=%s\n", g_dbs[g_db_count].name, g_dbs[g_db_count].salt_hex);
     g_db_count++;
     return 0;
 }
 
 /* Load pre-discovered DB salts from a JSON file produced by the Python installer.
- * Expected format: [{"name": "relative/path.db", "salt": "hex32"}, ...]
+ * Expected format: [{"name": "relative/path.db", "salt": "hex32", "page1": "hex8192"}, ...]
  * This eliminates the need for the elevated scanner to have Full Disk Access. */
 static int load_db_salts_from_file(const char *path) {
     FILE *f = fopen(path, "r");
@@ -91,7 +106,7 @@ static int load_db_salts_from_file(const char *path) {
     /* Simple JSON array parser - entries are small and well-structured */
     fseek(f, 0, SEEK_END);
     long fsize = ftell(f);
-    if (fsize <= 0 || fsize > 1024 * 1024) { fclose(f); return -1; }
+    if (fsize <= 0 || fsize > 4 * 1024 * 1024) { fclose(f); return -1; }
     fseek(f, 0, SEEK_SET);
     char *buf = malloc(fsize + 1);
     if (!buf) { fclose(f); return -1; }
@@ -111,8 +126,8 @@ static int load_db_salts_from_file(const char *path) {
         if (!q2) break;
         size_t nlen = q2 - q1 - 1;
         if (nlen >= 256) nlen = 255;
-        memcpy(g_db_names[g_db_count], q1 + 1, nlen);
-        g_db_names[g_db_count][nlen] = '\0';
+        memcpy(g_dbs[g_db_count].name, q1 + 1, nlen);
+        g_dbs[g_db_count].name[nlen] = '\0';
 
         /* Find salt value after name */
         const char *sp = strstr(q2, "\"salt\"");
@@ -123,11 +138,29 @@ static int load_db_salts_from_file(const char *path) {
         if (!s1) break;
         const char *s2 = strchr(s1 + 1, '"');
         if (!s2 || (s2 - s1 - 1) != 32) { p = q2 + 1; continue; }
-        memcpy(g_db_salts[g_db_count], s1 + 1, 32);
-        g_db_salts[g_db_count][32] = '\0';
+        memcpy(g_dbs[g_db_count].salt_hex, s1 + 1, 32);
+        g_dbs[g_db_count].salt_hex[32] = '\0';
+
+        /* Secure installer mode requires the encrypted page itself so the
+         * memory candidate can be authenticated, not merely salt-matched. */
+        const char *entry_end = strchr(s2, '}');
+        const char *pp = strstr(s2, "\"page1\"");
+        if (!entry_end || !pp || pp > entry_end) {
+            p = q2 + 1;
+            continue;
+        }
+        const char *pc = strchr(pp + 7, ':');
+        const char *p1 = pc ? strchr(pc + 1, '"') : NULL;
+        const char *p2 = p1 ? strchr(p1 + 1, '"') : NULL;
+        if (!p2 || p2 > entry_end || (p2 - p1 - 1) != DB_PAGE_SIZE * 2 ||
+            hex_to_bytes(p1 + 1, g_dbs[g_db_count].page1, DB_PAGE_SIZE) != 0) {
+            p = q2 + 1;
+            continue;
+        }
+        g_dbs[g_db_count].has_page1 = 1;
 
         printf("  %s: salt=%s (pre-discovered)\n",
-               g_db_names[g_db_count], g_db_salts[g_db_count]);
+               g_dbs[g_db_count].name, g_dbs[g_db_count].salt_hex);
         g_db_count++;
         p = s2 + 1;
     }
@@ -150,19 +183,59 @@ static pid_t find_wechat_pid(void) {
     return pid;
 }
 
-/* Read DB salt (first 16 bytes) and return hex string */
-static int read_db_salt(const char *path, char *salt_hex_out) {
+/* Read and retain DB page 1 for cryptographic candidate validation. */
+static int read_db_page1(const char *path, unsigned char *page1_out) {
     FILE *f = fopen(path, "rb");
     if (!f) return -1;
-    unsigned char header[16];
-    if (fread(header, 1, 16, f) != 16) { fclose(f); return -1; }
+    if (fread(page1_out, 1, DB_PAGE_SIZE, f) != DB_PAGE_SIZE) { fclose(f); return -1; }
     fclose(f);
     /* Check if unencrypted */
-    if (memcmp(header, "SQLite format 3", 15) == 0) return -1;
-    for (int i = 0; i < 16; i++)
-        sprintf(salt_hex_out + i * 2, "%02x", header[i]);
-    salt_hex_out[32] = '\0';
+    if (memcmp(page1_out, "SQLite format 3", 15) == 0) return -1;
     return 0;
+}
+
+static int hex_to_bytes(const char *hex, unsigned char *out, size_t out_len) {
+    for (size_t i = 0; i < out_len; i++) {
+        unsigned char hi = hex[i * 2], lo = hex[i * 2 + 1];
+        int h = (hi >= '0' && hi <= '9') ? hi - '0' :
+                (hi >= 'a' && hi <= 'f') ? hi - 'a' + 10 :
+                (hi >= 'A' && hi <= 'F') ? hi - 'A' + 10 : -1;
+        int l = (lo >= '0' && lo <= '9') ? lo - '0' :
+                (lo >= 'a' && lo <= 'f') ? lo - 'a' + 10 :
+                (lo >= 'A' && lo <= 'F') ? lo - 'A' + 10 : -1;
+        if (h < 0 || l < 0) return -1;
+        out[i] = (unsigned char)((h << 4) | l);
+    }
+    return 0;
+}
+
+/* Verify the SQLCipher page-1 HMAC used by the Python decryptor. */
+static int verify_key_for_db(const char *key_hex, const db_entry_t *db) {
+    if (!db->has_page1) return 0;
+    unsigned char enc_key[KEY_SIZE];
+    unsigned char mac_salt[SALT_SIZE];
+    unsigned char mac_key[KEY_SIZE];
+    unsigned char digest[HMAC_SIZE];
+    unsigned char hmac_data[(DB_PAGE_SIZE - RESERVE_SIZE) + 4];
+    if (hex_to_bytes(key_hex, enc_key, KEY_SIZE) != 0) return 0;
+    for (int i = 0; i < SALT_SIZE; i++)
+        mac_salt[i] = (unsigned char)(db->page1[i] ^ 0x3a);
+    if (CCKeyDerivationPBKDF(kCCPBKDF2, (const char *)enc_key, KEY_SIZE,
+                             mac_salt, SALT_SIZE, kCCPRFHmacAlgSHA512,
+                             2, mac_key, KEY_SIZE) != kCCSuccess) {
+        return 0;
+    }
+    memcpy(hmac_data, db->page1 + SALT_SIZE, DB_PAGE_SIZE - RESERVE_SIZE);
+    hmac_data[DB_PAGE_SIZE - RESERVE_SIZE + 0] = 1;
+    hmac_data[DB_PAGE_SIZE - RESERVE_SIZE + 1] = 0;
+    hmac_data[DB_PAGE_SIZE - RESERVE_SIZE + 2] = 0;
+    hmac_data[DB_PAGE_SIZE - RESERVE_SIZE + 3] = 0;
+    CCHmac(kCCHmacAlgSHA512, mac_key, KEY_SIZE,
+           hmac_data, sizeof(hmac_data), digest);
+    unsigned char diff = 0;
+    for (int i = 0; i < HMAC_SIZE; i++)
+        diff |= (unsigned char)(digest[i] ^ db->page1[DB_PAGE_SIZE - HMAC_SIZE + i]);
+    return diff == 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -291,6 +364,7 @@ int main(int argc, char *argv[]) {
     printf("\nScanning memory for keys...\n");
     key_entry_t keys[MAX_KEYS];
     int key_count = 0;
+    int candidate_count = 0;
     size_t total_scanned = 0;
     int region_count = 0;
 
@@ -331,6 +405,7 @@ int main(int argc, char *argv[]) {
                             }
                             if (!valid) continue;
                             if (buf[i + 2 + HEX_PATTERN_LEN] != '\'') continue;
+                            candidate_count++;
 
                             /* Extract key and salt hex */
                             char key_hex[65], salt_hex[33];
@@ -347,7 +422,20 @@ int main(int argc, char *argv[]) {
                                 if (salt_hex[j] >= 'A' && salt_hex[j] <= 'F')
                                     salt_hex[j] += 32;
 
-                            /* Deduplicate */
+                            /* Authenticate the candidate against page 1 before
+                             * retaining it.  Salt equality alone is not proof
+                             * of a usable SQLCipher key. */
+                            int authenticated = 0;
+                            for (int j = 0; j < g_db_count; j++) {
+                                if (strcmp(salt_hex, g_dbs[j].salt_hex) == 0 &&
+                                    verify_key_for_db(key_hex, &g_dbs[j])) {
+                                    authenticated = 1;
+                                    break;
+                                }
+                            }
+                            if (!authenticated) continue;
+
+                            /* Deduplicate authenticated candidates by key+salt. */
                             int dup = 0;
                             for (int k = 0; k < key_count; k++) {
                                 if (strcmp(keys[k].key_hex, key_hex) == 0 &&
@@ -379,8 +467,8 @@ int main(int argc, char *argv[]) {
         addr += size;
     }
 
-    printf("\nScan complete: %zuMB scanned, %d regions, %d unique keys\n",
-           total_scanned / 1024 / 1024, region_count, key_count);
+    printf("\nScan complete: %zuMB scanned, %d regions, %d candidate patterns, %d unique keys\n",
+           total_scanned / 1024 / 1024, region_count, candidate_count, key_count);
 
     /* Match keys to DBs */
     printf("\n%-25s %-66s %s\n", "Database", "Key", "Salt");
@@ -393,8 +481,9 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < key_count; i++) {
         const char *db = NULL;
         for (int j = 0; j < g_db_count; j++) {
-            if (strcmp(keys[i].salt_hex, g_db_salts[j]) == 0) {
-                db = g_db_names[j];
+            if (strcmp(keys[i].salt_hex, g_dbs[j].salt_hex) == 0 &&
+                verify_key_for_db(keys[i].key_hex, &g_dbs[j])) {
+                db = g_dbs[j].name;
                 matched++;
                 break;
             }
@@ -453,17 +542,20 @@ int main(int argc, char *argv[]) {
     if (fp) {
         fprintf(fp, "{\n");
         int first = 1;
-        for (int i = 0; i < key_count; i++) {
-            const char *db = NULL;
-            for (int j = 0; j < g_db_count; j++) {
-                if (strcmp(keys[i].salt_hex, g_db_salts[j]) == 0) {
-                    db = g_db_names[j];
+        /* Iterate databases, rather than keys, so duplicate salts never
+         * produce duplicate JSON object names. */
+        for (int j = 0; j < g_db_count; j++) {
+            const char *key = NULL;
+            for (int i = 0; i < key_count; i++) {
+                if (strcmp(keys[i].salt_hex, g_dbs[j].salt_hex) == 0 &&
+                    verify_key_for_db(keys[i].key_hex, &g_dbs[j])) {
+                    key = keys[i].key_hex;
                     break;
                 }
             }
-            if (!db) continue;
-            fprintf(fp, "%s  \"%s\": {\"enc_key\": \"%s\"}",
-                first ? "" : ",\n", db, keys[i].key_hex);
+            if (!key) continue;
+            fprintf(fp, "%s  \"%s\": {\"enc_key\": \"%s\", \"salt\": \"%s\"}",
+                first ? "" : ",\n", g_dbs[j].name, key, g_dbs[j].salt_hex);
             first = 0;
         }
         fprintf(fp, "\n}\n");

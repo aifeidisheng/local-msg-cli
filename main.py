@@ -463,7 +463,10 @@ def main():
         print()
         from mcp_server import predecrypt_databases
         stats = predecrypt_databases(target_db=args.target_db)
-        if stats["failed"]:
+        # A syntactically valid key file can still contain only unusable keys.
+        # Treat an all-skipped pre-decrypt as initialization failure so the
+        # installer cannot report query-ready with an empty SQLite cache.
+        if stats["failed"] or (stats["total"] > 0 and stats["success"] == 0):
             sys.exit(2)
         _maybe_install_macos_service()
 

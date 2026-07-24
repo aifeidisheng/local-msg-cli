@@ -217,16 +217,16 @@ def _generate_db_salts(db_dir):
             fpath = os.path.join(root, fname)
             try:
                 with open(fpath, "rb") as f:
-                    header = f.read(16)
-                if len(header) < 16:
+                    page1 = f.read(4096)
+                if len(page1) < 4096:
                     continue
                 # 跳过未加密的数据库
-                if header[:15] == b"SQLite format 3":
+                if page1[:15] == b"SQLite format 3":
                     continue
-                salt_hex = header.hex()
+                salt_hex = page1[:16].hex()
                 # 提取相对路径 (从 db_storage/ 开始)
                 rel = os.path.relpath(fpath, db_dir)
-                entries.append({"name": rel, "salt": salt_hex})
+                entries.append({"name": rel, "salt": salt_hex, "page1": page1.hex()})
             except OSError:
                 continue
 
@@ -239,6 +239,7 @@ def _generate_db_salts(db_dir):
     )
     json.dump(entries, tmp, indent=2)
     tmp.close()
+    os.chmod(tmp.name, 0o600)
     print(f"[+] 预计算 {len(entries)} 个数据库 salt -> {tmp.name}")
     return tmp.name
 

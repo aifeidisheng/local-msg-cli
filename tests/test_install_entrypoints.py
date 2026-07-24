@@ -45,6 +45,9 @@ class InstallEntrypointTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 2)
         self.assertIn("Unknown option", result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["error_code"], "invalid_arguments")
+        self.assertEqual(payload["phase"], "arguments")
 
     def test_setup_refuses_to_act_as_an_end_user_installer(self):
         result = self.run_script("setup.sh")
@@ -138,9 +141,82 @@ class InstallEntrypointTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stderr)
         payload = json.loads(result.stdout)
         self.assertFalse(payload["ok"])
+        self.assertTrue(payload["install_complete"])
+        self.assertFalse(payload["initialize_complete"])
+        self.assertEqual(payload["phase"], "initialize")
         self.assertEqual(payload["error_code"], "wechat_not_running")
         self.assertEqual(payload["next_action"], "start_wechat_and_retry_initialize")
         self.assertEqual(payload["initialize"]["error_code"], "wechat_not_running")
+
+    def test_initialize_invalid_stdout_returns_structured_phase_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repository = base / "release"
+            repository.mkdir()
+            (repository / "installer.py").write_text(
+                "import json\n"
+                "print(json.dumps({'ok': True, 'installation': "
+                "{'endpoint': 'http://127.0.0.1:8765/mcp'}}))\n",
+                encoding="utf-8",
+            )
+            subprocess.run(["/usr/bin/git", "init"], cwd=repository, check=True, capture_output=True)
+            subprocess.run(["/usr/bin/git", "checkout", "-b", "main"], cwd=repository, check=True, capture_output=True)
+            subprocess.run(["/usr/bin/git", "add", "installer.py"], cwd=repository, check=True, capture_output=True)
+            subprocess.run(
+                [
+                    "/usr/bin/git",
+                    "-c",
+                    "user.name=tests",
+                    "-c",
+                    "user.email=tests@example.invalid",
+                    "commit",
+                    "-m",
+                    "fixture",
+                ],
+                cwd=repository,
+                check=True,
+                capture_output=True,
+            )
+
+            home = base / "home"
+            management_cli = home / "Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light"
+            management_cli.parent.mkdir(parents=True)
+            management_cli.write_text("#!/bin/bash\necho 'not-json'\n", encoding="utf-8")
+            management_cli.chmod(0o700)
+
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            fake_uname = fake_bin / "uname"
+            fake_uname.write_text("#!/bin/bash\necho Darwin\n", encoding="utf-8")
+            fake_uname.chmod(0o700)
+
+            env = dict(os.environ)
+            env["HOME"] = str(home)
+            env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
+            result = subprocess.run(
+                [
+                    "/bin/bash",
+                    str(ROOT / "install.sh"),
+                    "--initialize",
+                    "--repository",
+                    str(repository),
+                    "--python",
+                    sys.executable,
+                ],
+                cwd=ROOT,
+                env=env,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(payload["install_complete"])
+        self.assertFalse(payload["initialize_complete"])
+        self.assertEqual(payload["phase"], "initialize")
+        self.assertEqual(payload["error_code"], "initialize_output_invalid")
 
 
 if __name__ == "__main__":

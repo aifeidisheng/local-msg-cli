@@ -149,17 +149,43 @@ def _require_non_root_management() -> None:
         )
 
 
-def _valid_key_file(path: Path) -> bool:
+def _valid_key_file(path: Path, db_dir: Path | None = None) -> bool:
     try:
         with path.open(encoding="utf-8") as key_file:
             payload = json.load(key_file)
     except (FileNotFoundError, OSError, json.JSONDecodeError):
         return False
-    return isinstance(payload, dict) and any(
-        isinstance(value, dict) and bool(value.get("enc_key"))
+    entries = [
+        (key, value)
         for key, value in payload.items()
-        if not key.startswith("_")
-    )
+        if not key.startswith("_") and isinstance(value, dict) and value.get("enc_key")
+    ] if isinstance(payload, dict) else []
+    if not entries:
+        return False
+    if db_dir is None:
+        return True
+    try:
+        from key_scan_common import verify_enc_key
+        db_root = db_dir.resolve()
+        for rel, value in entries:
+            key_hex = str(value["enc_key"])
+            if len(key_hex) != 64:
+                return False
+            rel_path = Path(rel)
+            if rel_path.is_absolute():
+                return False
+            db_path = (db_root / rel_path).resolve()
+            try:
+                db_path.relative_to(db_root)
+            except ValueError:
+                return False
+            with db_path.open("rb") as db_file:
+                page1 = db_file.read(4096)
+            if len(page1) != 4096 or not verify_enc_key(bytes.fromhex(key_hex), page1):
+                return False
+    except (OSError, ValueError, TypeError):
+        return False
+    return True
 
 
 def _parse_scanner_summary(output: str) -> dict[str, int]:
@@ -210,51 +236,61 @@ def _empty_key_result(summary: dict[str, int]) -> tuple[str, str, str]:
     )
 
 
-def _discover_db_salts(home: Path) -> Path | None:
+def _discover_db_salts(home: Path, db_dir: Path | None = None) -> Path | None:
     """Pre-discover encrypted DB salts from user context (has FDA).
 
-    Returns a temp file path containing JSON array of {name, salt} entries,
+    Returns a temp file path containing JSON array of {name, salt, page1} entries,
     or None if no encrypted databases were found.
     This allows the elevated scanner to skip filesystem access entirely.
     """
-    base = home / "Library" / "Containers" / "com.tencent.xinWeChat" / "Data" / "Documents" / "xwechat_files"
+    base = db_dir or (
+        home / "Library" / "Containers" / "com.tencent.xinWeChat" / "Data" / "Documents" / "xwechat_files"
+    )
     if not base.is_dir():
         return None
 
     entries: list[dict[str, str]] = []
-    for account_dir in base.iterdir():
-        if account_dir.name.startswith(".") or not account_dir.is_dir():
+    sources: list[tuple[Path, Path]] = []
+    # The configured db_dir is normally the db_storage directory.  Retain
+    # support for the old xwechat_files root only when no explicit directory
+    # was supplied, but never mix historical accounts into an active scan.
+    if db_dir is None:
+        for account_dir in base.iterdir():
+            if account_dir.name.startswith(".") or not account_dir.is_dir():
+                continue
+            storage = account_dir / "db_storage"
+            if storage.is_dir():
+                sources.extend((storage, path) for path in storage.rglob("*.db"))
+    else:
+        sources.extend((base, path) for path in base.rglob("*.db"))
+    for db_storage, db_file in sources:
+        if not db_file.is_file():
             continue
-        db_storage = account_dir / "db_storage"
-        if not db_storage.is_dir():
+        try:
+            with db_file.open("rb") as f:
+                page1 = f.read(4096)
+        except OSError:
             continue
-        for db_file in db_storage.rglob("*.db"):
-            if not db_file.is_file():
-                continue
-            try:
-                with db_file.open("rb") as f:
-                    header = f.read(16)
-            except OSError:
-                continue
-            if len(header) < 16:
-                continue
-            # Skip unencrypted SQLite files
-            if header[:15] == b"SQLite format 3":
-                continue
-            salt_hex = header.hex()
-            # Relative name from db_storage/ (matches scanner's output format)
-            rel = str(db_file.relative_to(db_storage))
-            entries.append({"name": rel, "salt": salt_hex})
+        if len(page1) < 4096:
+            continue
+        # Skip unencrypted SQLite files
+        if page1[:15] == b"SQLite format 3":
+            continue
+        salt_hex = page1[:16].hex()
+        # Relative name from db_storage/ (matches scanner's output format)
+        rel = str(db_file.relative_to(db_storage))
+        entries.append({"name": rel, "salt": salt_hex, "page1": page1.hex()})
 
     if not entries:
         return None
 
-    # Write to a secure temp file readable by root
+    # Write to a secure temp file readable by root.  The page is public
+    # ciphertext, but the file is still short-lived and is not user data.
     tmp_fd, tmp_path = tempfile.mkstemp(prefix="hf_db_salts_", suffix=".json")
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
             json.dump(entries, f, ensure_ascii=False)
-        os.chmod(tmp_path, 0o644)  # root needs to read this
+        os.chmod(tmp_path, 0o600)  # root can read user-owned files without world access
     except OSError:
         try:
             os.unlink(tmp_path)
@@ -266,7 +302,16 @@ def _discover_db_salts(home: Path) -> Path | None:
 
 def _extract_macos_keys(runtime: Path, layout: InstallLayout, reporter: Reporter) -> None:
     keys_file = layout.data_dir / "all_keys.json"
-    if _valid_key_file(keys_file):
+    configured_db_dir = None
+    try:
+        config_payload = json.loads((layout.data_dir / "config.json").read_text(encoding="utf-8"))
+        raw_db_dir = config_payload.get("db_dir")
+        if isinstance(raw_db_dir, str) and raw_db_dir.strip():
+            expanded_db_dir = Path(os.path.expanduser(os.path.expandvars(raw_db_dir)))
+            configured_db_dir = (expanded_db_dir if expanded_db_dir.is_absolute() else layout.data_dir / expanded_db_dir).resolve()
+    except (OSError, ValueError, TypeError):
+        pass
+    if _valid_key_file(keys_file, configured_db_dir):
         return
     if keys_file.exists() or keys_file.is_symlink():
         try:
@@ -289,7 +334,7 @@ def _extract_macos_keys(runtime: Path, layout: InstallLayout, reporter: Reporter
 
     # Pre-discover DB salts in user context (has FDA) to avoid requiring
     # Full Disk Access for the elevated scanner binary.
-    db_salts_file = _discover_db_salts(Path.home().resolve())
+    db_salts_file = _discover_db_salts(Path.home().resolve(), configured_db_dir)
 
     reporter.progress("keys", "通过 macOS 系统授权读取 WeChat 进程并提取数据库密钥")
     scanner_args = [
@@ -334,6 +379,10 @@ def _extract_macos_keys(runtime: Path, layout: InstallLayout, reporter: Reporter
         # 扫描器的标准输出属于敏感操作过程信息，失败响应只使用 stderr。
         details = result.stderr.strip()
         normalized = details.lower()
+        summary = _parse_scanner_summary("\n".join((result.stdout, result.stderr)))
+        if result.returncode == 4:
+            code, action, message = _empty_key_result(summary)
+            raise InstallerError(message, error_code=code, next_action=action, details=summary)
         if "wechat not running" in normalized:
             code = "wechat_not_running"
             action = "start_and_sign_in_to_wechat_then_retry_initialize"
@@ -354,9 +403,9 @@ def _extract_macos_keys(runtime: Path, layout: InstallLayout, reporter: Reporter
             f"macOS 数据库密钥提取失败{': ' + tail if tail else ''}",
             error_code=code,
             next_action=action,
-            details=_parse_scanner_summary("\n".join((result.stdout, result.stderr))),
+            details=summary,
         )
-    if not _valid_key_file(keys_file):
+    if not _valid_key_file(keys_file, configured_db_dir):
         summary = _parse_scanner_summary("\n".join((result.stdout, result.stderr)))
         code, action, message = _empty_key_result(summary)
         raise InstallerError(
@@ -1120,15 +1169,20 @@ def initialize(args: argparse.Namespace, reporter: Reporter) -> dict:
         env=env,
         error_context="本机消息数据初始化失败",
     )
-    host = str(manifest.get("host") or DEFAULT_HOST)
-    port = int(manifest.get("port") or DEFAULT_PORT)
-    reporter.progress("service", "初始化完成，重新安装并验证 LaunchAgent")
-    _service_command(
-        runtime,
-        layout,
-        ["install", "--host", host, "--port", str(port)],
-        error_context="初始化完成，但 LaunchAgent 启动验证失败",
+    service_payload = service_status(layout, runtime)
+    transport_ready = bool(
+        service_payload.get("transport_ready")
+        or service_payload.get("query_ready")
+        or service_payload.get("status") == "ready"
     )
+    if not transport_ready:
+        reporter.progress("service", "初始化完成，启动现有 LaunchAgent")
+        _service_command(
+            runtime,
+            layout,
+            ["start"],
+            error_context="初始化完成，但 LaunchAgent 启动失败",
+        )
     # 等待服务完全就绪（端口绑定需要数秒），最多轮询 20 秒
     deadline = time.monotonic() + 20
     service_payload = service_status(layout, runtime)

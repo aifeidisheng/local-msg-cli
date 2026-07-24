@@ -79,6 +79,8 @@ Git 网络操作会重试一次，并在持续低于 1 KiB/s 达 15 秒时快速
 
 密钥提取和数据库预解密是安装器中的敏感步骤。Agent 必须先说明会出现 macOS 系统管理员授权弹窗并取得用户明确确认，然后直接执行上面的 `./install.sh --initialize`。安装器仅以管理员权限运行内置 C 扫描器；管理 CLI、配置、缓存和 LaunchAgent 始终以当前登录用户运行。
 
+安装入口的 stdout 始终只输出一条 JSON。失败结果中的 `phase` 标识失败阶段；当 `install_complete: true`、`initialize_complete: false` 且 `phase: "initialize"` 时，表示运行时和 LaunchAgent 已安装成功，不应重新下载或重装。按 `error_code` 完成恢复动作后，只重试下面的已安装管理入口即可。
+
 仅当初始化已经执行过但返回结构化错误，并且用户按 `error_code` 对应动作处理完问题后，才使用已安装的管理 CLI 重试初始化：
 
 ```bash

@@ -8,7 +8,6 @@ from pathlib import Path
 from unittest.mock import ANY, Mock, patch
 
 import service
-from wechat_version_guard import VersionCheckResult
 
 
 class ServicePlistTests(unittest.TestCase):
@@ -70,29 +69,19 @@ class ServicePlistTests(unittest.TestCase):
 
 
 class ServiceRunnerTests(unittest.TestCase):
-    def test_run_service_waits_for_version_guard_before_exec(self):
-        blocked = VersionCheckResult(
-            enabled=True,
-            ok=False,
-            reasons=["微信尚未启动"],
-        )
-        ready = VersionCheckResult(enabled=True, ok=True)
+    def test_run_service_execs_without_waiting_for_wechat(self):
         paths = service.service_paths(root=Path("/tmp/wechat-decrypt-light"))
 
         with patch.object(service, "service_paths", return_value=paths), \
              patch.object(service, "acquire_instance_lock", return_value=42) as acquire_lock, \
-             patch("config.load_config", return_value={}), \
-             patch("wechat_version_guard.check_version", side_effect=[blocked, ready]), \
              patch.object(service.os, "execv") as execv, \
              patch.object(service.os, "close") as close, \
-             patch.dict(service.os.environ, {}, clear=False), \
-             patch.object(service.time, "sleep") as sleep:
+             patch.dict(service.os.environ, {}, clear=False):
             result = service.run_service(retry_interval=3)
 
         self.assertEqual(result, 0)
         acquire_lock.assert_called_once_with(paths, blocking=True)
         close.assert_called_once_with(42)
-        sleep.assert_called_once_with(3)
         execv.assert_called_once_with(
             str(paths["python"]),
             [

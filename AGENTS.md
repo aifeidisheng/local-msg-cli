@@ -36,6 +36,9 @@ This single command does everything:
 
 The command outputs a single JSON line to stdout. Check:
 - `ok: true` and `query_ready: true` → proceed to Step 2
+- `ok: false`, `install_complete: true`, and `phase: "initialize"` → the
+  release is already installed; follow Error Recovery and retry only the
+  installed management CLI instead of rerunning the full installer
 - `ok: false` → see Error Recovery below
 
 **Important UX rule**: Do NOT output manual commands for the user to run
