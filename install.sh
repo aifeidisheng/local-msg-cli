@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Canonical bootstrap for an end-user macOS installation.
+# This script is SELF-CONTAINED — it does not reference any other file from
+# the repository. It can be downloaded standalone (e.g. via curl) and executed
+# directly; it will clone the verified main release internally.
 set -euo pipefail
 
 readonly DEFAULT_REPOSITORY="https://github.com/aifeidisheng/local-msg-cli.git"

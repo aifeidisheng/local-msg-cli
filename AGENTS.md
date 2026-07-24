@@ -3,6 +3,21 @@
 > **CRITICAL**: This file is the authoritative guide for AI agents interacting
 > with this repository. Read it completely before executing any command.
 
+## How to read this file (zero-clone)
+
+When a user provides the repository URL, read documentation via raw GitHub
+URLs — do NOT `git clone` the repo just to read docs:
+
+```
+https://raw.githubusercontent.com/aifeidisheng/local-msg-cli/main/AGENTS.md
+https://raw.githubusercontent.com/aifeidisheng/local-msg-cli/main/README.md
+```
+
+The entire end-user installation requires **zero manual git clones**:
+1. Read docs → raw GitHub URL (webfetch / curl)
+2. Obtain installer → `curl` download `install.sh`
+3. Verified clone → handled internally by `install.sh`
+
 ## Routing: end-user vs source-development
 
 | User intent | Workflow |
@@ -21,6 +36,19 @@ or debug this repository's source code.
 
 Ask the user for **explicit confirmation** (a macOS admin authorization
 prompt will appear), then run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aifeidisheng/local-msg-cli/main/install.sh \
+  -o /tmp/wechat-decrypt-install.sh && chmod +x /tmp/wechat-decrypt-install.sh
+/tmp/wechat-decrypt-install.sh --initialize
+```
+
+`install.sh` is self-contained — it does NOT reference any other file from
+the repository. Do NOT `git clone` the repo just to obtain this script.
+The installer will clone the verified `main` release internally.
+
+If running from an existing working tree (source-development context), the
+relative form also works:
 
 ```bash
 ./install.sh --initialize

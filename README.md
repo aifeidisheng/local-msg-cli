@@ -7,9 +7,15 @@
 If you are an AI agent helping a user install/set up/connect this MCP:
 
 1. **Read `AGENTS.md` NOW** — it is the authoritative installation guide
-2. **The ONLY entry point is `./install.sh --initialize`** — one command does everything
+2. **The ONLY entry point is `install.sh --initialize`** — one command does everything
 3. **Do NOT** follow any manual steps in this README (pip install, venv, compile, main.py, etc.)
-4. **Do NOT** clone this repo to a custom location — install.sh handles the verified clone itself
+4. **Do NOT** `git clone` this repo just to obtain `install.sh` — download it directly via `curl`:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/aifeidisheng/local-msg-cli/main/install.sh \
+     -o /tmp/wechat-decrypt-install.sh && chmod +x /tmp/wechat-decrypt-install.sh
+   /tmp/wechat-decrypt-install.sh --initialize
+   ```
+   `install.sh` is self-contained and will clone the verified `main` release internally.
 
 违反以上规则将导致安装失败或安全问题。README 中的所有手动命令仅供源码开发者使用。
 
