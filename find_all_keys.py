@@ -1,5 +1,6 @@
 import functools
 import platform
+import subprocess
 import sys
 import os
 import glob
@@ -187,20 +188,142 @@ def _load_impl():
         import find_all_keys_linux as impl
         return impl
     if system == "darwin":
-        raise RuntimeError(
-            "macOS 请先运行 C 版扫描器提取数据库密钥：\n"
-            "\n"
-            "    sudo ./find_all_keys_macos\n"
-            "\n"
-            "    完成后再运行 python main.py decrypt"
-        )
+        return None  # macOS 通过 _run_macos_scanner() 处理
     raise RuntimeError(
         f"当前平台暂不支持通过 find_all_keys.py 提取内存数据库密钥: {platform.system()}"
     )
 
 
 def get_pids():
-    return _load_impl().get_pids()
+    impl = _load_impl()
+    if impl is None:
+        raise RuntimeError("macOS 使用 C 版扫描器，不提供 get_pids()")
+    return impl.get_pids()
+
+
+def _generate_db_salts(db_dir):
+    """扫描 db_dir 下的 .db 文件，读取前 16 字节作为 salt，生成临时 JSON。
+
+    Python 以当前用户身份运行，可以直接访问 ~/Library/Containers/...，
+    不需要 Full Disk Access。这避免了 sudo 运行 C 扫描器时的 TCC 限制。
+    """
+    import tempfile
+
+    entries = []
+    for root, _dirs, files in os.walk(db_dir):
+        for fname in files:
+            if not fname.endswith(".db"):
+                continue
+            fpath = os.path.join(root, fname)
+            try:
+                with open(fpath, "rb") as f:
+                    header = f.read(16)
+                if len(header) < 16:
+                    continue
+                # 跳过未加密的数据库
+                if header[:15] == b"SQLite format 3":
+                    continue
+                salt_hex = header.hex()
+                # 提取相对路径 (从 db_storage/ 开始)
+                rel = os.path.relpath(fpath, db_dir)
+                entries.append({"name": rel, "salt": salt_hex})
+            except OSError:
+                continue
+
+    if not entries:
+        return None
+
+    # 写入临时文件
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", prefix="db_salts_", delete=False
+    )
+    json.dump(entries, tmp, indent=2)
+    tmp.close()
+    print(f"[+] 预计算 {len(entries)} 个数据库 salt -> {tmp.name}")
+    return tmp.name
+
+
+def _run_macos_scanner(cfg):
+    """在 macOS 上自动编排 C 扫描器：预计算 db-salts → 调用 sudo scanner → 验证输出。"""
+    project_dir = os.path.dirname(os.path.abspath(__file__))
+    scanner_bin = os.path.join(project_dir, "find_all_keys_macos")
+    keys_file = cfg["keys_file"]
+
+    # 1. 检查 C 扫描器二进制是否存在
+    if not os.path.isfile(scanner_bin):
+        src = os.path.join(project_dir, "find_all_keys_macos.c")
+        if os.path.isfile(src):
+            print("[*] 编译 C 版扫描器...")
+            ret = subprocess.run(
+                ["cc", "-O2", "-o", scanner_bin, src, "-framework", "Foundation"],
+                cwd=project_dir,
+            )
+            if ret.returncode != 0:
+                raise RuntimeError(
+                    "C 扫描器编译失败。请手动执行:\n"
+                    f"  cc -O2 -o {scanner_bin} {src} -framework Foundation"
+                )
+            print("[+] 编译成功")
+        else:
+            raise RuntimeError(f"找不到 C 扫描器: {scanner_bin}")
+
+    # 2. 预计算 db-salts（Python 用户身份可访问 Container）
+    db_dir = cfg.get("db_dir", "")
+    salts_file = _generate_db_salts(db_dir) if db_dir else None
+    if not salts_file:
+        raise RuntimeError(
+            f"无法从 db_dir 读取任何加密数据库的 salt。\n"
+            f"  db_dir = {db_dir}\n"
+            "  请确认微信已登录且数据库已生成。"
+        )
+
+    # 3. 构建命令：sudo scanner --db-salts <path> --output <abs_path>
+    cmd = [
+        "sudo", scanner_bin,
+        "--db-salts", salts_file,
+        "--output", os.path.abspath(keys_file),
+    ]
+    print()
+    print(f"[*] 调用 C 扫描器提取数据库密钥...")
+    print(f"    命令: {' '.join(cmd)}")
+    print(f"    (需要 sudo 密码)")
+    print()
+
+    try:
+        result = subprocess.run(cmd, cwd=project_dir)
+    finally:
+        # 清理临时 salts 文件
+        try:
+            os.unlink(salts_file)
+        except OSError:
+            pass
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"C 扫描器退出码 {result.returncode}。\n"
+            "  常见原因:\n"
+            "  - 退出码 1: 微信未运行或未用 ad-hoc 签名\n"
+            "  - 退出码 2: 版本门禁不通过\n"
+            "  - 退出码 3: 无法写入密钥文件\n"
+            "  - 退出码 4: 找到密钥但无法匹配到数据库\n"
+            "  请检查上方输出的详细错误信息。"
+        )
+
+    # 4. 验证输出文件
+    if not os.path.exists(keys_file):
+        raise RuntimeError("C 扫描器执行完成但未生成密钥文件")
+
+    with open(keys_file, encoding="utf-8") as f:
+        keys = json.load(f)
+    from key_utils import strip_key_metadata
+    valid_keys = strip_key_metadata(keys)
+    if not valid_keys:
+        raise RuntimeError(
+            "C 扫描器生成的密钥文件为空（0 个有效密钥）。\n"
+            "  请确认微信已完全启动并加载了聊天列表。"
+        )
+
+    print(f"[+] 成功提取 {len(valid_keys)} 个数据库密钥 -> {keys_file}")
 
 
 def main():
@@ -211,7 +334,12 @@ def main():
 
     find_image_key_offline(cfg)
 
-    return _load_impl().main()
+    impl = _load_impl()
+    if impl is None:
+        # macOS: 自动编排 C 扫描器
+        _run_macos_scanner(cfg)
+    else:
+        impl.main()
 
 
 if __name__ == "__main__":

@@ -403,10 +403,30 @@ int main(int argc, char *argv[]) {
     }
     printf("\nMatched %d/%d keys to known DBs\n", matched, key_count);
 
+    if (g_db_count == 0) {
+        fprintf(stderr,
+            "\n[WARNING] 未扫描到任何加密数据库文件 (g_db_count=0)。\n"
+            "  可能原因: 运行 sudo 时终端未获得 Full Disk Access，\n"
+            "  无法读取 ~/Library/Containers/com.tencent.xinWeChat/ 目录。\n"
+            "  解决方案: 使用 --db-salts 参数传入预计算的数据库 salt 文件，\n"
+            "  或在系统设置中为终端授予 Full Disk Access 后重试。\n");
+    } else if (matched == 0 && key_count > 0) {
+        fprintf(stderr,
+            "\n[WARNING] 在内存中找到 %d 个密钥，但无法匹配到任何数据库。\n"
+            "  可能原因: 数据库 salt 与内存中的密钥不对应。\n"
+            "  请确认微信已登录且消息数据库已生成。\n", key_count);
+    }
+
     /* Save JSON: { "rel/path.db": { "enc_key": "hex" }, ... }
      * Uses forward slashes (native macOS paths, valid JSON without escaping).
+     * Unlink existing file first to allow re-runs (replaces O_EXCL).
      */
-    int out_fd = open(out_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+    if (matched == 0) {
+        fprintf(stderr, "\n[ERROR] 无有效密钥可写入，跳过文件输出。\n");
+        return 4;
+    }
+    unlink(out_path);  /* Remove existing file to allow re-creation */
+    int out_fd = open(out_path, O_WRONLY | O_CREAT | O_NOFOLLOW, 0600);
     if (out_fd < 0) {
         perror("Unable to open key output file");
         return 3;
