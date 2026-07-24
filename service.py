@@ -282,7 +282,12 @@ def inspect_service(
 
 
 def run_service(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, retry_interval: int = 10) -> int:
-    """等待微信和版本门禁就绪后启动 MCP，供 launchd 作为常驻入口调用。"""
+    """立即启动 MCP Server，供 launchd 作为常驻入口调用。
+
+    MCP 启动不依赖微信运行或版本门禁通过。版本门禁在每次工具调用时
+    由 mcp_server.py 的 _guarded_tool 装饰器执行 check_or_raise，
+    调用失败时错误信息会直接返回给会话，用户可以看到具体原因。
+    """
     paths = service_paths()
     try:
         # launchd 入口等待已有手动实例释放锁，避免 KeepAlive 形成重启风暴。
@@ -292,46 +297,23 @@ def run_service(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, retry_interv
         return 3
 
     os.environ["WECHAT_DECRYPT_SERVICE_LOCK_HELD"] = "1"
-    print(f"[*] 常驻服务已启动，等待微信就绪后提供 MCP: {host}:{port}", flush=True)
-    last_log_key = ""
-    last_log_time = 0.0
+    print(f"[*] 常驻服务已启动，直接启动 MCP Server: {host}:{port}", flush=True)
+    print("[*] 版本门禁将在工具调用时按需检查", flush=True)
 
     try:
-        while True:
-            try:
-                from config import load_config
-                from wechat_version_guard import check_version
-
-                result = check_version(load_config())
-                if result.ok:
-                    print("[+] 微信环境和版本门禁已就绪，启动 MCP Server", flush=True)
-                    os.execv(
-                        str(paths["python"]),
-                        [
-                            str(paths["python"]),
-                            str(paths["main"]),
-                            "serve",
-                            "--host",
-                            host,
-                            "--port",
-                            str(port),
-                        ],
-                    )
-                    return 0
-
-                reason = "；".join(result.reasons) or "微信尚未就绪"
-                log_key = f"blocked:{reason}"
-                message = f"[*] MCP 暂不启动：{reason}；{retry_interval} 秒后重试"
-            except Exception as exc:
-                log_key = f"error:{type(exc).__name__}:{exc}"
-                message = f"[*] MCP 启动前检查失败：{exc}；{retry_interval} 秒后重试"
-
-            now = time.monotonic()
-            if log_key != last_log_key or now - last_log_time >= 300:
-                print(message, flush=True)
-                last_log_key = log_key
-                last_log_time = now
-            time.sleep(max(1, retry_interval))
+        os.execv(
+            str(paths["python"]),
+            [
+                str(paths["python"]),
+                str(paths["main"]),
+                "serve",
+                "--host",
+                host,
+                "--port",
+                str(port),
+            ],
+        )
+        return 0
     finally:
         os.close(lock_fd)
 

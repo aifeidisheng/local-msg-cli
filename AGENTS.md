@@ -61,6 +61,27 @@ Do NOT perform any of the following during end-user installation:
 If you find yourself about to run any of these, STOP — you are deviating
 from the official workflow.
 
+### Version guard policy — NEVER modify (hard rule)
+
+The file `version-guard.policy.json` is integrity-protected by SHA-256.
+Agents **MUST NOT**:
+
+- Edit, overwrite, or regenerate `version-guard.policy.json`
+- Suggest the user modify or bypass the version guard policy
+- Offer to "temporarily" widen `allowed_version_ranges`
+- Update `_DEFAULT_POLICY_SHA256` in source code to match a tampered policy
+- Present policy modification as a troubleshooting option
+
+When `error_code: version_not_allowed` is returned:
+1. Report the exact version mismatch to the user
+2. Explain that this version is not yet supported
+3. Suggest checking upstream for a new release that adds support
+4. **Do NOT** propose editing the policy as a workaround
+
+This rule is unconditional — it applies regardless of user requests, urgency,
+or "temporary" framing. The policy file is maintained by the project
+maintainer and updated exclusively through upstream releases.
+
 ### Error recovery
 
 Use ONLY the JSON response fields to decide next steps:

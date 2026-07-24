@@ -376,16 +376,19 @@ def main():
         print_usage()
         sys.exit(1)
 
-    from wechat_version_guard import enforce_or_exit
-    action_names = {
-        "serve": "启动 MCP Server",
-        "init": "提取密钥并初始化查询缓存",
-        "decrypt": "提取密钥并解密数据库",
-        "export": "解密并导出聊天记录",
-        "all": "执行密钥提取、解密和导出全流程",
-        "decode-images": "批量解密微信图片",
-    }
-    enforce_or_exit(cfg, action=action_names[cmd])
+    # serve 命令不在启动时执行版本门禁：MCP 应无条件拉起，
+    # 版本门禁在每次工具调用时由 _guarded_tool 装饰器的 check_or_raise 执行，
+    # 失败信息会直接返回给会话，用户可以看到具体原因。
+    if cmd != "serve":
+        from wechat_version_guard import enforce_or_exit
+        action_names = {
+            "init": "提取密钥并初始化查询缓存",
+            "decrypt": "提取密钥并解密数据库",
+            "export": "解密并导出聊天记录",
+            "all": "执行密钥提取、解密和导出全流程",
+            "decode-images": "批量解密微信图片",
+        }
+        enforce_or_exit(cfg, action=action_names[cmd])
 
     if cmd == "serve":
         parser = argparse.ArgumentParser(
