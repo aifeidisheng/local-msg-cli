@@ -43,6 +43,29 @@ curl -fsSL https://raw.githubusercontent.com/aifeidisheng/local-msg-cli/main/ins
 /tmp/wechat-decrypt-install.sh --initialize
 ```
 
+#### Optional: pre-cache acceleration
+
+The `pip install` step downloads ~20 MB of wheels (79 packages). You can
+eliminate network I/O during installation by pre-downloading wheels into a
+local cache directory, then passing `PIP_FIND_LINKS` to `install.sh`:
+
+```bash
+# 1. Pre-download wheels (run once, reusable across installs)
+mkdir -p /tmp/whl-cache
+pip download -d /tmp/whl-cache \
+  pycryptodome==3.23.0 zstandard==0.25.0 fastmcp==2.14.7 uvicorn==0.51.0
+
+# 2. Run install with pre-cached wheels (pip finds local files first)
+PIP_FIND_LINKS=/tmp/whl-cache /tmp/wechat-decrypt-install.sh --initialize
+```
+
+When `PIP_FIND_LINKS` is set, both `uv` (if available) and `pip` will
+resolve packages from that directory first, falling back to PyPI only for
+any missing wheels. This reduces the pip install step from 10-30 s to <2 s.
+
+The env var also works with `PIP_INDEX_URL` / `UV_INDEX_URL` for mirror
+acceleration (e.g. `PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple`).
+
 `install.sh` is self-contained — it does NOT reference any other file from
 the repository. Do NOT `git clone` the repo just to obtain this script.
 The installer will clone the verified `main` release internally.

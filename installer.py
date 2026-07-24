@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -565,6 +566,23 @@ def _mark_installed_runtime(runtime: Path) -> None:
     marker.chmod(0o600)
 
 
+def _find_uv() -> str | None:
+    """Return the path to `uv` if available and functional, else None."""
+    import shutil as _shutil
+
+    uv = _shutil.which("uv")
+    if not uv:
+        return None
+    try:
+        result = subprocess.run(
+            [uv, "--version"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return uv if result.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
 def _create_runtime_environment(runtime: Path, python: Path) -> None:
     if sys.version_info < (3, 10) and python.resolve() == Path(sys.executable).resolve():
         raise InstallerError("需要 Python 3.10 或更高版本")
@@ -572,24 +590,55 @@ def _create_runtime_environment(runtime: Path, python: Path) -> None:
         [str(python), "-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"],
         error_context="指定的 Python 版本低于 3.10",
     )
-    _run([str(python), "-m", "venv", str(runtime / ".venv")], error_context="创建独立 Python 环境失败")
-    runtime_python = runtime / ".venv" / "bin" / "python3"
-    _run(
-        [
+
+    uv = _find_uv()
+    requirements = str(runtime / "requirements.txt")
+    pip_index = os.environ.get("PIP_INDEX_URL") or os.environ.get("UV_INDEX_URL")
+    # Pre-cached wheels directory: agent can pre-download wheels here before
+    # running install.sh to eliminate network I/O during pip install.
+    find_links = os.environ.get("PIP_FIND_LINKS")
+
+    if uv:
+        # Fast path: uv venv + uv pip install (10-100x faster than pip)
+        _run(
+            [uv, "venv", str(runtime / ".venv"), "--python", str(python)],
+            error_context="uv 创建独立 Python 环境失败",
+        )
+        uv_pip_args = [
+            uv, "pip", "install",
+            "--python", str(runtime / ".venv" / "bin" / "python3"),
+            "-r", requirements,
+        ]
+        if find_links:
+            uv_pip_args.extend(["--find-links", find_links])
+        if pip_index:
+            uv_pip_args.extend(["--index-url", pip_index])
+        _run(uv_pip_args, error_context="uv 安装 Python 依赖失败")
+    else:
+        # Fallback: standard venv + pip
+        _run(
+            [str(python), "-m", "venv", str(runtime / ".venv")],
+            error_context="创建独立 Python 环境失败",
+        )
+        runtime_python = runtime / ".venv" / "bin" / "python3"
+        pip_args = [
             str(runtime_python),
             "-m",
             "pip",
             "install",
             "--disable-pip-version-check",
+            "--prefer-binary",
             "--retries",
             "3",
             "--timeout",
             "20",
-            "-r",
-            str(runtime / "requirements.txt"),
-        ],
-        error_context="安装 Python 依赖失败",
-    )
+        ]
+        if find_links:
+            pip_args.extend(["--find-links", find_links])
+        if pip_index:
+            pip_args.extend(["--index-url", pip_index])
+        pip_args.extend(["-r", requirements])
+        _run(pip_args, error_context="安装 Python 依赖失败")
 
 
 def _build_macos_scanner(runtime: Path) -> None:
@@ -757,10 +806,24 @@ def install(args: argparse.Namespace, reporter: Reporter) -> dict:
             reporter.progress("copy", "复制经过 Git 跟踪的运行文件")
             copy_runtime(source, staging)
             _mark_installed_runtime(staging)
-            reporter.progress("runtime", "创建项目独立 Python 环境并安装依赖")
+            reporter.progress("runtime", "创建 Python 环境 + 编译扫描器（并行）")
+            # pip install and C compilation are independent — run in parallel
+            # to save 2-5s (compile overlaps with the slower pip step).
+            build_error: BaseException | None = None
+
+            def _build_in_thread() -> None:
+                nonlocal build_error
+                try:
+                    _build_macos_scanner(staging)
+                except BaseException as exc:
+                    build_error = exc
+
+            build_thread = threading.Thread(target=_build_in_thread, daemon=True)
+            build_thread.start()
             _create_runtime_environment(staging, Path(args.python).expanduser())
-            reporter.progress("build", "编译并签名 macOS 本地扫描器")
-            _build_macos_scanner(staging)
+            build_thread.join()
+            if build_error is not None:
+                raise build_error
             os.replace(staging, final_runtime)
         except Exception:
             shutil.rmtree(staging, ignore_errors=True)
