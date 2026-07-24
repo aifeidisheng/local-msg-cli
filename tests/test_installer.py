@@ -523,8 +523,126 @@ class JsonCliTests(unittest.TestCase):
         self.assertEqual(payload["error_code"], "management_cli_must_not_run_as_root")
         self.assertEqual(payload["next_action"], "run_the_same_command_without_sudo")
 
+    def test_management_cli_lifts_authorization_count_from_error_details(self):
+        error = installer.InstallerError(
+            "preflight failed",
+            error_code="wechat_not_running",
+            details={"authorization_prompt_count": 0},
+        )
+        with patch.object(installer, "status", side_effect=error), \
+             patch.object(installer.Reporter, "result") as result:
+            exit_code = installer.main(["status", "--json"])
+
+        self.assertEqual(exit_code, 1)
+        payload = result.call_args.args[0]
+        self.assertEqual(payload["authorization_prompt_count"], 0)
+
 
 class MacInitializeTests(unittest.TestCase):
+    def test_legacy_root_owned_config_is_replaced_without_authorization(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = installer.default_layout(Path(tmp))
+            layout.data_dir.mkdir(parents=True)
+            config_file = layout.data_dir / "config.json"
+            config_file.write_text('{"db_dir":"/tmp/example"}', encoding="utf-8")
+
+            with patch.object(installer.os, "getuid", return_value=os.getuid() + 1), \
+                 patch.object(installer.subprocess, "run") as run:
+                repaired = installer._normalize_legacy_data_files(layout)
+
+            self.assertEqual(repaired, ["config.json"])
+            self.assertEqual(
+                config_file.read_text(encoding="utf-8"),
+                '{"db_dir":"/tmp/example"}',
+            )
+            self.assertEqual(config_file.stat().st_mode & 0o777, 0o600)
+            run.assert_not_called()
+
+    def test_version_mismatch_stops_before_any_authorization(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            runtime = base / "runtime"
+            runtime.mkdir()
+            layout = installer.default_layout(base / "home")
+            db_dir = base / "db_storage"
+            db_dir.mkdir()
+            version_result = Mock(
+                ok=False,
+                reasons=["当前微信版本不在允许区间: 4.2.0"],
+                details={
+                    "detected": {
+                        "short_version": "4.2.0",
+                        "build_version": "123",
+                        "app_path": "/Applications/WeChat.app",
+                    }
+                },
+            )
+
+            with patch("config.load_config", return_value={"db_dir": str(db_dir)}), \
+                 patch("wechat_version_guard.check_version", return_value=version_result), \
+                 patch.object(installer.subprocess, "run") as run:
+                with self.assertRaises(installer.InstallerError) as raised:
+                    installer._preflight_macos_initialize(runtime, layout)
+
+            self.assertEqual(raised.exception.error_code, "version_not_allowed")
+            self.assertEqual(raised.exception.details["detected_version"], "4.2.0")
+            run.assert_not_called()
+
+    def test_wechat_not_running_stops_before_any_authorization(self):
+        preflight = {
+            "config": {"wechat_process": "WeChat"},
+            "detected": {"app_path": "/Applications/WeChat.app"},
+        }
+        stopped = CompletedProcess([], 1, "", "")
+
+        with patch.object(installer.subprocess, "run", return_value=stopped) as run:
+            with self.assertRaises(installer.InstallerError) as raised:
+                installer._preflight_macos_scanner(preflight)
+
+        self.assertEqual(raised.exception.error_code, "wechat_not_running")
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.args[0][0], "/usr/bin/pgrep")
+
+    def test_non_adhoc_wechat_stops_before_any_authorization(self):
+        preflight = {
+            "config": {"wechat_process": "WeChat"},
+            "detected": {"app_path": "/Applications/WeChat.app"},
+        }
+        running = CompletedProcess([], 0, "123\n", "")
+        official_signature = CompletedProcess(
+            [], 0, "", "Authority=Apple Distribution\nflags=0x10000(runtime)\n"
+        )
+
+        with patch.object(
+            installer.subprocess,
+            "run",
+            side_effect=[running, official_signature],
+        ) as run:
+            with self.assertRaises(installer.InstallerError) as raised:
+                installer._preflight_macos_scanner(preflight)
+
+        self.assertEqual(raised.exception.error_code, "wechat_not_adhoc_signed")
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args.args[0][0], "/usr/bin/codesign")
+
+    def test_adhoc_wechat_passes_unprivileged_scanner_preflight(self):
+        preflight = {
+            "config": {"wechat_process": "WeChat"},
+            "detected": {"app_path": "/Applications/WeChat.app"},
+        }
+        running = CompletedProcess([], 0, "123\n", "")
+        adhoc_signature = CompletedProcess([], 0, "", "Signature=adhoc\n")
+
+        with patch.object(
+            installer.subprocess,
+            "run",
+            side_effect=[running, adhoc_signature],
+        ) as run:
+            installer._preflight_macos_scanner(preflight)
+
+        self.assertEqual(run.call_count, 2)
+        self.assertNotIn("/usr/bin/osascript", [call.args[0][0] for call in run.call_args_list])
+
     def test_scanner_summary_does_not_include_key_material(self):
         summary = installer._parse_scanner_summary(
             "Found 20 encrypted DBs\n"
@@ -560,9 +678,12 @@ class MacInitializeTests(unittest.TestCase):
             )
             failed = CompletedProcess([], 0, output, "")
 
-            with patch.object(installer.subprocess, "run", return_value=failed):
+            with patch.object(installer, "_preflight_macos_scanner"), \
+                 patch.object(installer.subprocess, "run", return_value=failed):
                 with self.assertRaises(installer.InstallerError) as raised:
-                    installer._extract_macos_keys(runtime, layout, installer.Reporter(json_mode=True))
+                    installer._extract_macos_keys(
+                        runtime, layout, installer.Reporter(json_mode=True), {}
+                    )
 
         self.assertEqual(raised.exception.error_code, "wechat_key_database_mismatch")
         self.assertEqual(
@@ -590,9 +711,14 @@ class MacInitializeTests(unittest.TestCase):
                 )
                 return CompletedProcess(command, 0, "Saved\n", "")
 
-            with patch.object(installer.subprocess, "run", side_effect=fake_run) as run:
-                installer._extract_macos_keys(runtime, layout, installer.Reporter(json_mode=True))
+            with patch.object(installer, "_preflight_macos_scanner"), \
+                 patch.object(installer.subprocess, "run", side_effect=fake_run) as run:
+                prompted = installer._extract_macos_keys(
+                    runtime, layout, installer.Reporter(json_mode=True), {}
+                )
 
+            self.assertTrue(prompted)
+            self.assertEqual(run.call_count, 1)
             command = run.call_args.args[0]
             self.assertEqual(command[0], "/usr/bin/osascript")
             self.assertTrue(any("with administrator privileges" in argument for argument in command))
@@ -625,18 +751,21 @@ class MacInitializeTests(unittest.TestCase):
 
             with patch.object(installer.platform, "system", return_value="Darwin"), \
                  patch.object(installer.os, "geteuid", return_value=501), \
-                 patch.object(installer, "_extract_macos_keys") as extract, \
+                 patch.object(installer, "_preflight_macos_initialize", return_value={"db_dir": None}) as preflight, \
+                 patch.object(installer, "_extract_macos_keys", return_value=True) as extract, \
                  patch.object(installer, "_run", return_value=CompletedProcess([], 0, "", "")) as run, \
                  patch.object(installer, "_service_command") as service_command, \
                  patch.object(installer, "service_status", return_value=ready):
                 payload = installer.initialize(args, installer.Reporter(json_mode=True))
 
-            extract.assert_called_once_with(runtime, layout, unittest.mock.ANY)
+            preflight.assert_called_once_with(runtime, layout)
+            extract.assert_called_once_with(runtime, layout, unittest.mock.ANY, {"db_dir": None})
             init_command = run.call_args.args[0]
             self.assertEqual(init_command, [str(runtime_python), str(runtime / "main.py"), "init"])
             self.assertNotIn("sudo", init_command)
             self.assertEqual(run.call_args.kwargs["env"]["WECHAT_DECRYPT_DATA_DIR"], str(layout.data_dir))
             service_command.assert_not_called()
+            self.assertEqual(payload["authorization_prompt_count"], 1)
             self.assertEqual(payload["next_step"], "register_with_mcporter")
 
     def test_initialize_starts_existing_service_without_reinstalling_it(self):
@@ -662,7 +791,8 @@ class MacInitializeTests(unittest.TestCase):
 
             with patch.object(installer.platform, "system", return_value="Darwin"), \
                  patch.object(installer.os, "geteuid", return_value=501), \
-                 patch.object(installer, "_extract_macos_keys"), \
+                 patch.object(installer, "_preflight_macos_initialize", return_value={"db_dir": None}), \
+                 patch.object(installer, "_extract_macos_keys", return_value=False), \
                  patch.object(installer, "_run", return_value=CompletedProcess([], 0, "", "")), \
                  patch.object(installer, "_service_command") as service_command, \
                  patch.object(installer, "service_status", side_effect=[stopped, ready]):
@@ -675,8 +805,9 @@ class MacInitializeTests(unittest.TestCase):
                 error_context="初始化完成，但 LaunchAgent 启动失败",
             )
             self.assertTrue(payload["query_ready"])
+            self.assertEqual(payload["authorization_prompt_count"], 0)
 
-    def test_scanner_failure_returns_stable_wechat_resign_action(self):
+    def test_scanner_task_for_pid_failure_returns_stable_authorization_action(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             runtime = base / "runtime"
@@ -687,14 +818,17 @@ class MacInitializeTests(unittest.TestCase):
             layout = installer.default_layout(base / "home")
             failed = CompletedProcess([], 1, "", "task_for_pid failed: 5")
 
-            with patch.object(installer.subprocess, "run", return_value=failed):
+            with patch.object(installer, "_preflight_macos_scanner"), \
+                 patch.object(installer.subprocess, "run", return_value=failed):
                 with self.assertRaises(installer.InstallerError) as raised:
-                    installer._extract_macos_keys(runtime, layout, installer.Reporter(json_mode=True))
+                    installer._extract_macos_keys(
+                        runtime, layout, installer.Reporter(json_mode=True), {}
+                    )
 
-            self.assertEqual(raised.exception.error_code, "wechat_resign_required")
+            self.assertEqual(raised.exception.error_code, "task_for_pid_failed")
             self.assertEqual(
                 raised.exception.next_action,
-                "quit_and_adhoc_resign_wechat_then_reopen_and_retry_initialize",
+                "retry_initialize_and_approve_the_macos_administrator_prompt",
             )
 
     def test_cancelled_macos_authorization_has_a_retryable_error_code(self):
@@ -708,9 +842,12 @@ class MacInitializeTests(unittest.TestCase):
             layout = installer.default_layout(base / "home")
             cancelled = CompletedProcess([], 1, "", "execution error: User canceled. (-128)")
 
-            with patch.object(installer.subprocess, "run", return_value=cancelled):
+            with patch.object(installer, "_preflight_macos_scanner"), \
+                 patch.object(installer.subprocess, "run", return_value=cancelled):
                 with self.assertRaises(installer.InstallerError) as raised:
-                    installer._extract_macos_keys(runtime, layout, installer.Reporter(json_mode=True))
+                    installer._extract_macos_keys(
+                        runtime, layout, installer.Reporter(json_mode=True), {}
+                    )
 
             self.assertEqual(raised.exception.error_code, "administrator_authorization_cancelled")
             self.assertEqual(

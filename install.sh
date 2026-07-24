@@ -281,6 +281,7 @@ combined = {
     'initialize_complete': init_data.get('ok', False),
     'install': install_data,
     'initialize': init_data,
+    'authorization_prompt_count': init_data.get('authorization_prompt_count', 0),
     'query_ready': init_data.get('query_ready', False),
     'endpoint': init_data.get('endpoint') or install_data.get('installation', {}).get('endpoint'),
 }

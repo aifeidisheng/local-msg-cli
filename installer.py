@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import io
 import json
 import os
 import platform
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -150,6 +153,62 @@ def _require_non_root_management() -> None:
         )
 
 
+def _normalize_legacy_data_files(layout: InstallLayout) -> list[str]:
+    """Repair root-owned legacy files without requesting authorization again."""
+    repaired: list[str] = []
+    current_uid = os.getuid()
+    for path in (layout.data_dir / "config.json", layout.data_dir / "all_keys.json"):
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise InstallerError(
+                f"本机数据文件类型异常，拒绝自动处理：{path.name}",
+                error_code="data_file_type_invalid",
+                next_action="reinstall_current_release_and_report_the_structured_error",
+            )
+        if metadata.st_uid == current_uid:
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+            continue
+
+        # File ownership does not control replacement on Unix; a user-writable
+        # data directory lets us preserve the bytes via an atomic replacement.
+        try:
+            payload = path.read_bytes()
+            fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        except OSError as exc:
+            raise InstallerError(
+                f"旧版安装遗留的 {path.name} 不属于当前用户，且无法无提权修复",
+                error_code="data_file_ownership_invalid",
+                next_action="report_data_file_ownership_error_without_privileged_repair",
+            ) from exc
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(fd, "wb") as output:
+                output.write(payload)
+                output.flush()
+                os.fsync(output.fileno())
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, path)
+            repaired.append(path.name)
+        except OSError as exc:
+            raise InstallerError(
+                f"旧版安装遗留的 {path.name} 不属于当前用户，且无法无提权修复",
+                error_code="data_file_ownership_invalid",
+                next_action="report_data_file_ownership_error_without_privileged_repair",
+            ) from exc
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+    return repaired
+
+
 def _valid_key_file(path: Path, db_dir: Path | None = None) -> bool:
     try:
         with path.open(encoding="utf-8") as key_file:
@@ -237,6 +296,139 @@ def _empty_key_result(summary: dict[str, int]) -> tuple[str, str, str]:
     )
 
 
+@contextlib.contextmanager
+def _initialize_environment(runtime: Path, layout: InstallLayout):
+    """Temporarily expose installed runtime paths to config/guard modules."""
+    updates = {
+        "WECHAT_DECRYPT_APP_DIR": str(runtime),
+        "WECHAT_DECRYPT_DATA_DIR": str(layout.data_dir),
+        "WECHAT_DECRYPT_NONINTERACTIVE": "1",
+    }
+    previous = {key: os.environ.get(key) for key in updates}
+    os.environ.update(updates)
+    try:
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def _preflight_macos_initialize(runtime: Path, layout: InstallLayout) -> dict:
+    """Run all non-privileged configuration and version checks first."""
+    diagnostics = io.StringIO()
+    try:
+        with _initialize_environment(runtime, layout), contextlib.redirect_stdout(diagnostics):
+            from config import load_config
+            from wechat_version_guard import check_version
+
+            cfg = load_config()
+            version_result = check_version(cfg)
+    except SystemExit as exc:
+        raise InstallerError(
+            "未能在当前用户上下文中自动检测微信数据目录；尚未请求管理员授权",
+            error_code="wechat_database_not_found",
+            next_action="confirm_wechat_data_access_and_retry_initialize",
+            details={"authorization_prompt_count": 0},
+        ) from exc
+    except (OSError, ValueError, TypeError) as exc:
+        raise InstallerError(
+            "初始化预检无法读取当前用户配置；尚未请求管理员授权",
+            error_code="initialize_preflight_failed",
+            next_action="retry_initialize_and_report_the_structured_error",
+            details={"authorization_prompt_count": 0},
+        ) from exc
+
+    if not version_result.ok:
+        reasons = [str(reason) for reason in version_result.reasons]
+        detected = (version_result.details or {}).get("detected") or {}
+        details = {
+            "authorization_prompt_count": 0,
+            "reasons": reasons,
+            "detected_version": detected.get("short_version"),
+            "detected_build": detected.get("build_version"),
+            "detected_app_path": detected.get("app_path"),
+        }
+        if any("不在允许区间" in reason for reason in reasons):
+            raise InstallerError(
+                f"当前微信版本 {detected.get('short_version') or '未知'} 不在支持范围内；尚未请求管理员授权",
+                error_code="version_not_allowed",
+                next_action="check_upstream_for_a_release_that_supports_this_wechat_version",
+                details=details,
+            )
+        raise InstallerError(
+            "微信版本安全预检未通过；尚未请求管理员授权",
+            error_code="version_guard_failed",
+            next_action="restore_the_trusted_release_and_retry_initialize",
+            details=details,
+        )
+
+    db_dir = Path(str(cfg.get("db_dir") or "")).expanduser()
+    if not db_dir.is_dir() or not os.access(db_dir, os.R_OK | os.X_OK):
+        raise InstallerError(
+            "检测到的微信数据目录不存在或不可读；尚未请求管理员授权",
+            error_code="wechat_database_not_found",
+            next_action="confirm_wechat_data_access_and_retry_initialize",
+            details={"authorization_prompt_count": 0, "db_dir": str(db_dir)},
+        )
+    return {
+        "config": cfg,
+        "db_dir": db_dir.resolve(),
+        "detected": (version_result.details or {}).get("detected") or {},
+    }
+
+
+def _preflight_macos_scanner(preflight: dict) -> None:
+    """Validate process and signature before the one privileged scanner call."""
+    cfg = preflight.get("config") or {}
+    process_name = str(cfg.get("wechat_process") or "WeChat")
+    running = subprocess.run(
+        ["/usr/bin/pgrep", "-x", process_name],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if running.returncode != 0 or not running.stdout.strip():
+        raise InstallerError(
+            "微信尚未运行；未弹出管理员授权窗口",
+            error_code="wechat_not_running",
+            next_action="start_wechat_and_retry_initialize",
+            details={"authorization_prompt_count": 0},
+        )
+
+    detected = preflight.get("detected") or {}
+    app_path = str(detected.get("app_path") or "")
+    if not app_path:
+        raise InstallerError(
+            "无法确定当前微信程序路径；未弹出管理员授权窗口",
+            error_code="wechat_app_not_found",
+            next_action="start_wechat_and_retry_initialize",
+            details={"authorization_prompt_count": 0},
+        )
+    signature = subprocess.run(
+        ["/usr/bin/codesign", "-dv", "--verbose=4", app_path],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    signature_details = "\n".join((signature.stdout, signature.stderr))
+    if signature.returncode != 0 or not re.search(
+        r"(?:^Signature=adhoc$|\(adhoc(?:[,)]))",
+        signature_details,
+        flags=re.MULTILINE,
+    ):
+        raise InstallerError(
+            "微信尚未完成 ad-hoc 重签名；未弹出管理员授权窗口",
+            error_code="wechat_not_adhoc_signed",
+            next_action="quit_and_adhoc_resign_wechat_then_reopen_and_retry_initialize",
+            details={"authorization_prompt_count": 0, "app_path": app_path},
+        )
+
+
 def _discover_db_salts(home: Path, db_dir: Path | None = None) -> Path | None:
     """Pre-discover encrypted DB salts from user context (has FDA).
 
@@ -301,19 +493,16 @@ def _discover_db_salts(home: Path, db_dir: Path | None = None) -> Path | None:
     return Path(tmp_path)
 
 
-def _extract_macos_keys(runtime: Path, layout: InstallLayout, reporter: Reporter) -> None:
+def _extract_macos_keys(
+    runtime: Path,
+    layout: InstallLayout,
+    reporter: Reporter,
+    preflight: dict,
+) -> bool:
     keys_file = layout.data_dir / "all_keys.json"
-    configured_db_dir = None
-    try:
-        config_payload = json.loads((layout.data_dir / "config.json").read_text(encoding="utf-8"))
-        raw_db_dir = config_payload.get("db_dir")
-        if isinstance(raw_db_dir, str) and raw_db_dir.strip():
-            expanded_db_dir = Path(os.path.expanduser(os.path.expandvars(raw_db_dir)))
-            configured_db_dir = (expanded_db_dir if expanded_db_dir.is_absolute() else layout.data_dir / expanded_db_dir).resolve()
-    except (OSError, ValueError, TypeError):
-        pass
+    configured_db_dir = preflight.get("db_dir")
     if _valid_key_file(keys_file, configured_db_dir):
-        return
+        return False
     if keys_file.exists() or keys_file.is_symlink():
         try:
             keys_file.unlink()
@@ -321,7 +510,7 @@ def _extract_macos_keys(runtime: Path, layout: InstallLayout, reporter: Reporter
             raise InstallerError(
                 "现有密钥文件不属于当前用户；请勿使用 sudo 运行管理 CLI",
                 error_code="key_file_ownership_invalid",
-                next_action="restore_the_key_file_owner_then_retry_initialize_without_sudo",
+                next_action="report_key_file_ownership_error_without_privileged_repair",
             ) from exc
     scanner = runtime / "find_all_keys_macos"
     if not scanner.is_file() or not os.access(scanner, os.X_OK):
@@ -332,6 +521,10 @@ def _extract_macos_keys(runtime: Path, layout: InstallLayout, reporter: Reporter
         )
     layout.data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(layout.data_dir, 0o700)
+
+    # These checks require no privileges and must happen before osascript so a
+    # failed attempt never consumes an administrator prompt unnecessarily.
+    _preflight_macos_scanner(preflight)
 
     # Pre-discover DB salts in user context (has FDA) to avoid requiring
     # Full Disk Access for the elevated scanner binary.
@@ -381,6 +574,7 @@ def _extract_macos_keys(runtime: Path, layout: InstallLayout, reporter: Reporter
         details = result.stderr.strip()
         normalized = details.lower()
         summary = _parse_scanner_summary("\n".join((result.stdout, result.stderr)))
+        summary["authorization_prompt_count"] = 1
         if result.returncode == 4:
             code, action, message = _empty_key_result(summary)
             raise InstallerError(message, error_code=code, next_action=action, details=summary)
@@ -388,8 +582,8 @@ def _extract_macos_keys(runtime: Path, layout: InstallLayout, reporter: Reporter
             code = "wechat_not_running"
             action = "start_and_sign_in_to_wechat_then_retry_initialize"
         elif "task_for_pid failed" in normalized:
-            code = "wechat_resign_required"
-            action = "quit_and_adhoc_resign_wechat_then_reopen_and_retry_initialize"
+            code = "task_for_pid_failed"
+            action = "retry_initialize_and_approve_the_macos_administrator_prompt"
         elif "user canceled" in normalized or "(-128)" in normalized:
             code = "administrator_authorization_cancelled"
             action = "retry_initialize_and_approve_the_macos_administrator_prompt"
@@ -408,6 +602,7 @@ def _extract_macos_keys(runtime: Path, layout: InstallLayout, reporter: Reporter
         )
     if not _valid_key_file(keys_file, configured_db_dir):
         summary = _parse_scanner_summary("\n".join((result.stdout, result.stderr)))
+        summary["authorization_prompt_count"] = 1
         code, action, message = _empty_key_result(summary)
         raise InstallerError(
             message,
@@ -421,8 +616,10 @@ def _extract_macos_keys(runtime: Path, layout: InstallLayout, reporter: Reporter
         raise InstallerError(
             "密钥文件所有者异常；请勿使用 sudo 运行管理 CLI",
             error_code="key_file_ownership_invalid",
-            next_action="restore_the_key_file_owner_then_retry_initialize_without_sudo",
+            next_action="report_key_file_ownership_error_without_privileged_repair",
+            details={"authorization_prompt_count": 1},
         ) from exc
+    return True
 
 
 def _git(source: Path, *args: str, error_context: str) -> str:
@@ -1223,8 +1420,18 @@ def initialize(args: argparse.Namespace, reporter: Reporter) -> dict:
     runtime_python = runtime / ".venv" / "bin" / "python3"
     env = _runtime_env(runtime, layout)
     env["WECHAT_DECRYPT_SKIP_SERVICE_INSTALL"] = "1"
+    repaired_files = _normalize_legacy_data_files(layout)
+    if repaired_files:
+        reporter.progress(
+            "ownership",
+            "已在普通用户上下文中修复旧版数据文件所有权",
+        )
+    authorization_prompt_count = 0
     if platform.system().lower() == "darwin":
-        _extract_macos_keys(runtime, layout, reporter)
+        preflight = _preflight_macos_initialize(runtime, layout)
+        authorization_prompt_count = int(
+            _extract_macos_keys(runtime, layout, reporter, preflight)
+        )
     reporter.progress("initialize", "执行密钥提取和本地数据库预解密")
     _run(
         [str(runtime_python), str(runtime / "main.py"), "init"],
@@ -1261,6 +1468,8 @@ def initialize(args: argparse.Namespace, reporter: Reporter) -> dict:
         "endpoint": manifest.get("endpoint"),
         "query_ready": query_ready,
         "service": service_payload,
+        "authorization_prompt_count": authorization_prompt_count,
+        "repaired_legacy_files": repaired_files,
         "next_step": "register_with_mcporter" if query_ready else "wait_until_query_ready",
     }
 
@@ -1380,6 +1589,10 @@ def main(argv: list[str] | None = None) -> int:
             payload["next_action"] = exc.next_action
         if exc.details:
             payload["details"] = exc.details
+            if "authorization_prompt_count" in exc.details:
+                payload["authorization_prompt_count"] = exc.details[
+                    "authorization_prompt_count"
+                ]
         reporter.result(payload)
         return 1
     except Exception as exc:

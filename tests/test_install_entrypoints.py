@@ -105,6 +105,7 @@ class InstallEntrypointTests(unittest.TestCase):
                 "#!/bin/bash\n"
                 "echo '{\"ok\":false,\"error_code\":\"wechat_not_running\","
                 "\"error\":\"WeChat is not running\","
+                "\"authorization_prompt_count\":0,"
                 "\"next_action\":\"start_wechat_and_retry_initialize\"}'\n"
                 "exit 1\n",
                 encoding="utf-8",
@@ -146,6 +147,7 @@ class InstallEntrypointTests(unittest.TestCase):
         self.assertEqual(payload["phase"], "initialize")
         self.assertEqual(payload["error_code"], "wechat_not_running")
         self.assertEqual(payload["next_action"], "start_wechat_and_retry_initialize")
+        self.assertEqual(payload["authorization_prompt_count"], 0)
         self.assertEqual(payload["initialize"]["error_code"], "wechat_not_running")
 
     def test_initialize_invalid_stdout_returns_structured_phase_error(self):

@@ -96,6 +96,12 @@ The command outputs a single JSON line to stdout. Check:
 in a terminal. Execute everything directly. The only user interaction is
 clicking "OK" on the macOS admin authorization popup.
 
+Before that popup, `initialize` performs all unprivileged checks (data path,
+version policy, running process, and ad-hoc signature). A single `initialize`
+attempt invokes `osascript` at most once. If it returns a structured error,
+follow only the matching recovery row below; never wrap a repair command in a
+new `osascript` authorization request.
+
 If `--initialize` is omitted, install.sh only does steps 1-4 and outputs
 `next_step: "run_init_with_user_confirmation"`.
 
@@ -110,6 +116,8 @@ Do NOT perform any of the following during end-user installation:
 - `python main.py init` / `python main.py serve` from the checkout
 - `setup.sh` / `setup.py` / `service.py install`
 - Any `sudo` command prefixed to the management CLI
+- Any direct `osascript ... with administrator privileges` command
+- `chown` / privileged writes for `config.json` or `all_keys.json`
 - Cloning the repo manually and running components separately
 
 If you find yourself about to run any of these, STOP — you are deviating
