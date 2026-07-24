@@ -19,6 +19,8 @@ import subprocess
 import sys
 import argparse
 
+from runtime_guard import require_macos_execution_mode
+
 print = functools.partial(print, flush=True)
 
 from key_utils import strip_key_metadata
@@ -327,6 +329,10 @@ def main():
     print()
 
     cmd = sys.argv[1] if len(sys.argv) > 1 else "serve"
+
+    operational_commands = {"serve", "init", "decrypt", "export", "all", "decode-images", "update"}
+    if cmd in operational_commands:
+        require_macos_execution_mode(cmd, system=platform.system())
 
     # help / status 不需要密钥和微信进程
     if cmd in ("help", "-h", "--help"):

@@ -290,6 +290,9 @@ class InstallerFlowTests(unittest.TestCase):
                 "https://github.com/example/wechat-decrypt.git",
             )
             self.assertEqual(layout.current.resolve(), Path(manifest["runtime_dir"]))
+            self.assertTrue(
+                (Path(manifest["runtime_dir"]) / installer.INSTALLED_RUNTIME_MARKER).is_file()
+            )
             self.assertEqual(manifest["data_dir"], str(layout.data_dir))
             self.assertTrue(os.access(layout.cli, os.X_OK))
             self.assertIn("runtime/current/installer.py", layout.cli.read_text(encoding="utf-8"))

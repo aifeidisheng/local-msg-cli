@@ -18,6 +18,8 @@ import shutil
 import subprocess
 import sys
 
+from runtime_guard import require_macos_execution_mode
+
 
 def detect_wechat_dir():
     """自动检测微信数据目录"""
@@ -178,6 +180,7 @@ def main():
     if args.check:
         check_environment()
     else:
+        require_macos_execution_mode("setup.py", system=platform.system())
         interactive_setup()
 
 

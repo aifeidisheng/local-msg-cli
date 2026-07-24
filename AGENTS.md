@@ -7,11 +7,13 @@
 
 | User intent | Workflow |
 |---|---|
-| Install / connect / set up / use the MCP | **End-user** (this section) |
-| Modify / test / debug / develop the source | Source-development (bottom section) |
+| Install / connect / set up / use / troubleshoot the installed MCP | **End-user** (this section) |
+| Explicitly modify, test, or debug this repository's source code | Source-development (bottom section) |
 
-Default to **end-user** unless the user explicitly says "develop", "debug",
-or "modify the source code".
+Default to **end-user**. Installation or connection troubleshooting remains an
+end-user workflow even when the user calls it "debugging". Use the
+source-development workflow only when the user explicitly asks to change, test,
+or debug this repository's source code.
 
 ## End-user installation (macOS)
 

@@ -5,7 +5,7 @@ import unittest
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 import service
 from wechat_version_guard import VersionCheckResult
@@ -42,6 +42,14 @@ class ServicePlistTests(unittest.TestCase):
 
             self._write_plist(paths, plist)
             self.assertEqual(service._configured_endpoint(paths), ("127.0.0.1", 9876))
+
+    def test_mutating_command_checks_runtime_mode_before_dispatch(self):
+        with patch.object(service, "require_macos_execution_mode", side_effect=SystemExit(2)) as require_mode:
+            with self.assertRaises(SystemExit) as raised:
+                service.main(["install"])
+
+        self.assertEqual(raised.exception.code, 2)
+        require_mode.assert_called_once_with("service.py install", system=ANY)
 
     @staticmethod
     def _write_plist(paths, plist):

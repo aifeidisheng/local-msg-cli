@@ -3,7 +3,7 @@ import io
 import sys
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 import main
 import service
@@ -50,6 +50,15 @@ class MacServiceInstallHookTests(unittest.TestCase):
 
 
 class MainServeLockTests(unittest.TestCase):
+    def test_operational_command_checks_runtime_mode_before_loading_config(self):
+        with patch.object(sys, "argv", ["main.py", "serve"]), \
+             patch("main.require_macos_execution_mode", side_effect=SystemExit(2)) as require_mode:
+            with self.assertRaises(SystemExit) as raised:
+                main.main()
+
+        self.assertEqual(raised.exception.code, 2)
+        require_mode.assert_called_once_with("serve", system=ANY)
+
     def test_manual_serve_refuses_when_service_lock_is_held(self):
         fake_mcp_server = SimpleNamespace(serve=Mock())
         with patch.object(sys, "argv", ["main.py", "serve"]), \

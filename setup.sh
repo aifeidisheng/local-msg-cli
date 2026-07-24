@@ -5,7 +5,7 @@ set -euo pipefail
 
 if [ "${1:-}" != "--development" ]; then
     echo "[错误] setup.sh 仅用于源码开发，不是最终用户安装入口。" >&2
-    echo "       macOS 正式安装请运行: ./install.sh" >&2
+    echo "       macOS 正式安装请运行: ./install.sh --initialize" >&2
     echo "       确需配置源码工作树时运行: ./setup.sh --development" >&2
     exit 2
 fi
@@ -143,6 +143,7 @@ else
 fi
 
 # ── 完成 ──────────────────────────────────────────────────────
+printf 'source-development\n' > "$SCRIPT_DIR/.wechat-decrypt-development"
 echo ""
 echo "========================================================"
 echo "  配置完成！下一步："

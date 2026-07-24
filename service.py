@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import plistlib
 import re
 import subprocess
@@ -17,6 +18,8 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from runtime_guard import require_macos_execution_mode
 
 
 DEFAULT_LABEL = "com.wechatdecrypt.light.mcp"
@@ -755,6 +758,8 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--retry-interval", type=int, default=10)
 
     args = parser.parse_args(argv)
+    if args.command != "status":
+        require_macos_execution_mode(f"service.py {args.command}", system=platform.system())
     if args.command == "install":
         return install_service(host=args.host, port=args.port)
     if args.command == "start":

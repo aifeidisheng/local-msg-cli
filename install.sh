@@ -12,7 +12,7 @@ do_initialize=false
 
 usage() {
     cat <<'EOF'
-Usage: ./install.sh [options]
+Usage: ./install.sh --initialize [options]
 
 Installs the protected main release into the user's independent runtime.
 This command is for end users; source development uses setup.sh --development.
@@ -21,7 +21,7 @@ Options:
   --repository URL           Confirmed primary release repository
   --fallback-repository URL  Confirmed fallback repository (repeatable)
   --python PATH              Python 3.10+ used to create the runtime environment
-  --initialize               After install, immediately run initialization
+  --initialize               Canonical end-user flow: install and immediately initialize
                              (extracts DB keys via macOS admin prompt, then
                              pre-decrypts databases so MCP is query-ready)
   -h, --help                 Show this help
@@ -150,8 +150,11 @@ for repository in "${repositories[@]:1}"; do
 done
 
 echo "[install] Deploying verified commit from $source_repository" >&2
-install_output=$("$python_bin" "$install_source/installer.py" "${install_args[@]}")
-install_exit=$?
+if install_output=$("$python_bin" "$install_source/installer.py" "${install_args[@]}"); then
+    install_exit=0
+else
+    install_exit=$?
+fi
 
 if [[ $install_exit -ne 0 ]]; then
     echo "$install_output"
@@ -166,8 +169,11 @@ fi
 
 # Chain initialize: extract keys + pre-decrypt databases
 echo "[initialize] Running initialization (macOS admin prompt will appear)..." >&2
-init_output=$("$MANAGEMENT_CLI" --json initialize 2>&1)
-init_exit=$?
+if init_output=$("$MANAGEMENT_CLI" --json initialize 2>&1); then
+    init_exit=0
+else
+    init_exit=$?
+fi
 
 # Build combined JSON output: merge install and initialize results
 "$python_bin" -c "
@@ -187,6 +193,10 @@ combined = {
     'query_ready': init_data.get('query_ready', False),
     'endpoint': init_data.get('endpoint') or install_data.get('installation', {}).get('endpoint'),
 }
+if not init_data.get('ok', False):
+    for key in ('error_code', 'error', 'next_action', 'details'):
+        if key in init_data:
+            combined[key] = init_data[key]
 if combined['query_ready']:
     combined['next_step'] = 'register_with_mcporter'
 elif init_data.get('ok'):

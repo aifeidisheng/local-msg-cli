@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
+from runtime_guard import INSTALLED_RUNTIME_MARKER
+
 
 APP_DIR_NAME = "WeChatDecryptLight"
 MANIFEST_SCHEMA_VERSION = 2
@@ -33,6 +35,7 @@ REQUIRED_SOURCE_FILES = {
     "mcp_server.py",
     "requirements.txt",
     "service.py",
+    "runtime_guard.py",
     "version-guard.policy.json",
 }
 MIGRATED_FILES = ("config.json", "all_keys.json")
@@ -507,6 +510,12 @@ def copy_runtime(source: Path, destination: Path) -> None:
         shutil.copy2(source_path, target_path)
 
 
+def _mark_installed_runtime(runtime: Path) -> None:
+    marker = runtime / INSTALLED_RUNTIME_MARKER
+    marker.write_text("installed-runtime\n", encoding="utf-8")
+    marker.chmod(0o600)
+
+
 def _create_runtime_environment(runtime: Path, python: Path) -> None:
     if sys.version_info < (3, 10) and python.resolve() == Path(sys.executable).resolve():
         raise InstallerError("需要 Python 3.10 或更高版本")
@@ -698,6 +707,7 @@ def install(args: argparse.Namespace, reporter: Reporter) -> dict:
         try:
             reporter.progress("copy", "复制经过 Git 跟踪的运行文件")
             copy_runtime(source, staging)
+            _mark_installed_runtime(staging)
             reporter.progress("runtime", "创建项目独立 Python 环境并安装依赖")
             _create_runtime_environment(staging, Path(args.python).expanduser())
             reporter.progress("build", "编译并签名 macOS 本地扫描器")
@@ -709,6 +719,7 @@ def install(args: argparse.Namespace, reporter: Reporter) -> dict:
     else:
         if not (final_runtime / ".venv" / "bin" / "python3").is_file():
             raise InstallerError("已存在的固定版本运行时不完整，拒绝直接复用")
+        _mark_installed_runtime(final_runtime)
         reporter.progress("runtime", "固定提交的运行时已存在，复用现有安装")
 
     reporter.progress("data", "准备独立数据目录并迁移已有本机数据")
