@@ -15,16 +15,33 @@ or "modify the source code".
 
 ## End-user installation (macOS)
 
-### Step 1 — Bootstrap (the ONLY entry point)
+### Step 1 — Install + Initialize (the ONLY entry point)
+
+Ask the user for **explicit confirmation** (a macOS admin authorization
+prompt will appear), then run:
 
 ```bash
-./install.sh
+./install.sh --initialize
 ```
 
-This single command does everything: clones the verified `main` release,
-creates an isolated venv, compiles the key scanner, installs a LaunchAgent,
-and generates the management CLI. **No other manual steps are needed or
-allowed.**
+This single command does everything:
+1. Clones the verified `main` release
+2. Creates an isolated venv and installs dependencies
+3. Compiles and signs the macOS key scanner
+4. Installs a LaunchAgent (auto-start on login)
+5. Extracts DB keys via macOS system authorization (admin popup)
+6. Pre-decrypts databases so MCP becomes `query_ready`
+
+The command outputs a single JSON line to stdout. Check:
+- `ok: true` and `query_ready: true` → proceed to Step 2
+- `ok: false` → see Error Recovery below
+
+**Important UX rule**: Do NOT output manual commands for the user to run
+in a terminal. Execute everything directly. The only user interaction is
+clicking "OK" on the macOS admin authorization popup.
+
+If `--initialize` is omitted, install.sh only does steps 1-4 and outputs
+`next_step: "run_init_with_user_confirmation"`.
 
 ### Prohibited actions (hard blocklist)
 
@@ -37,59 +54,42 @@ Do NOT perform any of the following during end-user installation:
 - `python main.py init` / `python main.py serve` from the checkout
 - `setup.sh` / `setup.py` / `service.py install`
 - Any `sudo` command prefixed to the management CLI
+- Cloning the repo manually and running components separately
 
 If you find yourself about to run any of these, STOP — you are deviating
 from the official workflow.
 
-### Step 2 — Sensitive initialization (requires user confirmation)
-
-After `install.sh` succeeds, ask for **explicit user confirmation** before
-running this command. Do NOT prepend `sudo`:
-
-```bash
-"$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light" initialize --json
-```
-
-This reads WeChat process memory via a system authorization prompt (not
-terminal sudo). The command returns machine-readable JSON.
-
-### Step 3 — Error recovery
+### Error recovery
 
 Use ONLY the JSON response fields to decide next steps:
 
 | `error_code` | Action |
 |---|---|
-| `wechat_not_running` | Ask user to open WeChat and retry |
+| `wechat_not_running` | Ask user to open WeChat and retry `initialize` |
 | `wechat_not_adhoc_signed` | Ask user to quit WeChat, run `sudo codesign --force --deep --sign - /Applications/WeChat.app`, reopen WeChat, then retry |
 | `version_not_allowed` | Report the version mismatch; do NOT modify policy files |
 | `task_for_pid_failed` | The system auth prompt was denied; ask user to retry and approve |
+| `administrator_authorization_cancelled` | User cancelled the admin popup; ask to retry |
 | `management_cli_must_not_run_as_root` | You ran with `sudo` — remove it and retry |
 | Other | Report `error_code` + `next_action` text to user |
 
 Do NOT invent recovery steps. Do NOT run internal scanner commands, move key
 files, change directory ownership, or modify policy files.
 
-### Step 4 — Verify readiness
-
-Run status check:
+To retry initialization after fixing the issue:
 
 ```bash
-"$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light" status --json
+"$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light" --json initialize
 ```
 
-Only proceed when the JSON contains:
-- `service.status` = `"ready"`
-- `service.query_ready` = `true`
+### Step 2 — Register Desktop MCP
 
-`waiting_for_wechat` means the LaunchAgent is healthy but MCP is not yet
-queryable — do NOT register the MCP endpoint in this state.
-
-### Step 5 — Register Desktop MCP
+Only when Step 1 JSON shows `query_ready: true`:
 
 Register `http://127.0.0.1:8765/mcp` as a `streamablehttp` MCP in the
-Desktop connector.
+Desktop connector (via mcporter install + enable).
 
-### Step 6 — Validate (no user data)
+### Step 3 — Validate (no user data)
 
 Call the MCP tool `data_source_status`. Only report success when it returns
 `status: "ready"`. Do NOT call `list_contacts`, `query_messages`, or any

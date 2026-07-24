@@ -4,9 +4,11 @@ set -euo pipefail
 
 readonly DEFAULT_REPOSITORY="https://github.com/aifeidisheng/local-msg-cli.git"
 readonly RELEASE_BRANCH="main"
+readonly MANAGEMENT_CLI="$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light"
 
 repositories=("${WECHAT_DECRYPT_REPOSITORY:-$DEFAULT_REPOSITORY}")
 python_bin="${WECHAT_DECRYPT_PYTHON:-}"
+do_initialize=false
 
 usage() {
     cat <<'EOF'
@@ -19,6 +21,9 @@ Options:
   --repository URL           Confirmed primary release repository
   --fallback-repository URL  Confirmed fallback repository (repeatable)
   --python PATH              Python 3.10+ used to create the runtime environment
+  --initialize               After install, immediately run initialization
+                             (extracts DB keys via macOS admin prompt, then
+                             pre-decrypts databases so MCP is query-ready)
   -h, --help                 Show this help
 EOF
 }
@@ -39,6 +44,10 @@ while (($#)); do
             [[ $# -ge 2 ]] || { echo "--python requires a path" >&2; exit 2; }
             python_bin="$2"
             shift 2
+            ;;
+        --initialize)
+            do_initialize=true
+            shift
             ;;
         -h|--help)
             usage
@@ -141,4 +150,53 @@ for repository in "${repositories[@]:1}"; do
 done
 
 echo "[install] Deploying verified commit from $source_repository" >&2
-"$python_bin" "$install_source/installer.py" "${install_args[@]}"
+install_output=$("$python_bin" "$install_source/installer.py" "${install_args[@]}")
+install_exit=$?
+
+if [[ $install_exit -ne 0 ]]; then
+    echo "$install_output"
+    exit $install_exit
+fi
+
+# If --initialize not requested, output install result and exit
+if [[ "$do_initialize" != true ]]; then
+    echo "$install_output"
+    exit 0
+fi
+
+# Chain initialize: extract keys + pre-decrypt databases
+echo "[initialize] Running initialization (macOS admin prompt will appear)..." >&2
+init_output=$("$MANAGEMENT_CLI" --json initialize 2>&1)
+init_exit=$?
+
+# Build combined JSON output: merge install and initialize results
+"$python_bin" -c "
+import json, sys
+
+install_data = json.loads(sys.argv[1])
+try:
+    init_data = json.loads(sys.argv[2].strip().splitlines()[-1])
+except (json.JSONDecodeError, IndexError):
+    init_data = {'ok': False, 'error': 'initialize output not parseable'}
+
+combined = {
+    'ok': install_data.get('ok', False) and init_data.get('ok', False),
+    'command': 'install+initialize',
+    'install': install_data,
+    'initialize': init_data,
+    'query_ready': init_data.get('query_ready', False),
+    'endpoint': init_data.get('endpoint') or install_data.get('installation', {}).get('endpoint'),
+}
+if combined['query_ready']:
+    combined['next_step'] = 'register_with_mcporter'
+elif init_data.get('ok'):
+    combined['next_step'] = 'wait_until_query_ready'
+else:
+    combined['next_step'] = init_data.get('next_action', 'review_initialize_error')
+
+print(json.dumps(combined, ensure_ascii=False))
+" "$install_output" "$init_output"
+
+# Exit with the worst of the two exit codes
+[[ $init_exit -ne 0 ]] && exit $init_exit
+exit 0

@@ -1,10 +1,19 @@
 # Local Message MCP Data Source
 
-<!-- AGENT NOTICE: If you are an AI agent installing this MCP for an end user,
-read AGENTS.md FIRST. Do NOT follow the manual/development steps below.
-The only supported end-user entry point is: ./install.sh -->
+---
 
-> **AI Agent?** 请先阅读 [AGENTS.md](AGENTS.md)。最终用户安装的唯一入口是 `./install.sh`，本文件中的手动步骤仅供源码开发使用。
+**⚠️ AI AGENT STOP — READ THIS BEFORE DOING ANYTHING ⚠️**
+
+If you are an AI agent helping a user install/set up/connect this MCP:
+
+1. **Read `AGENTS.md` NOW** — it is the authoritative installation guide
+2. **The ONLY entry point is `./install.sh --initialize`** — one command does everything
+3. **Do NOT** follow any manual steps in this README (pip install, venv, compile, main.py, etc.)
+4. **Do NOT** clone this repo to a custom location — install.sh handles the verified clone itself
+
+违反以上规则将导致安装失败或安全问题。README 中的所有手动命令仅供源码开发者使用。
+
+---
 
 本项目把本机 WeChat 4.x 消息数据库解密后，通过 MCP streamable-http 暴露为本地数据源。它面向 Desktop Runtime 使用，默认只监听 `127.0.0.1`，不提供云端访问能力。
 
