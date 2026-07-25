@@ -93,8 +93,9 @@ The command outputs a single JSON line to stdout. Check:
 - `ok: false` → see Error Recovery below
 
 **Important UX rule**: Do NOT output manual commands for the user to run
-in a terminal. Execute everything directly. The only user interaction is
-clicking "OK" on the macOS admin authorization popup.
+in a terminal. Execute everything directly. User interaction is limited to
+confirming sensitive actions, quitting/signing in to WeChat when requested,
+and clicking "OK" on the macOS admin authorization popup.
 
 Before that popup, `initialize` performs all unprivileged checks (data path,
 version policy, running process, and ad-hoc signature). A single `initialize`
@@ -117,6 +118,8 @@ Do NOT perform any of the following during end-user installation:
 - `setup.sh` / `setup.py` / `service.py install`
 - Any `sudo` command prefixed to the management CLI
 - Any direct `osascript ... with administrator privileges` command
+- Any direct `sudo codesign ... WeChat.app` command; use the installed
+  `prepare-wechat` management command after explicit user confirmation
 - `chown` / privileged writes for `config.json` or `all_keys.json`
 - Cloning the repo manually and running components separately
 
@@ -151,11 +154,13 @@ Use ONLY the JSON response fields to decide next steps:
 | `error_code` | Action |
 |---|---|
 | `wechat_not_running` | Ask user to open WeChat and retry `initialize` |
-| `wechat_not_adhoc_signed` | Ask user to quit WeChat, run `sudo codesign --force --deep --sign - /Applications/WeChat.app`, reopen WeChat, then retry |
+| `wechat_not_adhoc_signed` | Ask the user to quit WeChat and explicitly confirm re-signing; then run the installed `prepare-wechat --confirm-resign` command directly, wait for login, and retry `initialize` |
+| `wechat_must_quit_for_resign` | Ask the user to quit WeChat, then retry the same installed `prepare-wechat --confirm-resign` command |
 | `version_not_allowed` | Report the version mismatch; do NOT modify policy files |
 | `task_for_pid_failed` | The system auth prompt was denied; ask user to retry and approve |
 | `administrator_authorization_cancelled` | User cancelled the admin popup; ask to retry |
 | `management_cli_must_not_run_as_root` | You ran with `sudo` — remove it and retry |
+| `wechat_account_not_found` | Run installed `accounts`, select one returned `account_id` with installed `select-account`, then retry `initialize` |
 | Other | Report `error_code` + `next_action` text to user |
 
 Do NOT invent recovery steps. Do NOT run internal scanner commands, move key
@@ -166,6 +171,22 @@ To retry initialization after fixing the issue:
 ```bash
 "$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light" --json initialize
 ```
+
+To re-sign WeChat after the user has quit it and explicitly confirmed the
+app modification, run this command directly. It validates the detected app's
+bundle identity, authorizes only a fixed `codesign` invocation, verifies the
+new signature, and reopens WeChat:
+
+```bash
+"$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light" \
+  --json prepare-wechat --confirm-resign
+```
+
+For account recovery, use the installed `accounts` and `select-account`
+commands. Do not edit `config.json` or move `all_keys.json` manually. Normal
+`initialize` attempts automatically match scanned keys against all detected
+accounts and correct stale auto-selected configuration before these commands
+are needed.
 
 ### Step 2 — Register Desktop MCP
 

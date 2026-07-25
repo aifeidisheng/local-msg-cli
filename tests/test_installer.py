@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import plistlib
 import shlex
 import tempfile
 import unittest
@@ -253,6 +254,36 @@ class InstallerFlowTests(unittest.TestCase):
             self.assertEqual([entry["name"] for entry in entries], ["message.db"])
             self.assertEqual(entries[0]["salt"], page1[:16].hex())
             self.assertEqual(entries[0]["page1"], page1.hex())
+
+    def test_discover_db_manifest_namespaces_multiple_accounts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = root / "first" / "db_storage"
+            second = root / "second" / "db_storage"
+            first.mkdir(parents=True)
+            second.mkdir(parents=True)
+            page1 = bytes(range(256)) * 16
+            (first / "message.db").write_bytes(page1)
+            (second / "message.db").write_bytes(page1)
+
+            manifest = installer._discover_db_salts(
+                root,
+                first,
+                account_dirs=[first, second],
+            )
+            self.assertIsNotNone(manifest)
+            try:
+                entries = json.loads(manifest.read_text(encoding="utf-8"))
+            finally:
+                manifest.unlink(missing_ok=True)
+
+            self.assertEqual(
+                [entry["name"] for entry in entries],
+                [
+                    "__account_000__/message.db",
+                    "__account_001__/message.db",
+                ],
+            )
 
     def test_install_uses_versioned_runtime_and_writes_manifest_after_service_validation(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -537,8 +568,248 @@ class JsonCliTests(unittest.TestCase):
         payload = result.call_args.args[0]
         self.assertEqual(payload["authorization_prompt_count"], 0)
 
+    def test_management_cli_adds_user_recovery_fields(self):
+        error = installer.InstallerError(
+            "微信尚未运行",
+            error_code="wechat_not_running",
+            next_action="start_wechat_and_retry_initialize",
+        )
+        with patch.object(installer, "initialize", side_effect=error), \
+             patch.object(installer.Reporter, "result") as result:
+            exit_code = installer.main(["initialize", "--json"])
+
+        self.assertEqual(exit_code, 1)
+        payload = result.call_args.args[0]
+        self.assertEqual(payload["user_message"], "微信尚未运行")
+        self.assertEqual(payload["requires_user_action"], "open_wechat")
+        self.assertEqual(payload["retry_command"], "initialize")
+
 
 class MacInitializeTests(unittest.TestCase):
+    @staticmethod
+    def _make_wechat_app(root: Path, bundle_id: str = "com.tencent.xinWeChat") -> Path:
+        app = root / "Applications" / "WeChat.app"
+        contents = app / "Contents"
+        contents.mkdir(parents=True)
+        with (contents / "Info.plist").open("wb") as info_file:
+            plistlib.dump({"CFBundleIdentifier": bundle_id}, info_file)
+        return app
+
+    def test_prepare_wechat_requires_explicit_confirmation(self):
+        args = argparse.Namespace(home=None, confirm_resign=False)
+        with patch.object(installer.subprocess, "run") as run:
+            with self.assertRaises(installer.InstallerError) as raised:
+                installer.prepare_wechat(args, installer.Reporter(json_mode=True))
+
+        self.assertEqual(raised.exception.error_code, "wechat_resign_confirmation_required")
+        run.assert_not_called()
+
+    def test_prepare_wechat_rejects_non_wechat_bundle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            app = self._make_wechat_app(home, bundle_id="com.example.other")
+            args = argparse.Namespace(home=str(home), confirm_resign=True)
+            preflight = {"config": {}, "detected": {"app_path": str(app)}}
+
+            with patch.object(installer, "_installed_runtime", return_value=home), \
+                 patch.object(installer, "_preflight_macos_initialize", return_value=preflight), \
+                 patch.object(installer.subprocess, "run") as run:
+                with self.assertRaises(installer.InstallerError) as raised:
+                    installer.prepare_wechat(args, installer.Reporter(json_mode=True))
+
+            self.assertEqual(raised.exception.error_code, "wechat_app_identity_mismatch")
+            run.assert_not_called()
+
+    def test_prepare_wechat_rejects_wechat_bundle_outside_standard_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            outside = home / "Downloads"
+            app = self._make_wechat_app(outside)
+            with self.assertRaises(installer.InstallerError) as raised:
+                installer._validate_wechat_bundle(app, home)
+
+            self.assertEqual(raised.exception.error_code, "wechat_app_path_not_allowed")
+
+    def test_prepare_wechat_rejects_symlink_at_standard_app_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            real_app = self._make_wechat_app(home / "real")
+            standard = home / "Applications" / "WeChat.app"
+            standard.parent.mkdir(parents=True, exist_ok=True)
+            standard.symlink_to(real_app)
+
+            with self.assertRaises(installer.InstallerError) as raised:
+                installer._validate_wechat_bundle(standard, home)
+
+            self.assertEqual(raised.exception.error_code, "wechat_app_path_not_allowed")
+
+    def test_prepare_wechat_requires_wechat_to_be_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            app = self._make_wechat_app(home)
+            args = argparse.Namespace(home=str(home), confirm_resign=True)
+            preflight = {"config": {}, "detected": {"app_path": str(app)}}
+            running = CompletedProcess([], 0, "123\n", "")
+
+            with patch.object(installer, "_installed_runtime", return_value=home), \
+                 patch.object(installer, "_preflight_macos_initialize", return_value=preflight), \
+                 patch.object(installer.subprocess, "run", return_value=running) as run:
+                with self.assertRaises(installer.InstallerError) as raised:
+                    installer.prepare_wechat(args, installer.Reporter(json_mode=True))
+
+            self.assertEqual(raised.exception.error_code, "wechat_must_quit_for_resign")
+            self.assertEqual(run.call_count, 1)
+
+    def test_prepare_wechat_uses_one_fixed_authorized_codesign_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            app = self._make_wechat_app(home)
+            args = argparse.Namespace(home=str(home), confirm_resign=True)
+            preflight = {"config": {}, "detected": {"app_path": str(app)}}
+            stopped = CompletedProcess([], 1, "", "")
+            official = CompletedProcess([], 0, "", "Authority=Apple Distribution\n")
+            authorized = CompletedProcess([], 0, "", "")
+            adhoc = CompletedProcess([], 0, "", "Signature=adhoc\n")
+            opened = CompletedProcess([], 0, "", "")
+
+            with patch.object(installer, "_installed_runtime", return_value=home), \
+                 patch.object(installer, "_preflight_macos_initialize", return_value=preflight), \
+                 patch.object(
+                     installer.subprocess,
+                     "run",
+                     side_effect=[stopped, official, authorized, adhoc, opened],
+                 ) as run:
+                payload = installer.prepare_wechat(args, installer.Reporter(json_mode=True))
+
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["authorization_prompt_count"], 1)
+            authorization_calls = [
+                call for call in run.call_args_list if call.args[0][0] == "/usr/bin/osascript"
+            ]
+            self.assertEqual(len(authorization_calls), 1)
+            command = authorization_calls[0].args[0][-1]
+            self.assertEqual(
+                command,
+                shlex.join(
+                    [
+                        "/usr/bin/codesign",
+                        "--force",
+                        "--deep",
+                        "--sign",
+                        "-",
+                        str(app.resolve()),
+                    ]
+                ),
+            )
+
+    def test_normalize_account_key_output_keeps_only_valid_account(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            first = base / "first" / "db_storage"
+            second = base / "second" / "db_storage"
+            first.mkdir(parents=True)
+            second.mkdir(parents=True)
+            keys_file = base / "all_keys.json"
+            keys_file.write_text(
+                json.dumps(
+                    {
+                        "__account_000__/message/message_0.db": {"enc_key": "a" * 64},
+                        "__account_001__/message/message_0.db": {"enc_key": "b" * 64},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                installer,
+                "_valid_key_payload",
+                side_effect=lambda _keys, db_dir: db_dir == second,
+            ):
+                selected = installer._normalize_account_key_output(
+                    keys_file,
+                    [first, second],
+                    first,
+                )
+
+            self.assertEqual(selected, second)
+            normalized = json.loads(keys_file.read_text(encoding="utf-8"))
+            self.assertEqual(normalized["_db_dir"], str(second))
+            self.assertEqual(
+                normalized["message/message_0.db"]["enc_key"],
+                "b" * 64,
+            )
+            self.assertFalse(any(key.startswith("__account_") for key in normalized))
+
+    def test_existing_keys_correct_stale_account_without_authorization(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            layout = installer.default_layout(home)
+            layout.data_dir.mkdir(parents=True)
+            stale = home / "accounts" / "stale" / "db_storage"
+            current = home / "accounts" / "current" / "db_storage"
+            stale.mkdir(parents=True)
+            current.mkdir(parents=True)
+            (layout.data_dir / "config.json").write_text(
+                json.dumps({"db_dir": str(stale)}),
+                encoding="utf-8",
+            )
+            (layout.data_dir / "all_keys.json").write_text(
+                json.dumps({"message.db": {"enc_key": "a" * 64}}),
+                encoding="utf-8",
+            )
+            preflight = {
+                "db_dir": stale,
+                "account_candidates": [stale, current],
+            }
+
+            with patch.object(
+                installer,
+                "_matching_key_accounts",
+                return_value=[current],
+            ), patch.object(installer, "_preflight_macos_scanner") as scanner:
+                prompted = installer._extract_macos_keys(
+                    home,
+                    layout,
+                    installer.Reporter(json_mode=True),
+                    preflight,
+                )
+
+            self.assertFalse(prompted)
+            scanner.assert_not_called()
+            self.assertEqual(preflight["db_dir"], current)
+            self.assertTrue(preflight["account_changed"])
+            config = json.loads((layout.data_dir / "config.json").read_text(encoding="utf-8"))
+            self.assertEqual(Path(config["db_dir"]), current.resolve())
+            self.assertEqual(config["db_dir_selection"], "validated_existing_keys")
+
+    def test_accounts_and_select_account_use_discovered_ids_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            layout = installer.default_layout(home)
+            account = (
+                home
+                / "Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files"
+                / "wxid_current_abcd"
+                / "db_storage"
+            )
+            account.mkdir(parents=True)
+            args = argparse.Namespace(home=str(home), account="wxid_current_abcd")
+
+            selected = installer.select_account(args, installer.Reporter(json_mode=True))
+            listed = installer.accounts(args, installer.Reporter(json_mode=True))
+
+            self.assertTrue(selected["ok"])
+            self.assertEqual(selected["account"]["account_id"], "wxid_current_abcd")
+            self.assertEqual(listed["selected_account_id"], "wxid_current_abcd")
+            config = json.loads((layout.data_dir / "config.json").read_text(encoding="utf-8"))
+            self.assertEqual(Path(config["db_dir"]), account.resolve())
+            self.assertEqual(config["db_dir_selection"], "manual")
+
+            args.account = "../../outside"
+            with self.assertRaises(installer.InstallerError) as raised:
+                installer.select_account(args, installer.Reporter(json_mode=True))
+            self.assertEqual(raised.exception.error_code, "wechat_account_not_found")
+
     def test_legacy_root_owned_config_is_replaced_without_authorization(self):
         with tempfile.TemporaryDirectory() as tmp:
             layout = installer.default_layout(Path(tmp))
@@ -587,6 +858,33 @@ class MacInitializeTests(unittest.TestCase):
             self.assertEqual(raised.exception.error_code, "version_not_allowed")
             self.assertEqual(raised.exception.details["detected_version"], "4.2.0")
             run.assert_not_called()
+
+    def test_stale_configured_account_falls_back_to_discovered_candidates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            runtime = home / "runtime"
+            runtime.mkdir()
+            layout = installer.default_layout(home)
+            current = (
+                home
+                / "Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files"
+                / "wxid_current_abcd"
+                / "db_storage"
+            )
+            current.mkdir(parents=True)
+            stale = home / "missing" / "db_storage"
+            version_result = Mock(
+                ok=True,
+                reasons=[],
+                details={"detected": {"app_path": "/Applications/WeChat.app"}},
+            )
+
+            with patch("config.load_config", return_value={"db_dir": str(stale)}), \
+                 patch("wechat_version_guard.check_version", return_value=version_result):
+                preflight = installer._preflight_macos_initialize(runtime, layout)
+
+            self.assertEqual(preflight["db_dir"], current.resolve())
+            self.assertEqual(preflight["account_candidates"], [current.resolve()])
 
     def test_wechat_not_running_stops_before_any_authorization(self):
         preflight = {

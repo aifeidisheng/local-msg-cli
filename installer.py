@@ -10,6 +10,7 @@ import io
 import json
 import os
 import platform
+import plistlib
 import re
 import shlex
 import shutil
@@ -65,6 +66,7 @@ class InstallerError(RuntimeError):
 
 @dataclass(frozen=True)
 class InstallLayout:
+    home: Path
     root: Path
     runtime_dir: Path
     current: Path
@@ -104,6 +106,7 @@ def default_layout(home: Path | None = None) -> InstallLayout:
     home = (home or Path.home()).expanduser().resolve()
     root = home / "Library" / "Application Support" / APP_DIR_NAME
     return InstallLayout(
+        home=home,
         root=root,
         runtime_dir=root / "runtime",
         current=root / "runtime" / "current",
@@ -209,12 +212,72 @@ def _normalize_legacy_data_files(layout: InstallLayout) -> list[str]:
     return repaired
 
 
-def _valid_key_file(path: Path, db_dir: Path | None = None) -> bool:
+def _account_id(db_dir: Path) -> str:
+    return db_dir.parent.name
+
+
+def _account_activity(db_dir: Path) -> float:
+    target = db_dir / "message"
     try:
-        with path.open(encoding="utf-8") as key_file:
-            payload = json.load(key_file)
+        return (target if target.is_dir() else db_dir).stat().st_mtime
+    except OSError:
+        return 0
+
+
+def _discover_macos_accounts(home: Path) -> list[Path]:
+    base = (
+        home
+        / "Library"
+        / "Containers"
+        / "com.tencent.xinWeChat"
+        / "Data"
+        / "Documents"
+        / "xwechat_files"
+    )
+    if not base.is_dir():
+        return []
+    accounts = [
+        path.resolve()
+        for path in base.glob("*/db_storage")
+        if path.is_dir() and not path.parent.name.startswith(".")
+    ]
+    return sorted(accounts, key=_account_activity, reverse=True)
+
+
+def _read_data_config(layout: InstallLayout) -> dict:
+    path = layout.data_dir / "config.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, json.JSONDecodeError):
-        return False
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _configured_db_dir(layout: InstallLayout) -> Path | None:
+    value = _read_data_config(layout).get("db_dir")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    expanded = Path(os.path.expanduser(os.path.expandvars(value)))
+    if not expanded.is_absolute():
+        expanded = layout.data_dir / expanded
+    return expanded.resolve()
+
+
+def _save_account_selection(layout: InstallLayout, db_dir: Path, source: str) -> None:
+    payload = _read_data_config(layout)
+    payload["db_dir"] = str(db_dir.resolve())
+    payload["db_dir_selection"] = source
+    _atomic_write_json(layout.data_dir / "config.json", payload)
+
+
+def _public_account(account: Path, selected: Path | None = None) -> dict:
+    return {
+        "account_id": _account_id(account),
+        "selected": selected is not None and account == selected,
+    }
+
+
+def _valid_key_payload(payload: object, db_dir: Path | None = None) -> bool:
     entries = [
         (key, value)
         for key, value in payload.items()
@@ -246,6 +309,15 @@ def _valid_key_file(path: Path, db_dir: Path | None = None) -> bool:
     except (OSError, ValueError, TypeError):
         return False
     return True
+
+
+def _valid_key_file(path: Path, db_dir: Path | None = None) -> bool:
+    try:
+        with path.open(encoding="utf-8") as key_file:
+            payload = json.load(key_file)
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return False
+    return _valid_key_payload(payload, db_dir)
 
 
 def _parse_scanner_summary(output: str) -> dict[str, int]:
@@ -365,17 +437,24 @@ def _preflight_macos_initialize(runtime: Path, layout: InstallLayout) -> dict:
             details=details,
         )
 
-    db_dir = Path(str(cfg.get("db_dir") or "")).expanduser()
+    db_dir = Path(str(cfg.get("db_dir") or "")).expanduser().resolve()
+    accounts = _discover_macos_accounts(layout.home)
     if not db_dir.is_dir() or not os.access(db_dir, os.R_OK | os.X_OK):
-        raise InstallerError(
-            "检测到的微信数据目录不存在或不可读；尚未请求管理员授权",
-            error_code="wechat_database_not_found",
-            next_action="confirm_wechat_data_access_and_retry_initialize",
-            details={"authorization_prompt_count": 0, "db_dir": str(db_dir)},
-        )
+        if accounts:
+            db_dir = accounts[0]
+        else:
+            raise InstallerError(
+                "检测到的微信数据目录不存在或不可读；尚未请求管理员授权",
+                error_code="wechat_database_not_found",
+                next_action="confirm_wechat_data_access_and_retry_initialize",
+                details={"authorization_prompt_count": 0, "db_dir": str(db_dir)},
+            )
+    if db_dir not in accounts:
+        accounts.insert(0, db_dir)
     return {
         "config": cfg,
-        "db_dir": db_dir.resolve(),
+        "db_dir": db_dir,
+        "account_candidates": accounts,
         "detected": (version_result.details or {}).get("detected") or {},
     }
 
@@ -408,6 +487,16 @@ def _preflight_macos_scanner(preflight: dict) -> None:
             next_action="start_wechat_and_retry_initialize",
             details={"authorization_prompt_count": 0},
         )
+    if not _is_adhoc_signed(app_path):
+        raise InstallerError(
+            "微信尚未完成 ad-hoc 重签名；未弹出管理员授权窗口",
+            error_code="wechat_not_adhoc_signed",
+            next_action="confirm_and_run_prepare_wechat",
+            details={"authorization_prompt_count": 0, "app_path": app_path},
+        )
+
+
+def _is_adhoc_signed(app_path: str | Path) -> bool:
     signature = subprocess.run(
         ["/usr/bin/codesign", "-dv", "--verbose=4", app_path],
         check=False,
@@ -416,20 +505,52 @@ def _preflight_macos_scanner(preflight: dict) -> None:
         stderr=subprocess.PIPE,
     )
     signature_details = "\n".join((signature.stdout, signature.stderr))
-    if signature.returncode != 0 or not re.search(
+    return signature.returncode == 0 and bool(re.search(
         r"(?:^Signature=adhoc$|\(adhoc(?:[,)]))",
         signature_details,
         flags=re.MULTILINE,
-    ):
+    ))
+
+
+def _validate_wechat_bundle(app_path: str | Path, home: Path) -> Path:
+    requested = Path(app_path).expanduser()
+    if not requested.is_absolute():
+        requested = (home / requested).absolute()
+    app = requested.resolve()
+    allowed = {
+        Path("/Applications/WeChat.app").resolve(),
+        (home / "Applications" / "WeChat.app").resolve(),
+    }
+    if app not in allowed or requested.is_symlink():
         raise InstallerError(
-            "微信尚未完成 ad-hoc 重签名；未弹出管理员授权窗口",
-            error_code="wechat_not_adhoc_signed",
-            next_action="quit_and_adhoc_resign_wechat_then_reopen_and_retry_initialize",
-            details={"authorization_prompt_count": 0, "app_path": app_path},
+            "拒绝重签标准应用目录之外的程序",
+            error_code="wechat_app_path_not_allowed",
+            next_action="install_wechat_in_the_standard_applications_directory",
         )
+    info_path = app / "Contents" / "Info.plist"
+    try:
+        with info_path.open("rb") as info_file:
+            bundle_id = plistlib.load(info_file).get("CFBundleIdentifier")
+    except (FileNotFoundError, OSError, plistlib.InvalidFileException) as exc:
+        raise InstallerError(
+            "版本门禁检测到的微信应用不是有效的 macOS app bundle",
+            error_code="wechat_app_invalid",
+            next_action="restore_the_official_wechat_app_and_retry",
+        ) from exc
+    if app.suffix != ".app" or bundle_id != "com.tencent.xinWeChat":
+        raise InstallerError(
+            "拒绝重签不是 WeChat 的应用",
+            error_code="wechat_app_identity_mismatch",
+            next_action="restore_the_official_wechat_app_and_retry",
+        )
+    return app
 
 
-def _discover_db_salts(home: Path, db_dir: Path | None = None) -> Path | None:
+def _discover_db_salts(
+    home: Path,
+    db_dir: Path | None = None,
+    account_dirs: list[Path] | None = None,
+) -> Path | None:
     """Pre-discover encrypted DB salts from user context (has FDA).
 
     Returns a temp file path containing JSON array of {name, salt, page1} entries,
@@ -443,20 +564,24 @@ def _discover_db_salts(home: Path, db_dir: Path | None = None) -> Path | None:
         return None
 
     entries: list[dict[str, str]] = []
-    sources: list[tuple[Path, Path]] = []
+    sources: list[tuple[Path, Path, str]] = []
     # The configured db_dir is normally the db_storage directory.  Retain
     # support for the old xwechat_files root only when no explicit directory
     # was supplied, but never mix historical accounts into an active scan.
-    if db_dir is None:
+    if account_dirs:
+        for index, storage in enumerate(account_dirs):
+            prefix = f"__account_{index:03d}__/"
+            sources.extend((storage, path, prefix) for path in storage.rglob("*.db"))
+    elif db_dir is None:
         for account_dir in base.iterdir():
             if account_dir.name.startswith(".") or not account_dir.is_dir():
                 continue
             storage = account_dir / "db_storage"
             if storage.is_dir():
-                sources.extend((storage, path) for path in storage.rglob("*.db"))
+                sources.extend((storage, path, "") for path in storage.rglob("*.db"))
     else:
-        sources.extend((base, path) for path in base.rglob("*.db"))
-    for db_storage, db_file in sources:
+        sources.extend((base, path, "") for path in base.rglob("*.db"))
+    for db_storage, db_file, prefix in sources:
         if not db_file.is_file():
             continue
         try:
@@ -471,7 +596,7 @@ def _discover_db_salts(home: Path, db_dir: Path | None = None) -> Path | None:
             continue
         salt_hex = page1[:16].hex()
         # Relative name from db_storage/ (matches scanner's output format)
-        rel = str(db_file.relative_to(db_storage))
+        rel = prefix + str(db_file.relative_to(db_storage))
         entries.append({"name": rel, "salt": salt_hex, "page1": page1.hex()})
 
     if not entries:
@@ -493,6 +618,55 @@ def _discover_db_salts(home: Path, db_dir: Path | None = None) -> Path | None:
     return Path(tmp_path)
 
 
+def _matching_key_accounts(keys_file: Path, accounts: list[Path]) -> list[Path]:
+    return [account for account in accounts if _valid_key_file(keys_file, account)]
+
+
+def _normalize_account_key_output(
+    keys_file: Path,
+    accounts: list[Path],
+    configured: Path | None,
+) -> Path | None:
+    try:
+        payload = json.loads(keys_file.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    grouped: dict[int, dict] = {}
+    for name, value in payload.items():
+        match = re.fullmatch(r"__account_(\d{3})__/(.+)", name)
+        if not match:
+            continue
+        index = int(match.group(1))
+        if index >= len(accounts):
+            continue
+        grouped.setdefault(index, {})[match.group(2)] = value
+    if not grouped:
+        return None
+
+    valid: list[tuple[int, dict]] = []
+    for index, keys in grouped.items():
+        if _valid_key_payload(keys, accounts[index]):
+            valid.append((index, keys))
+    if not valid:
+        return None
+
+    selected = valid[0]
+    if configured is not None:
+        for candidate in valid:
+            if accounts[candidate[0]] == configured:
+                selected = candidate
+                break
+    index, normalized = selected
+    account = accounts[index]
+    normalized["_db_dir"] = str(account)
+    _atomic_write_json(keys_file, normalized)
+    os.chmod(keys_file, 0o600)
+    return account
+
+
 def _extract_macos_keys(
     runtime: Path,
     layout: InstallLayout,
@@ -501,7 +675,16 @@ def _extract_macos_keys(
 ) -> bool:
     keys_file = layout.data_dir / "all_keys.json"
     configured_db_dir = preflight.get("db_dir")
-    if _valid_key_file(keys_file, configured_db_dir):
+    accounts = list(preflight.get("account_candidates") or [])
+    matching_accounts = _matching_key_accounts(keys_file, accounts) if accounts else []
+    if matching_accounts:
+        selected = configured_db_dir if configured_db_dir in matching_accounts else matching_accounts[0]
+        if selected != configured_db_dir:
+            _save_account_selection(layout, selected, "validated_existing_keys")
+            preflight["db_dir"] = selected
+            preflight["account_changed"] = True
+        return False
+    if not accounts and _valid_key_file(keys_file, configured_db_dir):
         return False
     if keys_file.exists() or keys_file.is_symlink():
         try:
@@ -528,7 +711,11 @@ def _extract_macos_keys(
 
     # Pre-discover DB salts in user context (has FDA) to avoid requiring
     # Full Disk Access for the elevated scanner binary.
-    db_salts_file = _discover_db_salts(Path.home().resolve(), configured_db_dir)
+    db_salts_file = _discover_db_salts(
+        layout.home,
+        configured_db_dir,
+        account_dirs=accounts if len(accounts) > 1 else None,
+    )
 
     reporter.progress("keys", "通过 macOS 系统授权读取 WeChat 进程并提取数据库密钥")
     scanner_args = [
@@ -600,6 +787,13 @@ def _extract_macos_keys(
             next_action=action,
             details=summary,
         )
+    if len(accounts) > 1:
+        selected = _normalize_account_key_output(keys_file, accounts, configured_db_dir)
+        if selected is not None:
+            _save_account_selection(layout, selected, "matched_running_wechat")
+            preflight["db_dir"] = selected
+            preflight["account_changed"] = selected != configured_db_dir
+            configured_db_dir = selected
     if not _valid_key_file(keys_file, configured_db_dir):
         summary = _parse_scanner_summary("\n".join((result.stdout, result.stderr)))
         summary["authorization_prompt_count"] = 1
@@ -1470,7 +1664,155 @@ def initialize(args: argparse.Namespace, reporter: Reporter) -> dict:
         "service": service_payload,
         "authorization_prompt_count": authorization_prompt_count,
         "repaired_legacy_files": repaired_files,
+        "account": (
+            _public_account(preflight["db_dir"])
+            if platform.system().lower() == "darwin" and preflight.get("db_dir") is not None
+            else None
+        ),
+        "account_changed": bool(preflight.get("account_changed")) if platform.system().lower() == "darwin" else False,
         "next_step": "register_with_mcporter" if query_ready else "wait_until_query_ready",
+    }
+
+
+def prepare_wechat(args: argparse.Namespace, reporter: Reporter) -> dict:
+    if platform.system().lower() != "darwin":
+        raise InstallerError(
+            "prepare-wechat 仅支持 macOS",
+            error_code="unsupported_platform",
+            next_action="run_prepare_wechat_on_macos",
+        )
+    if not args.confirm_resign:
+        raise InstallerError(
+            "重新签名会修改 WeChat.app，需要用户明确确认",
+            error_code="wechat_resign_confirmation_required",
+            next_action="ask_user_to_confirm_wechat_resign",
+            details={"authorization_prompt_count": 0},
+        )
+
+    layout = default_layout(Path(args.home).expanduser() if args.home else None)
+    manifest = _read_manifest(layout)
+    runtime = _installed_runtime(layout, manifest)
+    preflight = _preflight_macos_initialize(runtime, layout)
+    app = _validate_wechat_bundle(
+        (preflight.get("detected") or {}).get("app_path") or "",
+        layout.home,
+    )
+
+    running = subprocess.run(
+        ["/usr/bin/pgrep", "-x", str((preflight.get("config") or {}).get("wechat_process") or "WeChat")],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if running.returncode == 0 and running.stdout.strip():
+        raise InstallerError(
+            "请先正常退出 WeChat，再继续安全重签",
+            error_code="wechat_must_quit_for_resign",
+            next_action="quit_wechat_and_retry_prepare_wechat",
+            details={"authorization_prompt_count": 0},
+        )
+    if _is_adhoc_signed(app):
+        return {
+            "ok": True,
+            "command": "prepare-wechat",
+            "already_prepared": True,
+            "authorization_prompt_count": 0,
+            "next_step": "open_wechat_and_initialize",
+        }
+
+    reporter.progress("signature", "通过 macOS 系统授权安全重签 WeChat")
+    codesign_command = shlex.join(
+        ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)]
+    )
+    result = subprocess.run(
+        [
+            "/usr/bin/osascript",
+            "-e",
+            "on run argv",
+            "-e",
+            "do shell script (item 1 of argv) with administrator privileges",
+            "-e",
+            "end run",
+            codesign_command,
+        ],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        normalized = result.stderr.lower()
+        cancelled = "user canceled" in normalized or "(-128)" in normalized
+        raise InstallerError(
+            "用户取消了管理员授权" if cancelled else "WeChat 安全重签失败",
+            error_code=(
+                "administrator_authorization_cancelled"
+                if cancelled
+                else "wechat_resign_failed"
+            ),
+            next_action=(
+                "retry_prepare_wechat_and_approve_the_macos_administrator_prompt"
+                if cancelled
+                else "report_wechat_resign_error"
+            ),
+            details={"authorization_prompt_count": 1},
+        )
+    if not _is_adhoc_signed(app):
+        raise InstallerError(
+            "系统命令已完成，但 WeChat 签名校验未通过",
+            error_code="wechat_resign_verification_failed",
+            next_action="report_wechat_resign_error",
+            details={"authorization_prompt_count": 1},
+        )
+    subprocess.run(
+        ["/usr/bin/open", str(app)],
+        check=False,
+        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return {
+        "ok": True,
+        "command": "prepare-wechat",
+        "already_prepared": False,
+        "authorization_prompt_count": 1,
+        "next_step": "sign_in_to_wechat_then_initialize",
+    }
+
+
+def accounts(args: argparse.Namespace, reporter: Reporter) -> dict:
+    layout = default_layout(Path(args.home).expanduser() if args.home else None)
+    candidates = _discover_macos_accounts(layout.home)
+    selected = _configured_db_dir(layout)
+    return {
+        "ok": bool(candidates),
+        "command": "accounts",
+        "accounts": [_public_account(account, selected) for account in candidates],
+        "selected_account_id": _account_id(selected) if selected in candidates else None,
+        "next_step": "select_account" if candidates and selected not in candidates else "initialize",
+    }
+
+
+def select_account(args: argparse.Namespace, reporter: Reporter) -> dict:
+    layout = default_layout(Path(args.home).expanduser() if args.home else None)
+    candidates = _discover_macos_accounts(layout.home)
+    matches = [account for account in candidates if _account_id(account) == args.account]
+    if len(matches) != 1:
+        raise InstallerError(
+            "没有找到指定的微信账号数据目录",
+            error_code="wechat_account_not_found",
+            next_action="list_accounts_and_select_an_available_account",
+            details={"available_accounts": [_public_account(account) for account in candidates]},
+        )
+    selected = matches[0]
+    _save_account_selection(layout, selected, "manual")
+    return {
+        "ok": True,
+        "command": "select-account",
+        "account": _public_account(selected, selected),
+        "keys_reusable": _valid_key_file(layout.data_dir / "all_keys.json", selected),
+        "next_step": "initialize",
     }
 
 
@@ -1550,6 +1892,14 @@ def build_parser() -> argparse.ArgumentParser:
     repair_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
     initialize_parser = subparsers.add_parser("initialize", help="经用户确认后提取密钥并预解密本机数据库")
     initialize_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
+    prepare_parser = subparsers.add_parser("prepare-wechat", help="经用户确认后安全重签 WeChat")
+    prepare_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
+    prepare_parser.add_argument("--confirm-resign", action="store_true", help="确认允许修改 WeChat.app 签名")
+    accounts_parser = subparsers.add_parser("accounts", help="列出检测到的微信账号数据目录")
+    accounts_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
+    select_account_parser = subparsers.add_parser("select-account", help="选择初始化使用的微信账号")
+    select_account_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
+    select_account_parser.add_argument("--account", required=True, help="accounts 返回的 account_id")
     uninstall_parser = subparsers.add_parser("uninstall", help="卸载 LaunchAgent，默认保留全部数据和运行时")
     uninstall_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
     uninstall_parser.add_argument("--remove-runtime", action="store_true")
@@ -1573,6 +1923,9 @@ def main(argv: list[str] | None = None) -> int:
             "upgrade": upgrade,
             "repair": repair,
             "initialize": initialize,
+            "prepare-wechat": prepare_wechat,
+            "accounts": accounts,
+            "select-account": select_account,
             "uninstall": uninstall,
         }
         payload = handlers[args.command](args, reporter)
@@ -1584,6 +1937,7 @@ def main(argv: list[str] | None = None) -> int:
             "command": args.command,
             "error_code": exc.error_code,
             "error": str(exc),
+            "user_message": str(exc),
         }
         if exc.next_action:
             payload["next_action"] = exc.next_action
@@ -1593,6 +1947,28 @@ def main(argv: list[str] | None = None) -> int:
                 payload["authorization_prompt_count"] = exc.details[
                     "authorization_prompt_count"
                 ]
+        user_actions = {
+            "wechat_not_running": "open_wechat",
+            "wechat_not_adhoc_signed": "confirm_wechat_resign",
+            "wechat_resign_confirmation_required": "confirm_wechat_resign",
+            "wechat_must_quit_for_resign": "quit_wechat",
+            "administrator_authorization_cancelled": "approve_administrator_prompt",
+            "task_for_pid_failed": "approve_administrator_prompt",
+            "version_not_allowed": "check_for_supported_release",
+            "wechat_account_not_found": "select_wechat_account",
+        }
+        if exc.error_code in user_actions:
+            payload["requires_user_action"] = user_actions[exc.error_code]
+        retry_commands = {
+            "wechat_not_adhoc_signed": "prepare-wechat",
+            "wechat_resign_confirmation_required": "prepare-wechat",
+            "wechat_must_quit_for_resign": "prepare-wechat",
+            "wechat_account_not_found": "accounts",
+        }
+        if exc.error_code in retry_commands:
+            payload["retry_command"] = retry_commands[exc.error_code]
+        elif args.command in {"initialize", "prepare-wechat", "select-account"}:
+            payload["retry_command"] = args.command
         reporter.result(payload)
         return 1
     except Exception as exc:
@@ -1600,7 +1976,9 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "ok": False,
                 "command": args.command,
+                "error_code": "unexpected_management_error",
                 "error": f"{type(exc).__name__}: {exc}",
+                "user_message": "管理操作遇到未预期错误，请报告结构化错误信息。",
             }
         )
         return 1

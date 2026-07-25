@@ -28,8 +28,8 @@ emit_error_json() {
     local error_message="$3"
     local next_action="$4"
     result_emitted=true
-    printf '{"ok":false,"command":"%s","phase":"%s","error_code":"%s","error":"%s","next_action":"%s"}\n' \
-        "$(command_name)" "$phase" "$error_code" "$error_message" "$next_action"
+    printf '{"ok":false,"command":"%s","phase":"%s","error_code":"%s","error":"%s","user_message":"%s","next_action":"%s"}\n' \
+        "$(command_name)" "$phase" "$error_code" "$error_message" "$error_message" "$next_action"
 }
 
 unexpected_error() {
@@ -286,7 +286,8 @@ combined = {
     'endpoint': init_data.get('endpoint') or install_data.get('installation', {}).get('endpoint'),
 }
 if not init_data.get('ok', False):
-    for key in ('error_code', 'error', 'next_action', 'details'):
+    for key in ('error_code', 'error', 'user_message', 'requires_user_action',
+                'retry_command', 'next_action', 'details'):
         if key in init_data:
             combined[key] = init_data[key]
 if combined['query_ready']:
