@@ -461,6 +461,26 @@ def _preflight_macos_initialize(runtime: Path, layout: InstallLayout) -> dict:
 
 def _preflight_macos_scanner(preflight: dict) -> None:
     """Validate process and signature before the one privileged scanner call."""
+    detected = preflight.get("detected") or {}
+    app_path = str(detected.get("app_path") or "")
+
+    # 先检查签名（不需要微信在运行），避免用户先登录再退出再登录的冗余流程
+    if not app_path:
+        raise InstallerError(
+            "无法确定当前微信程序路径；未弹出管理员授权窗口",
+            error_code="wechat_app_not_found",
+            next_action="start_wechat_and_retry_initialize",
+            details={"authorization_prompt_count": 0},
+        )
+    if not _is_adhoc_signed(app_path):
+        raise InstallerError(
+            "微信尚未完成 ad-hoc 重签名；未弹出管理员授权窗口",
+            error_code="wechat_not_adhoc_signed",
+            next_action="confirm_and_run_prepare_wechat",
+            details={"authorization_prompt_count": 0, "app_path": app_path},
+        )
+
+    # 签名已OK，才要求微信运行（密钥提取需要读进程内存）
     cfg = preflight.get("config") or {}
     process_name = str(cfg.get("wechat_process") or "WeChat")
     running = subprocess.run(
@@ -476,23 +496,6 @@ def _preflight_macos_scanner(preflight: dict) -> None:
             error_code="wechat_not_running",
             next_action="start_wechat_and_retry_initialize",
             details={"authorization_prompt_count": 0},
-        )
-
-    detected = preflight.get("detected") or {}
-    app_path = str(detected.get("app_path") or "")
-    if not app_path:
-        raise InstallerError(
-            "无法确定当前微信程序路径；未弹出管理员授权窗口",
-            error_code="wechat_app_not_found",
-            next_action="start_wechat_and_retry_initialize",
-            details={"authorization_prompt_count": 0},
-        )
-    if not _is_adhoc_signed(app_path):
-        raise InstallerError(
-            "微信尚未完成 ad-hoc 重签名；未弹出管理员授权窗口",
-            error_code="wechat_not_adhoc_signed",
-            next_action="confirm_and_run_prepare_wechat",
-            details={"authorization_prompt_count": 0, "app_path": app_path},
         )
 
 
@@ -1647,6 +1650,15 @@ def initialize(args: argparse.Namespace, reporter: Reporter) -> dict:
             ["start"],
             error_context="初始化完成，但 LaunchAgent 启动失败",
         )
+    elif not service_payload.get("query_ready"):
+        # 服务已在运行但持有旧状态（初始化前启动），需要重启加载新数据
+        reporter.progress("service", "重启 MCP 服务以加载新解密数据")
+        _service_command(
+            runtime,
+            layout,
+            ["restart"],
+            error_context="MCP 服务重启失败",
+        )
     # 等待服务完全就绪（端口绑定需要数秒），最多轮询 20 秒
     deadline = time.monotonic() + 20
     service_payload = service_status(layout, runtime)
@@ -1721,6 +1733,32 @@ def prepare_wechat(args: argparse.Namespace, reporter: Reporter) -> dict:
             "next_step": "open_wechat_and_initialize",
         }
 
+    # 先尝试非提权签名（用户是 app owner 时不需要 admin 授权弹窗）
+    reporter.progress("signature", "尝试直接重签 WeChat（无需管理员授权）")
+    direct_result = subprocess.run(
+        ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if direct_result.returncode == 0 and _is_adhoc_signed(app):
+        subprocess.run(
+            ["/usr/bin/open", str(app)],
+            check=False,
+            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return {
+            "ok": True,
+            "command": "prepare-wechat",
+            "already_prepared": False,
+            "authorization_prompt_count": 0,
+            "next_step": "sign_in_to_wechat_then_initialize",
+        }
+
+    # 非 owner 或权限不足，回退到 osascript 管理员授权
     reporter.progress("signature", "通过 macOS 系统授权安全重签 WeChat")
     codesign_command = shlex.join(
         ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)]
