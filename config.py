@@ -350,15 +350,21 @@ def load_config():
         else:
             if not os.path.exists(config_file):
                 _write_raw_config(config_file, _PERSIST_DEFAULT)
-            print(f"[!] 未能自动检测微信数据目录")
-            print(f"    请手动编辑 {config_file} 中的 db_dir 字段")
-            if _SYSTEM == "linux":
-                print("    Linux 默认路径类似: ~/Documents/xwechat_files/<wxid>/db_storage")
-            elif _SYSTEM == "darwin":
-                print("    macOS 默认路径类似: ~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/<wxid>/db_storage")
+            # 非交互模式（安装器上下文）：不退出，允许版本/签名检查在无 db_dir
+            # 时继续进行，从而支持"先重签、后启动微信"的单次登录流程。
+            if os.environ.get("WECHAT_DECRYPT_NONINTERACTIVE") == "1":
+                cfg = _merge_dict(_DEFAULT, cfg)
+                cfg["db_dir"] = ""
             else:
-                print(f"    路径可在 微信设置 → 文件管理 中找到")
-            sys.exit(1)
+                print(f"[!] 未能自动检测微信数据目录")
+                print(f"    请手动编辑 {config_file} 中的 db_dir 字段")
+                if _SYSTEM == "linux":
+                    print("    Linux 默认路径类似: ~/Documents/xwechat_files/<wxid>/db_storage")
+                elif _SYSTEM == "darwin":
+                    print("    macOS 默认路径类似: ~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/<wxid>/db_storage")
+                else:
+                    print(f"    路径可在 微信设置 → 文件管理 中找到")
+                sys.exit(1)
     else:
         cfg = _merge_dict(_DEFAULT, cfg)
 

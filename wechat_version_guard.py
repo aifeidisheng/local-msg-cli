@@ -300,7 +300,7 @@ def read_installed_version(cfg: Dict[str, Any]) -> Dict[str, Any]:
     guard = _guard_config(cfg)
     app_path = _configured_app_path(cfg, guard)
     if not app_path:
-        raise RuntimeError("未配置 wechat_app_path，且未能从运行中的微信进程自动发现安装路径")
+        raise RuntimeError("未配置 wechat_app_path，且未能自动发现微信安装路径（标准目录和运行中进程均未找到）")
 
     current = _platform_key()
     if current == "darwin":

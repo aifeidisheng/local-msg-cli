@@ -437,19 +437,19 @@ def _preflight_macos_initialize(runtime: Path, layout: InstallLayout) -> dict:
             details=details,
         )
 
-    db_dir = Path(str(cfg.get("db_dir") or "")).expanduser().resolve()
+    raw_db_dir = str(cfg.get("db_dir") or "")
     accounts = _discover_macos_accounts(layout.home)
-    if not db_dir.is_dir() or not os.access(db_dir, os.R_OK | os.X_OK):
-        if accounts:
-            db_dir = accounts[0]
-        else:
-            raise InstallerError(
-                "检测到的微信数据目录不存在或不可读；尚未请求管理员授权",
-                error_code="wechat_database_not_found",
-                next_action="confirm_wechat_data_access_and_retry_initialize",
-                details={"authorization_prompt_count": 0, "db_dir": str(db_dir)},
-            )
-    if db_dir not in accounts:
+
+    # db_dir 为空或仍为模板值时，可能是微信尚未登录创建数据目录。
+    # 此时仍允许流程继续到版本/签名检查，避免"登录→退出→登录"冗余循环。
+    if not raw_db_dir or "your_wxid" in raw_db_dir:
+        db_dir = accounts[0] if accounts else None
+    else:
+        db_dir = Path(raw_db_dir).expanduser().resolve()
+        if not db_dir.is_dir() or not os.access(db_dir, os.R_OK | os.X_OK):
+            db_dir = accounts[0] if accounts else None
+
+    if db_dir is not None and db_dir not in accounts:
         accounts.insert(0, db_dir)
     return {
         "config": cfg,
