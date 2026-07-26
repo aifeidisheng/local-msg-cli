@@ -162,7 +162,7 @@ Use ONLY the JSON response fields to decide next steps:
 | `wechat_not_running` | Ask user to open WeChat and retry `initialize` |
 | `wechat_not_adhoc_signed` | Check `details.wechat_running`: if **true** → ask the user to quit WeChat and explicitly confirm re-signing; if **false** → WeChat is already not running, ask user to confirm re-signing only. Then run the installed `prepare-wechat --confirm-resign` command directly, wait for login, and retry `initialize` |
 | `wechat_must_quit_for_resign` | Ask the user to quit WeChat, then retry the same installed `prepare-wechat --confirm-resign` command |
-| `version_not_allowed` | Report the version mismatch **and** tell the user the required version from `details.allowed_versions` (e.g. "请安装 macOS 4.1.8"); remind user to disable auto-update after installing. Do NOT modify policy files |
+| `version_not_allowed` | Report the version mismatch; do NOT modify policy files |
 | `task_for_pid_failed` | The system auth prompt was denied; ask user to retry and approve |
 | `administrator_authorization_cancelled` | User cancelled the admin popup; ask to retry |
 | `management_cli_must_not_run_as_root` | You ran with `sudo` — remove it and retry |

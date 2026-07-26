@@ -416,26 +416,18 @@ def _preflight_macos_initialize(runtime: Path, layout: InstallLayout) -> dict:
     if not version_result.ok:
         reasons = [str(reason) for reason in version_result.reasons]
         detected = (version_result.details or {}).get("detected") or {}
-        # 从策略中提取当前平台允许的版本，让 Agent 能准确告知用户应安装哪个版本
-        allowed_versions_summary = ""
-        try:
-            from wechat_version_guard import _allowed_version_summary  # noqa: F401
-            allowed_versions_summary = _allowed_version_summary(cfg)
-        except Exception:
-            pass
         details = {
             "authorization_prompt_count": 0,
             "reasons": reasons,
             "detected_version": detected.get("short_version"),
             "detected_build": detected.get("build_version"),
             "detected_app_path": detected.get("app_path"),
-            "allowed_versions": allowed_versions_summary,
         }
         if any("不在允许区间" in reason for reason in reasons):
             raise InstallerError(
                 f"当前微信版本 {detected.get('short_version') or '未知'} 不在支持范围内；尚未请求管理员授权",
                 error_code="version_not_allowed",
-                next_action="install_the_allowed_wechat_version_and_retry",
+                next_action="check_upstream_for_a_release_that_supports_this_wechat_version",
                 details=details,
             )
         raise InstallerError(
