@@ -484,9 +484,15 @@ def install_service(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> int:
 
     loaded = _run_launchctl(["bootstrap", launch_domain(), str(paths["plist"])])
     if loaded.returncode != 0:
-        print(f"[错误] launchd 加载失败: {loaded.stderr.strip()}", file=sys.stderr)
-        _rollback_install(paths, previous_plist, previous_job.loaded)
-        return loaded.returncode or 1
+        # Fallback: 深层 subprocess 链中 bootstrap 可能因 Mach bootstrap port
+        # 继承失败返回 EIO(5)，尝试 legacy load 命令作为降级路径。
+        if loaded.returncode == 5:
+            print(f"[重试] bootstrap 返回 I/O error，尝试 legacy load", file=sys.stderr)
+            loaded = _run_launchctl(["load", "-w", str(paths["plist"])])
+        if loaded.returncode != 0:
+            print(f"[错误] launchd 加载失败: {loaded.stderr.strip()}", file=sys.stderr)
+            _rollback_install(paths, previous_plist, previous_job.loaded)
+            return loaded.returncode or 1
 
     try:
         inspection = _wait_for_service_inspection(paths, host, port)

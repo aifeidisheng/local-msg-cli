@@ -1662,8 +1662,10 @@ def initialize(args: argparse.Namespace, reporter: Reporter) -> dict:
             ["start"],
             error_context="初始化完成，但 LaunchAgent 启动失败",
         )
-    elif not service_payload.get("query_ready"):
-        # 服务已在运行但持有旧状态（初始化前启动），需要重启加载新数据
+    elif authorization_prompt_count > 0 or not service_payload.get("query_ready"):
+        # 本次提取了新密钥（authorization_prompt_count > 0）或服务状态显示未就绪时，
+        # 均需重启服务。service_status 基于文件系统判断 query_ready，但已运行的
+        # MCP 进程在启动时加载密钥到内存，不会自动感知新写入的 all_keys.json。
         reporter.progress("service", "重启 MCP 服务以加载新解密数据")
         _service_command(
             runtime,
