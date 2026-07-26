@@ -97,6 +97,12 @@ in a terminal. Execute everything directly. User interaction is limited to
 confirming sensitive actions, quitting/signing in to WeChat when requested,
 and clicking "OK" on the macOS admin authorization popup.
 
+**Do NOT pre-require WeChat to be running/logged-in before executing
+`initialize`.** The command detects the actual state (version, signature,
+running status) and returns the appropriate structured error. Handle errors
+sequentially as they arise — this avoids unnecessary login → quit → login
+cycles when re-signing is needed.
+
 Before that popup, `initialize` performs all unprivileged checks (data path,
 version policy, running process, and ad-hoc signature). A single `initialize`
 attempt invokes `osascript` at most once. If it returns a structured error,
@@ -154,7 +160,7 @@ Use ONLY the JSON response fields to decide next steps:
 | `error_code` | Action |
 |---|---|
 | `wechat_not_running` | Ask user to open WeChat and retry `initialize` |
-| `wechat_not_adhoc_signed` | Ask the user to quit WeChat and explicitly confirm re-signing; then run the installed `prepare-wechat --confirm-resign` command directly, wait for login, and retry `initialize` |
+| `wechat_not_adhoc_signed` | Check `details.wechat_running`: if **true** → ask the user to quit WeChat and explicitly confirm re-signing; if **false** → WeChat is already not running, ask user to confirm re-signing only. Then run the installed `prepare-wechat --confirm-resign` command directly, wait for login, and retry `initialize` |
 | `wechat_must_quit_for_resign` | Ask the user to quit WeChat, then retry the same installed `prepare-wechat --confirm-resign` command |
 | `version_not_allowed` | Report the version mismatch; do NOT modify policy files |
 | `task_for_pid_failed` | The system auth prompt was denied; ask user to retry and approve |

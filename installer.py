@@ -473,11 +473,23 @@ def _preflight_macos_scanner(preflight: dict) -> None:
             details={"authorization_prompt_count": 0},
         )
     if not _is_adhoc_signed(app_path):
+        # 顺便探测微信是否在运行，让 Agent 知道是否需要先让用户退出
+        cfg = preflight.get("config") or {}
+        process_name = str(cfg.get("wechat_process") or "WeChat")
+        probe = subprocess.run(
+            ["/usr/bin/pgrep", "-x", process_name],
+            check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        wechat_running = probe.returncode == 0 and bool(probe.stdout.strip())
         raise InstallerError(
             "微信尚未完成 ad-hoc 重签名；未弹出管理员授权窗口",
             error_code="wechat_not_adhoc_signed",
-            next_action="confirm_and_run_prepare_wechat",
-            details={"authorization_prompt_count": 0, "app_path": app_path},
+            next_action="quit_wechat_and_run_prepare_wechat" if wechat_running else "confirm_and_run_prepare_wechat",
+            details={
+                "authorization_prompt_count": 0,
+                "app_path": app_path,
+                "wechat_running": wechat_running,
+            },
         )
 
     # 签名已OK，才要求微信运行（密钥提取需要读进程内存）
