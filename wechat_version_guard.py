@@ -36,7 +36,7 @@ _MCP_CACHE: Dict[str, Any] = {"expires_at": 0.0, "result": None}
 # The default policy is intentionally pinned outside the policy file itself.
 # A mutable policy must not be able to redefine its own trust boundary.
 _DEFAULT_POLICY_NAME = "version-guard.policy.json"
-_DEFAULT_POLICY_SHA256 = "f77a3fcb703a2978d2abe0ddcd16dd08b291db826ea0db9edd40bdb703edf6a5"
+_DEFAULT_POLICY_SHA256 = "453e43989b7c37d2fcf495c6994ed04a22ffdc3e2e2cfa62230ab1c9fd97bab9"
 
 
 def _guard_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
