@@ -1755,6 +1755,13 @@ def prepare_wechat(args: argparse.Namespace, reporter: Reporter) -> dict:
         stderr=subprocess.PIPE,
     )
     if direct_result.returncode == 0 and _is_adhoc_signed(app):
+        # 清除 quarantine 扩展属性，避免 Gatekeeper 因 ad-hoc 签名弹出安全警告
+        subprocess.run(
+            ["/usr/bin/xattr", "-cr", str(app)],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         subprocess.run(
             ["/usr/bin/open", str(app)],
             check=False,
@@ -1815,6 +1822,13 @@ def prepare_wechat(args: argparse.Namespace, reporter: Reporter) -> dict:
             next_action="report_wechat_resign_error",
             details={"authorization_prompt_count": 1},
         )
+    # 清除 quarantine 扩展属性，避免 Gatekeeper 因 ad-hoc 签名弹出安全警告
+    subprocess.run(
+        ["/usr/bin/xattr", "-cr", str(app)],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     subprocess.run(
         ["/usr/bin/open", str(app)],
         check=False,

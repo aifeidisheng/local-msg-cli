@@ -32,6 +32,8 @@ def _sign_wechat(app_path):
     if os.geteuid() != 0:
         command.insert(0, "sudo")
     subprocess.run(command, check=True)
+    # 清除 quarantine 扩展属性，避免 Gatekeeper 因 ad-hoc 签名弹出安全警告
+    subprocess.run(["/usr/bin/xattr", "-cr", app_path], check=False)
     print(f"[+] 微信重签名完成: {app_path}", flush=True)
 
 
