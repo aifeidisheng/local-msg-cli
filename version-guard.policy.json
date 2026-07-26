@@ -11,7 +11,7 @@
             },
             {
                 "platform": "darwin",
-                "min_version": "4.1.8",
+                "min_version": "4.1.5",
                 "max_version": "4.1.8"
             }
         ]
