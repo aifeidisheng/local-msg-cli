@@ -194,6 +194,7 @@ report, but they do not override `error_code`, `retry_command`, or `next_action`
 | `administrator_authorization_cancelled` | User cancelled the admin popup; ask to retry |
 | `management_cli_must_not_run_as_root` | You ran with `sudo` — remove it and retry |
 | `wechat_account_not_found` | Run installed `accounts`, select one returned `account_id` with installed `select-account`, then retry `initialize` |
+| `service_not_query_ready` | Execute the returned installed `repair` command, then re-check service status; do not invoke `launchctl` directly |
 | Other | Report `error_code` + `next_action` text to user |
 
 Do NOT invent recovery steps. Do NOT run internal scanner commands, move key
@@ -222,7 +223,7 @@ Do not translate it into a different subcommand or omit its flags.
 
 **Fallback (separate prepare-wechat):** If the user has already manually quit
 WeChat, you can use the standalone re-sign command. It validates the detected
-app's bundle identity, authorizes only a fixed `codesign` invocation, verifies
+app's bundle identity, authorizes one fixed cleanup-then-sign operation, verifies
 the new signature, and reopens WeChat:
 
 ```bash

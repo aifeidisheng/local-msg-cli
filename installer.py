@@ -462,36 +462,45 @@ def _preflight_macos_initialize(runtime: Path, layout: InstallLayout) -> dict:
 def _resign_wechat_app(app: Path, reporter: Reporter | None = None) -> int:
     """Core re-signing logic shared by prepare-wechat and initialize --confirm-resign.
 
-    Returns authorization_prompt_count (0 = direct codesign, 1 = osascript admin).
+    Returns authorization_prompt_count (0 = direct repair, 1 = osascript admin).
     Raises InstallerError on failure.
     """
-    # 先尝试非提权签名（用户是 app owner 时不需要 admin 授权弹窗）
+    repair_commands = [
+        ["/usr/bin/xattr", "-cr", str(app)],
+        ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)],
+    ]
+
+    # Extended attributes such as com.apple.provenance must be removed before
+    # codesign. The opposite order can fail even with valid authorization.
     if reporter:
         reporter.progress("signature", "尝试直接重签 WeChat（无需管理员授权）")
-    direct_result = subprocess.run(
-        ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)],
-        check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
-    if direct_result.returncode == 0 and _is_adhoc_signed(app):
-        subprocess.run(
-            ["/usr/bin/xattr", "-cr", str(app)],
-            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    direct_succeeded = True
+    for command in repair_commands:
+        direct_result = subprocess.run(
+            command,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
+        if direct_result.returncode != 0:
+            direct_succeeded = False
+            break
+    if direct_succeeded and _is_adhoc_signed(app):
         return 0
 
-    # 非 owner 或权限不足，回退到 osascript 管理员授权
+    # Protected app bundles require one administrator-authorized operation
+    # that preserves the same cleanup-before-signing order.
     if reporter:
         reporter.progress("signature", "通过 macOS 系统授权安全重签 WeChat")
-    codesign_command = shlex.join(
-        ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)]
-    )
+    authorized_command = " && ".join(shlex.join(command) for command in repair_commands)
     result = subprocess.run(
         [
             "/usr/bin/osascript",
             "-e", "on run argv",
             "-e", "do shell script (item 1 of argv) with administrator privileges",
             "-e", "end run",
-            codesign_command,
+            authorized_command,
         ],
         check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
@@ -515,10 +524,6 @@ def _resign_wechat_app(app: Path, reporter: Reporter | None = None) -> int:
             next_action="report_wechat_resign_error",
             details={"authorization_prompt_count": 1},
         )
-    subprocess.run(
-        ["/usr/bin/xattr", "-cr", str(app)],
-        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
     return 1
 
 
@@ -1805,25 +1810,38 @@ def initialize(args: argparse.Namespace, reporter: Reporter) -> dict:
         or service_payload.get("query_ready")
         or service_payload.get("status") == "ready"
     )
-    if not transport_ready:
-        reporter.progress("service", "初始化完成，启动现有 LaunchAgent")
-        _service_command(
-            runtime,
-            layout,
-            ["start"],
-            error_context="初始化完成，但 LaunchAgent 启动失败",
-        )
-    elif authorization_prompt_count > 0 or not service_payload.get("query_ready"):
-        # 本次提取了新密钥（authorization_prompt_count > 0）或服务状态显示未就绪时，
-        # 均需重启服务。service_status 基于文件系统判断 query_ready，但已运行的
-        # MCP 进程在启动时加载密钥到内存，不会自动感知新写入的 all_keys.json。
-        reporter.progress("service", "重启 MCP 服务以加载新解密数据")
-        _service_command(
-            runtime,
-            layout,
-            ["restart"],
-            error_context="MCP 服务重启失败",
-        )
+    try:
+        if not transport_ready:
+            reporter.progress("service", "初始化完成，启动现有 LaunchAgent")
+            _service_command(
+                runtime,
+                layout,
+                ["start"],
+                error_context="初始化完成，但 LaunchAgent 启动失败",
+            )
+        elif authorization_prompt_count > 0 or not service_payload.get("query_ready"):
+            # 本次提取了新密钥（authorization_prompt_count > 0）或服务状态显示未就绪时，
+            # 均需重启服务。service_status 基于文件系统判断 query_ready，但已运行的
+            # MCP 进程在启动时加载密钥到内存，不会自动感知新写入的 all_keys.json。
+            reporter.progress("service", "重启 MCP 服务以加载新解密数据")
+            _service_command(
+                runtime,
+                layout,
+                ["restart"],
+                error_context="MCP 服务重启失败",
+            )
+    except InstallerError as exc:
+        raise InstallerError(
+            "本机数据初始化已完成，但 MCP 常驻服务启动失败",
+            error_code="service_not_query_ready",
+            next_action="repair_launch_agent_and_recheck_service_status",
+            details={
+                "authorization_prompt_count": authorization_prompt_count,
+                "initialized": True,
+                "service": service_payload,
+                "service_error": str(exc),
+            },
+        ) from exc
     # 等待服务完全就绪（端口绑定需要数秒），最多轮询 20 秒
     deadline = time.monotonic() + 20
     service_payload = service_status(layout, runtime)
@@ -1832,6 +1850,17 @@ def initialize(args: argparse.Namespace, reporter: Reporter) -> dict:
         service_payload = service_status(layout, runtime)
     initialized = bool(service_payload.get("initialized"))
     query_ready = bool(service_payload.get("query_ready"))
+    if service_payload.get("status") in {"stopped", "stale_configuration"}:
+        raise InstallerError(
+            "本机数据初始化已完成，但 MCP 常驻服务未进入可查询状态",
+            error_code="service_not_query_ready",
+            next_action="repair_launch_agent_and_recheck_service_status",
+            details={
+                "authorization_prompt_count": authorization_prompt_count,
+                "initialized": initialized,
+                "service": service_payload,
+            },
+        )
     return {
         "ok": initialized,
         "command": "initialize",
@@ -2098,6 +2127,7 @@ def main(argv: list[str] | None = None) -> int:
             "wechat_not_adhoc_signed": "initialize --confirm-resign",
             "wechat_resign_confirmation_required": "prepare-wechat --confirm-resign",
             "wechat_account_not_found": "accounts",
+            "service_not_query_ready": "repair",
         }
         if exc.error_code == "wechat_must_quit_for_resign":
             retry_commands[exc.error_code] = (

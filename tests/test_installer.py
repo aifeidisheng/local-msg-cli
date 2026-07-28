@@ -628,6 +628,20 @@ class JsonCliTests(unittest.TestCase):
         self.assertEqual(payload["requires_user_action"], "quit_wechat")
         self.assertEqual(payload["retry_command"], "initialize --confirm-resign")
 
+    def test_service_recovery_uses_installed_repair_command(self):
+        error = installer.InstallerError(
+            "MCP 常驻服务启动失败",
+            error_code="service_not_query_ready",
+            next_action="repair_launch_agent_and_recheck_service_status",
+        )
+        with patch.object(installer, "initialize", side_effect=error), \
+             patch.object(installer.Reporter, "result") as result:
+            exit_code = installer.main(["initialize", "--json"])
+
+        self.assertEqual(exit_code, 1)
+        payload = result.call_args.args[0]
+        self.assertEqual(payload["retry_command"], "repair")
+
 
 class MacInitializeTests(unittest.TestCase):
     @staticmethod
@@ -704,7 +718,7 @@ class MacInitializeTests(unittest.TestCase):
             self.assertEqual(raised.exception.error_code, "wechat_must_quit_for_resign")
             self.assertEqual(run.call_count, 1)
 
-    def test_prepare_wechat_uses_one_fixed_authorized_codesign_command(self):
+    def test_prepare_wechat_cleans_attributes_and_signs_in_one_authorized_command(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             app = self._make_wechat_app(home)
@@ -712,10 +726,9 @@ class MacInitializeTests(unittest.TestCase):
             preflight = {"config": {}, "detected": {"app_path": str(app)}}
             stopped = CompletedProcess([], 1, "", "")
             official = CompletedProcess([], 0, "", "Authority=Apple Distribution\n")
-            direct_failed = CompletedProcess([], 1, "", "Operation not permitted")
+            direct_xattr_failed = CompletedProcess([], 1, "", "Operation not permitted")
             authorized = CompletedProcess([], 0, "", "")
             adhoc = CompletedProcess([], 0, "", "Signature=adhoc\n")
-            xattr = CompletedProcess([], 0, "", "")
             opened = CompletedProcess([], 0, "", "")
 
             with patch.object(installer, "_installed_runtime", return_value=home), \
@@ -726,10 +739,9 @@ class MacInitializeTests(unittest.TestCase):
                      side_effect=[
                          stopped,
                          official,
-                         direct_failed,
+                         direct_xattr_failed,
                          authorized,
                          adhoc,
-                         xattr,
                          opened,
                      ],
                  ) as run:
@@ -744,16 +756,48 @@ class MacInitializeTests(unittest.TestCase):
             command = authorization_calls[0].args[0][-1]
             self.assertEqual(
                 command,
-                shlex.join(
+                " && ".join(
                     [
-                        "/usr/bin/codesign",
-                        "--force",
-                        "--deep",
-                        "--sign",
-                        "-",
-                        str(app.resolve()),
+                        shlex.join(["/usr/bin/xattr", "-cr", str(app.resolve())]),
+                        shlex.join(
+                            [
+                                "/usr/bin/codesign",
+                                "--force",
+                                "--deep",
+                                "--sign",
+                                "-",
+                                str(app.resolve()),
+                            ]
+                        ),
                     ]
                 ),
+            )
+
+    def test_resign_cleans_attributes_before_direct_codesign(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self._make_wechat_app(Path(tmp))
+            succeeded = CompletedProcess([], 0, "", "")
+
+            with patch.object(installer.subprocess, "run", return_value=succeeded) as run, \
+                 patch.object(installer, "_is_adhoc_signed", return_value=True):
+                prompt_count = installer._resign_wechat_app(app)
+
+            self.assertEqual(prompt_count, 0)
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(
+                run.call_args_list[0].args[0],
+                ["/usr/bin/xattr", "-cr", str(app)],
+            )
+            self.assertEqual(
+                run.call_args_list[1].args[0],
+                [
+                    "/usr/bin/codesign",
+                    "--force",
+                    "--deep",
+                    "--sign",
+                    "-",
+                    str(app),
+                ],
             )
 
     def test_normalize_account_key_output_keeps_only_valid_account(self):
@@ -1236,6 +1280,92 @@ class MacInitializeTests(unittest.TestCase):
             )
             self.assertTrue(payload["query_ready"])
             self.assertEqual(payload["authorization_prompt_count"], 0)
+
+    def test_initialize_returns_repair_recovery_when_service_stays_stopped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            layout = installer.default_layout(home)
+            runtime = layout.runtime_dir / ("a" * 40)
+            runtime_python = runtime / ".venv" / "bin" / "python3"
+            runtime_python.parent.mkdir(parents=True)
+            runtime_python.write_text("", encoding="utf-8")
+            installer._atomic_write_json(
+                layout.manifest,
+                {"runtime_dir": str(runtime), "endpoint": "http://127.0.0.1:8765/mcp"},
+            )
+            args = argparse.Namespace(home=str(home), confirm_resign=False)
+            stopped = {
+                "ok": False,
+                "status": "stopped",
+                "transport_ready": False,
+                "initialized": True,
+                "query_ready": False,
+            }
+
+            with patch.object(installer.platform, "system", return_value="Darwin"), \
+                 patch.object(installer.os, "geteuid", return_value=501), \
+                 patch.object(installer, "_preflight_macos_initialize", return_value={"db_dir": None}), \
+                 patch.object(installer, "_extract_macos_keys", return_value=0), \
+                 patch.object(installer, "_run", return_value=CompletedProcess([], 0, "", "")), \
+                 patch.object(installer, "_service_command") as service_command, \
+                 patch.object(installer, "service_status", return_value=stopped), \
+                 patch.object(installer.time, "monotonic", side_effect=[0, 21]):
+                with self.assertRaises(installer.InstallerError) as raised:
+                    installer.initialize(args, installer.Reporter(json_mode=True))
+
+            self.assertEqual(raised.exception.error_code, "service_not_query_ready")
+            self.assertEqual(
+                raised.exception.next_action,
+                "repair_launch_agent_and_recheck_service_status",
+            )
+            self.assertEqual(raised.exception.details["service"]["status"], "stopped")
+            service_command.assert_called_once_with(
+                runtime,
+                layout,
+                ["start"],
+                error_context="初始化完成，但 LaunchAgent 启动失败",
+            )
+
+    def test_initialize_returns_repair_recovery_when_service_start_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            layout = installer.default_layout(home)
+            runtime = layout.runtime_dir / ("a" * 40)
+            runtime_python = runtime / ".venv" / "bin" / "python3"
+            runtime_python.parent.mkdir(parents=True)
+            runtime_python.write_text("", encoding="utf-8")
+            installer._atomic_write_json(
+                layout.manifest,
+                {"runtime_dir": str(runtime), "endpoint": "http://127.0.0.1:8765/mcp"},
+            )
+            args = argparse.Namespace(home=str(home), confirm_resign=False)
+            stopped = {
+                "ok": False,
+                "status": "stopped",
+                "transport_ready": False,
+                "initialized": True,
+                "query_ready": False,
+            }
+
+            with patch.object(installer.platform, "system", return_value="Darwin"), \
+                 patch.object(installer.os, "geteuid", return_value=501), \
+                 patch.object(installer, "_preflight_macos_initialize", return_value={"db_dir": None}), \
+                 patch.object(installer, "_extract_macos_keys", return_value=0), \
+                 patch.object(installer, "_run", return_value=CompletedProcess([], 0, "", "")), \
+                 patch.object(
+                     installer,
+                     "_service_command",
+                     side_effect=installer.InstallerError("launchctl bootstrap failed"),
+                 ), \
+                 patch.object(installer, "service_status", return_value=stopped):
+                with self.assertRaises(installer.InstallerError) as raised:
+                    installer.initialize(args, installer.Reporter(json_mode=True))
+
+            self.assertEqual(raised.exception.error_code, "service_not_query_ready")
+            self.assertEqual(
+                raised.exception.details["service_error"],
+                "launchctl bootstrap failed",
+            )
 
     def test_scanner_task_for_pid_failure_returns_stable_authorization_action(self):
         with tempfile.TemporaryDirectory() as tmp:

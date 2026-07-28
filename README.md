@@ -97,11 +97,13 @@ Git 网络操作会重试一次，并在持续低于 1 KiB/s 达 15 秒时快速
 
 不要在上述命令前添加 `sudo`。如果错误使用 `sudo`，管理 CLI 会拒绝运行并返回 `management_cli_must_not_run_as_root`。在系统弹窗中授权即可；扫描器会把 `all_keys.json` 直接写入独立 `data/` 目录，不需要打开终端执行额外扫描命令、移动密钥文件、修改目录所有者或重新加载 LaunchAgent。
 
-如果返回 `wechat_not_adhoc_signed`，Agent 应先向用户说明会修改 WeChat.app 的签名、自动退出并重新打开 WeChat，在取得明确确认后执行返回的 `retry_command`。当前版本返回 `initialize --confirm-resign`，Agent 应将它原样追加到已安装管理入口及 `--json` 之后。该命令会自动退出 WeChat，只允许重签版本门禁实际检测到、bundle id 正确的 WeChat.app，完成后复核签名、重新打开 WeChat 并继续初始化。不要预先要求用户登录或退出 WeChat，也不要让用户在终端手工运行 `codesign`、`xattr`、`killall` 等修复命令。
+如果返回 `wechat_not_adhoc_signed`，Agent 应先向用户说明会修改 WeChat.app 的签名、自动退出并重新打开 WeChat，在取得明确确认后执行返回的 `retry_command`。当前版本返回 `initialize --confirm-resign`，Agent 应将它原样追加到已安装管理入口及 `--json` 之后。该命令会自动退出 WeChat，只允许重签版本门禁实际检测到、bundle id 正确的 WeChat.app；重签时会在同一次系统管理员授权中先清理扩展属性、再执行固定参数签名，完成后复核签名、重新打开 WeChat 并继续初始化。不要预先要求用户登录或退出 WeChat，也不要让用户在终端手工运行 `codesign`、`xattr`、`killall` 等修复命令。
 
 多账号场景下，`initialize` 会在同一次密钥扫描中校验所有检测到的数据目录，并把唯一匹配当前 WeChat 进程的账号写入单一 `data/config.json`；已有密钥也会先在所有候选账号上本地验证，可在不弹授权窗口的情况下纠正旧配置。只有自动匹配仍无法恢复时，才使用已安装管理入口的 `accounts` 和 `select-account --account <account_id>`，不要手工编辑 config 或移动密钥文件。
 
 所有失败 JSON 同时包含可直接展示的 `user_message`；需要用户动作时还会包含 `requires_user_action`，可重试的管理操作包含带必要参数的 `retry_command`。Agent 每次只处理当前 JSON 指定的一项错误，执行 `retry_command` 时不得丢弃 `--confirm-resign` 等参数。`error_code` 和 `next_action` 仍是 Agent 判断恢复分支的稳定机器字段。不得根据日志自行猜测版本、quarantine、hardened runtime 或授权状态，也不得在没有 `version_not_allowed` 时建议升级 WeChat。
+
+如果初始化数据已经成功、但 LaunchAgent 启动命令失败，或等待后状态仍为 `stopped` / `stale_configuration`，管理入口会返回 `service_not_query_ready` 和 `retry_command: "repair"`。Agent 应执行该已安装管理命令修复并复核服务，不要手工调用 `launchctl load`。
 
 只有返回的 `service.status` 为 `ready`，才可以把 `http://127.0.0.1:8765/mcp` 注册到 mcporter。`waiting_for_wechat` 表示常驻机制正常，但 MCP 尚不可调用，不能提前报告接入完成。
 
