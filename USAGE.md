@@ -219,7 +219,7 @@ Claude 会调用 `get_chat_history(chat_name="██群", limit=500)` 获取消�
 
 ## Setup / 配置方法
 
-以下命令仅适用于源码开发。macOS 最终用户安装以及通过对话 Agent 安装时，请使用唯一正式入口 `./install.sh --initialize`；不要让 Agent 根据下面的源码命令自行拼装正式安装流程。
+以下命令仅适用于源码开发。macOS 最终用户安装以及通过对话 Agent 安装时，请在本机 Terminal 使用唯一正式入口 `./install.sh --initialize --terminal-authorize`；不要让 Agent 根据下面的源码命令自行拼装正式安装流程。
 
 ```bash
 # 1. 安装源码开发依赖

@@ -150,7 +150,7 @@ def _run(
 def _require_non_root_management() -> None:
     if platform.system().lower() == "darwin" and hasattr(os, "geteuid") and os.geteuid() == 0:
         raise InstallerError(
-            "不要使用 sudo 运行 wechat-decrypt-light；管理 CLI 会仅为密钥扫描器请求管理员权限",
+            "不要使用 sudo 运行 wechat-decrypt-light；请以普通用户运行 Terminal 授权命令",
             error_code="management_cli_must_not_run_as_root",
             next_action="run_the_same_command_without_sudo",
         )
@@ -459,78 +459,121 @@ def _preflight_macos_initialize(runtime: Path, layout: InstallLayout) -> dict:
     }
 
 
-def _resign_wechat_app(app: Path, reporter: Reporter | None = None) -> int:
-    """Core re-signing logic shared by prepare-wechat and initialize --confirm-resign.
-
-    Returns authorization_prompt_count (0 = direct repair, 1 = osascript admin).
-    Raises InstallerError on failure.
-    """
-    repair_commands = [
-        ["/usr/bin/xattr", "-cr", str(app)],
-        ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)],
-    ]
-
-    # Extended attributes such as com.apple.provenance must be removed before
-    # codesign. The opposite order can fail even with valid authorization.
-    if reporter:
-        reporter.progress("signature", "尝试直接重签 WeChat（无需管理员授权）")
-    direct_succeeded = True
-    for command in repair_commands:
-        direct_result = subprocess.run(
-            command,
-            check=False,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        if direct_result.returncode != 0:
-            direct_succeeded = False
-            break
-    if direct_succeeded and _is_adhoc_signed(app):
-        return 0
-
-    # Protected app bundles require one administrator-authorized operation
-    # that preserves the same cleanup-before-signing order.
-    if reporter:
-        reporter.progress("signature", "通过 macOS 系统授权安全重签 WeChat")
-    authorized_command = " && ".join(shlex.join(command) for command in repair_commands)
-    result = subprocess.run(
-        [
-            "/usr/bin/osascript",
-            "-e", "on run argv",
-            "-e", "do shell script (item 1 of argv) with administrator privileges",
-            "-e", "end run",
-            authorized_command,
-        ],
-        check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
-    if result.returncode != 0:
-        normalized = result.stderr.lower()
-        cancelled = "user canceled" in normalized or "(-128)" in normalized
+def _run_terminal_privileged(
+    command: list[str],
+    *,
+    reporter: Reporter | None,
+    step: str,
+    message: str,
+) -> subprocess.CompletedProcess[str]:
+    if not sys.stdin.isatty():
         raise InstallerError(
-            "用户取消了管理员授权" if cancelled else "WeChat 安全重签失败",
-            error_code="administrator_authorization_cancelled" if cancelled else "wechat_resign_failed",
-            next_action=(
-                "retry_prepare_wechat_and_approve_the_macos_administrator_prompt"
-                if cancelled
-                else "report_wechat_resign_error"
-            ),
-            details={"authorization_prompt_count": 1},
+            "该操作需要用户在本机 Terminal 中运行授权命令并输入系统密码",
+            error_code="terminal_authorization_required",
+            next_action="run_the_returned_terminal_command",
+            details={
+                "authorization_prompt_count": 0,
+                "authorization_method": "terminal_sudo",
+            },
         )
+    if reporter:
+        reporter.progress(step, message)
+    authorization = subprocess.run(["/usr/bin/sudo", "-v"], check=False)
+    if authorization.returncode != 0:
+        raise InstallerError(
+            "Terminal 管理员授权已取消或失败",
+            error_code="terminal_authorization_cancelled",
+            next_action="retry_the_returned_terminal_command",
+            details={
+                "authorization_prompt_count": 0,
+                "authorization_method": "terminal_sudo",
+                "exit_code": authorization.returncode,
+            },
+        )
+    result = subprocess.run(
+        ["/usr/bin/sudo", "-n", *command],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0 and (result.stderr or "").lstrip().lower().startswith("sudo:"):
+        raise InstallerError(
+            "Terminal sudo 未能执行受控高权限步骤",
+            error_code="terminal_privileged_action_failed",
+            next_action="retry_the_returned_terminal_command",
+            details={
+                "authorization_prompt_count": 0,
+                "authorization_method": "terminal_sudo",
+                "failed_stage": step,
+                "exit_code": result.returncode,
+            },
+        )
+    return result
+
+
+def _resign_wechat_app(
+    app: Path,
+    reporter: Reporter | None = None,
+    *,
+    terminal_authorize: bool = False,
+) -> int:
+    """Re-sign WeChat only through the fixed Terminal sudo helper."""
+    if not terminal_authorize:
+        raise InstallerError(
+            "WeChat 需要管理员权限重签；请确认后在本机 Terminal 中运行返回的授权命令",
+            error_code="terminal_authorization_required",
+            next_action="confirm_and_run_the_returned_terminal_command",
+            details={
+                "authorization_prompt_count": 0,
+                "authorization_method": "terminal_sudo",
+                "privileged_action": "resign_wechat",
+            },
+        )
+    commands = (
+        ("cleanup_extended_attributes", ["/usr/bin/xattr", "-cr", str(app)]),
+        ("codesign", ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)]),
+    )
+    for action_count, (stage, command) in enumerate(commands, start=1):
+        result = _run_terminal_privileged(
+            command,
+            reporter=reporter,
+            step="signature",
+            message="通过本机 Terminal 管理员授权安全重签 WeChat",
+        )
+        if result.returncode != 0:
+            system_error = (result.stderr or result.stdout).strip()
+            raise InstallerError(
+                f"WeChat 安全重签失败：{system_error or stage}",
+                error_code="wechat_resign_failed",
+                next_action="report_the_structured_error",
+                details={
+                    "authorization_prompt_count": 0,
+                    "authorization_method": "terminal_sudo",
+                    "terminal_privileged_action_count": action_count,
+                    "failed_stage": stage,
+                    "exit_code": result.returncode,
+                },
+            )
     if not _is_adhoc_signed(app):
         raise InstallerError(
-            "系统命令已完成，但 WeChat 签名校验未通过",
+            "Terminal 管理员操作已完成，但 WeChat 签名校验未通过",
             error_code="wechat_resign_verification_failed",
             next_action="report_wechat_resign_error",
-            details={"authorization_prompt_count": 1},
+            details={
+                "authorization_prompt_count": 0,
+                "authorization_method": "terminal_sudo",
+                "terminal_privileged_action_count": len(commands),
+            },
         )
-    return 1
+    return 2
 
 
 def _preflight_macos_scanner(
     preflight: dict,
     *,
     confirm_resign: bool = False,
+    terminal_authorize: bool = False,
     reporter: Reporter | None = None,
 ) -> int:
     """Validate process and signature before the one privileged scanner call."""
@@ -540,7 +583,7 @@ def _preflight_macos_scanner(
     # 先检查签名（不需要微信在运行），避免用户先登录再退出再登录的冗余流程
     if not app_path:
         raise InstallerError(
-            "无法确定当前微信程序路径；未弹出管理员授权窗口",
+            "无法确定当前微信程序路径；尚未调用 sudo",
             error_code="wechat_app_not_found",
             next_action="start_wechat_and_retry_initialize",
             details={"authorization_prompt_count": 0},
@@ -558,7 +601,7 @@ def _preflight_macos_scanner(
             # No confirmation yet: return one explicit recovery action. The
             # confirmed initialize retry can quit a running WeChat itself.
             raise InstallerError(
-                "微信尚未完成 ad-hoc 重签名；未弹出管理员授权窗口",
+                "微信尚未完成 ad-hoc 重签名；尚未调用 sudo",
                 error_code="wechat_not_adhoc_signed",
                 next_action="confirm_and_retry_initialize_with_resign",
                 details={
@@ -574,7 +617,7 @@ def _preflight_macos_scanner(
             if reporter:
                 reporter.progress("signature", "正在优雅退出微信以执行重签名")
             subprocess.run(
-                ["/usr/bin/osascript", "-e", 'tell application "WeChat" to quit'],
+                ["/usr/bin/pkill", "-TERM", "-x", process_name],
                 check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
             # 等待进程退出（最多 15 秒）
@@ -609,7 +652,11 @@ def _preflight_macos_scanner(
 
         # 执行重签名
         app = _validate_wechat_bundle(app_path, preflight.get("config", {}).get("home") or Path.home())
-        resign_authorization_prompt_count = _resign_wechat_app(app, reporter)
+        resign_action_count = _resign_wechat_app(
+            app,
+            reporter,
+            terminal_authorize=terminal_authorize,
+        )
 
         # 重签名完成，打开微信
         subprocess.run(
@@ -625,10 +672,10 @@ def _preflight_macos_scanner(
                 check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
             if check.returncode == 0 and check.stdout.strip():
-                return resign_authorization_prompt_count
+                return resign_action_count
         # 进程未出现，提示用户启动
         raise InstallerError(
-            "重签名完成，微信尚未启动；未弹出管理员授权窗口",
+            "重签名完成，微信尚未启动；尚未再次调用 sudo",
             error_code="wechat_not_running",
             next_action="start_wechat_and_retry_initialize",
             details={"authorization_prompt_count": 0},
@@ -646,7 +693,7 @@ def _preflight_macos_scanner(
     )
     if running.returncode != 0 or not running.stdout.strip():
         raise InstallerError(
-            "微信尚未运行；未弹出管理员授权窗口",
+            "微信尚未运行；尚未调用 sudo",
             error_code="wechat_not_running",
             next_action="start_wechat_and_retry_initialize",
             details={"authorization_prompt_count": 0},
@@ -832,6 +879,7 @@ def _extract_macos_keys(
     preflight: dict,
     *,
     confirm_resign: bool = False,
+    terminal_authorize: bool = False,
 ) -> int:
     keys_file = layout.data_dir / "all_keys.json"
     configured_db_dir = preflight.get("db_dir")
@@ -865,17 +913,18 @@ def _extract_macos_keys(
     layout.data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(layout.data_dir, 0o700)
 
-    # These checks require no privileges and must happen before osascript so a
-    # failed attempt never consumes an administrator prompt unnecessarily.
-    resign_prompt_count = int(
+    # These checks require no privileges and must happen before Terminal sudo
+    # authorization so a failed attempt never requests a password unnecessarily.
+    resign_action_count = int(
         _preflight_macos_scanner(
             preflight,
             confirm_resign=confirm_resign,
+            terminal_authorize=terminal_authorize,
             reporter=reporter,
         )
         or 0
     )
-    total_prompt_count = resign_prompt_count + 1
+    privileged_action_count = resign_action_count + 1
 
     # Pre-discover DB salts in user context (has FDA) to avoid requiring
     # Full Disk Access for the elevated scanner binary.
@@ -885,13 +934,12 @@ def _extract_macos_keys(
         account_dirs=accounts if len(accounts) > 1 else None,
     )
 
-    reporter.progress("keys", "通过 macOS 系统授权读取 WeChat 进程并提取数据库密钥")
     scanner_args = [
         str(scanner),
         "--output",
         str(keys_file),
         "--home",
-        str(Path.home().resolve()),
+        str(layout.home),
         "--owner-uid",
         str(os.getuid()),
         "--owner-gid",
@@ -899,25 +947,31 @@ def _extract_macos_keys(
     ]
     if db_salts_file:
         scanner_args.extend(["--db-salts", str(db_salts_file)])
-    scanner_command = shlex.join(scanner_args)
-    result = subprocess.run(
-        [
-            "/usr/bin/osascript",
-            "-e",
-            "on run argv",
-            "-e",
-            "do shell script (item 1 of argv) with administrator privileges",
-            "-e",
-            "end run",
-            scanner_command,
-        ],
-        cwd=str(runtime),
-        env=_runtime_env(runtime, layout),
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    try:
+        if not terminal_authorize:
+            raise InstallerError(
+                "密钥提取需要管理员权限；请在本机 Terminal 中运行返回的授权命令",
+                error_code="terminal_authorization_required",
+                next_action="run_the_returned_terminal_command",
+                details={
+                    "authorization_prompt_count": 0,
+                    "authorization_method": "terminal_sudo",
+                    "privileged_action": "scan_keys",
+                },
+            )
+        result = _run_terminal_privileged(
+            scanner_args,
+            reporter=reporter,
+            step="keys",
+            message="通过本机 Terminal 管理员授权读取 WeChat 进程并提取数据库密钥",
+        )
+    except InstallerError:
+        if db_salts_file:
+            try:
+                db_salts_file.unlink()
+            except OSError:
+                pass
+        raise
     # Clean up temporary salts file regardless of scanner outcome.
     if db_salts_file:
         try:
@@ -925,32 +979,33 @@ def _extract_macos_keys(
         except OSError:
             pass
     if result.returncode != 0:
-        # 扫描器的标准输出属于敏感操作过程信息，失败响应只使用 stderr。
-        details = result.stderr.strip()
-        normalized = details.lower()
+        # Scanner stdout can contain sensitive process-scan material. Only keep
+        # the fixed non-sensitive counters parsed from stdout/stderr.
         summary = _parse_scanner_summary("\n".join((result.stdout, result.stderr)))
-        summary["authorization_prompt_count"] = total_prompt_count
+        summary.update({
+            "authorization_prompt_count": 0,
+            "authorization_method": "terminal_sudo",
+            "terminal_privileged_action_count": privileged_action_count,
+            "failed_stage": "scan_keys",
+            "exit_code": result.returncode,
+        })
+        normalized_stderr = (result.stderr or "").lower()
         if result.returncode == 4:
             code, action, message = _empty_key_result(summary)
-            raise InstallerError(message, error_code=code, next_action=action, details=summary)
-        if "wechat not running" in normalized:
+        elif "wechat not running" in normalized_stderr:
             code = "wechat_not_running"
-            action = "start_and_sign_in_to_wechat_then_retry_initialize"
-        elif "task_for_pid failed" in normalized:
+            action = "start_and_sign_in_to_wechat_then_retry_the_returned_terminal_command"
+            message = "密钥扫描时未发现正在运行的 WeChat；请打开并登录后重试返回的 Terminal 命令。"
+        elif "task_for_pid failed" in normalized_stderr:
             code = "task_for_pid_failed"
-            action = "retry_initialize_and_approve_the_macos_administrator_prompt"
-        elif "user canceled" in normalized or "(-128)" in normalized:
-            code = "administrator_authorization_cancelled"
-            action = "retry_initialize_and_approve_the_macos_administrator_prompt"
-        elif "authorization" in normalized or "administrator" in normalized:
-            code = "administrator_authorization_required"
-            action = "retry_initialize_and_approve_the_macos_administrator_prompt"
+            action = "retry_the_returned_terminal_command_and_enter_the_administrator_password"
+            message = "macOS 拒绝读取 WeChat 进程；请重试返回的 Terminal 命令并完成 sudo 授权。"
         else:
             code = "key_extraction_failed"
-            action = "review_scanner_error_then_retry_initialize"
-        tail = "\n".join(details.splitlines()[-12:])
+            action = "report_the_structured_scanner_error_then_retry_the_returned_terminal_command"
+            message = "macOS 数据库密钥提取失败；请保留结构化错误并重试返回的 Terminal 命令。"
         raise InstallerError(
-            f"macOS 数据库密钥提取失败{': ' + tail if tail else ''}",
+            message,
             error_code=code,
             next_action=action,
             details=summary,
@@ -964,7 +1019,9 @@ def _extract_macos_keys(
             configured_db_dir = selected
     if not _valid_key_file(keys_file, configured_db_dir):
         summary = _parse_scanner_summary("\n".join((result.stdout, result.stderr)))
-        summary["authorization_prompt_count"] = total_prompt_count
+        summary["authorization_prompt_count"] = 0
+        summary["authorization_method"] = "terminal_sudo"
+        summary["terminal_privileged_action_count"] = privileged_action_count
         code, action, message = _empty_key_result(summary)
         raise InstallerError(
             message,
@@ -979,9 +1036,13 @@ def _extract_macos_keys(
             "密钥文件所有者异常；请勿使用 sudo 运行管理 CLI",
             error_code="key_file_ownership_invalid",
             next_action="report_key_file_ownership_error_without_privileged_repair",
-            details={"authorization_prompt_count": total_prompt_count},
+            details={
+                "authorization_prompt_count": 0,
+                "authorization_method": "terminal_sudo",
+                "terminal_privileged_action_count": privileged_action_count,
+            },
         ) from exc
-    return total_prompt_count
+    return privileged_action_count
 
 
 def _git(source: Path, *args: str, error_context: str) -> str:
@@ -1788,13 +1849,14 @@ def initialize(args: argparse.Namespace, reporter: Reporter) -> dict:
             "ownership",
             "已在普通用户上下文中修复旧版数据文件所有权",
         )
-    authorization_prompt_count = 0
+    privileged_action_count = 0
     if platform.system().lower() == "darwin":
         preflight = _preflight_macos_initialize(runtime, layout)
-        authorization_prompt_count = int(
+        privileged_action_count = int(
             _extract_macos_keys(
                 runtime, layout, reporter, preflight,
                 confirm_resign=getattr(args, "confirm_resign", False),
+                terminal_authorize=getattr(args, "terminal_authorize", False),
             )
         )
     reporter.progress("initialize", "执行密钥提取和本地数据库预解密")
@@ -1819,8 +1881,8 @@ def initialize(args: argparse.Namespace, reporter: Reporter) -> dict:
                 ["start"],
                 error_context="初始化完成，但 LaunchAgent 启动失败",
             )
-        elif authorization_prompt_count > 0 or not service_payload.get("query_ready"):
-            # 本次提取了新密钥（authorization_prompt_count > 0）或服务状态显示未就绪时，
+        elif privileged_action_count > 0 or not service_payload.get("query_ready"):
+            # 本次提取了新密钥或服务状态显示未就绪时，
             # 均需重启服务。service_status 基于文件系统判断 query_ready，但已运行的
             # MCP 进程在启动时加载密钥到内存，不会自动感知新写入的 all_keys.json。
             reporter.progress("service", "重启 MCP 服务以加载新解密数据")
@@ -1836,7 +1898,9 @@ def initialize(args: argparse.Namespace, reporter: Reporter) -> dict:
             error_code="service_not_query_ready",
             next_action="repair_launch_agent_and_recheck_service_status",
             details={
-                "authorization_prompt_count": authorization_prompt_count,
+                "authorization_prompt_count": 0,
+                "authorization_method": "terminal_sudo" if privileged_action_count else None,
+                "terminal_privileged_action_count": privileged_action_count,
                 "initialized": True,
                 "service": service_payload,
                 "service_error": str(exc),
@@ -1856,7 +1920,9 @@ def initialize(args: argparse.Namespace, reporter: Reporter) -> dict:
             error_code="service_not_query_ready",
             next_action="repair_launch_agent_and_recheck_service_status",
             details={
-                "authorization_prompt_count": authorization_prompt_count,
+                "authorization_prompt_count": 0,
+                "authorization_method": "terminal_sudo" if privileged_action_count else None,
+                "terminal_privileged_action_count": privileged_action_count,
                 "initialized": initialized,
                 "service": service_payload,
             },
@@ -1868,7 +1934,9 @@ def initialize(args: argparse.Namespace, reporter: Reporter) -> dict:
         "endpoint": manifest.get("endpoint"),
         "query_ready": query_ready,
         "service": service_payload,
-        "authorization_prompt_count": authorization_prompt_count,
+        "authorization_prompt_count": 0,
+        "authorization_method": "terminal_sudo" if privileged_action_count else None,
+        "terminal_privileged_action_count": privileged_action_count,
         "repaired_legacy_files": repaired_files,
         "account": (
             _public_account(preflight["db_dir"])
@@ -1927,7 +1995,11 @@ def prepare_wechat(args: argparse.Namespace, reporter: Reporter) -> dict:
             "next_step": "open_wechat_and_initialize",
         }
 
-    authorization_prompt_count = _resign_wechat_app(app, reporter)
+    terminal_privileged_action_count = _resign_wechat_app(
+        app,
+        reporter,
+        terminal_authorize=getattr(args, "terminal_authorize", False),
+    )
     subprocess.run(
         ["/usr/bin/open", str(app)],
         check=False,
@@ -1939,7 +2011,9 @@ def prepare_wechat(args: argparse.Namespace, reporter: Reporter) -> dict:
         "ok": True,
         "command": "prepare-wechat",
         "already_prepared": False,
-        "authorization_prompt_count": authorization_prompt_count,
+        "authorization_prompt_count": 0,
+        "authorization_method": "terminal_sudo",
+        "terminal_privileged_action_count": terminal_privileged_action_count,
         "next_step": "sign_in_to_wechat_then_initialize",
     }
 
@@ -2056,9 +2130,11 @@ def build_parser() -> argparse.ArgumentParser:
     initialize_parser = subparsers.add_parser("initialize", help="经用户确认后提取密钥并预解密本机数据库")
     initialize_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
     initialize_parser.add_argument("--confirm-resign", action="store_true", help="允许内联重签 WeChat 并自动退出/重启，避免额外 prepare-wechat 调用")
+    initialize_parser.add_argument("--terminal-authorize", action="store_true", help="从本机 Terminal 通过受控 sudo helper 完成高权限步骤")
     prepare_parser = subparsers.add_parser("prepare-wechat", help="经用户确认后安全重签 WeChat")
     prepare_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
     prepare_parser.add_argument("--confirm-resign", action="store_true", help="确认允许修改 WeChat.app 签名")
+    prepare_parser.add_argument("--terminal-authorize", action="store_true", help="从本机 Terminal 通过受控 sudo helper 完成重签")
     accounts_parser = subparsers.add_parser("accounts", help="列出检测到的微信账号数据目录")
     accounts_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
     select_account_parser = subparsers.add_parser("select-account", help="选择初始化使用的微信账号")
@@ -2067,7 +2143,21 @@ def build_parser() -> argparse.ArgumentParser:
     uninstall_parser = subparsers.add_parser("uninstall", help="卸载 LaunchAgent，默认保留全部数据和运行时")
     uninstall_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
     uninstall_parser.add_argument("--remove-runtime", action="store_true")
+
     return parser
+
+
+def _recovery_command(args: argparse.Namespace) -> str:
+    if args.command == "initialize":
+        return "initialize --confirm-resign --terminal-authorize"
+    if args.command == "prepare-wechat":
+        return "prepare-wechat --confirm-resign --terminal-authorize"
+    return args.command
+
+
+def _terminal_command(args: argparse.Namespace) -> str:
+    layout = default_layout(Path(args.home).expanduser() if args.home else None)
+    return shlex.join([str(layout.cli), "--json", *_recovery_command(args).split()])
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2107,33 +2197,42 @@ def main(argv: list[str] | None = None) -> int:
             payload["next_action"] = exc.next_action
         if exc.details:
             payload["details"] = exc.details
-            if "authorization_prompt_count" in exc.details:
-                payload["authorization_prompt_count"] = exc.details[
-                    "authorization_prompt_count"
-                ]
+            for detail_key in (
+                "authorization_prompt_count",
+                "authorization_method",
+                "terminal_privileged_action_count",
+            ):
+                if detail_key in exc.details:
+                    payload[detail_key] = exc.details[detail_key]
         user_actions = {
             "wechat_not_running": "open_wechat",
             "wechat_not_adhoc_signed": "confirm_wechat_resign",
             "wechat_resign_confirmation_required": "confirm_wechat_resign",
             "wechat_must_quit_for_resign": "quit_wechat",
-            "administrator_authorization_cancelled": "approve_administrator_prompt",
-            "task_for_pid_failed": "approve_administrator_prompt",
+            "task_for_pid_failed": "retry_terminal_authorization",
             "version_not_allowed": "check_for_supported_release",
             "wechat_account_not_found": "select_wechat_account",
+            "terminal_authorization_required": "run_terminal_authorization",
+            "terminal_authorization_cancelled": "retry_terminal_authorization",
+            "terminal_privileged_action_failed": "report_terminal_authorization_error",
         }
         if exc.error_code in user_actions:
             payload["requires_user_action"] = user_actions[exc.error_code]
         retry_commands = {
-            "wechat_not_adhoc_signed": "initialize --confirm-resign",
-            "wechat_resign_confirmation_required": "prepare-wechat --confirm-resign",
+            "wechat_not_adhoc_signed": "initialize --confirm-resign --terminal-authorize",
+            "wechat_resign_confirmation_required": "prepare-wechat --confirm-resign --terminal-authorize",
+            "terminal_authorization_required": _recovery_command(args),
+            "terminal_authorization_cancelled": _recovery_command(args),
+            "terminal_privileged_action_failed": _recovery_command(args),
+            "task_for_pid_failed": _recovery_command(args),
             "wechat_account_not_found": "accounts",
             "service_not_query_ready": "repair",
         }
         if exc.error_code == "wechat_must_quit_for_resign":
             retry_commands[exc.error_code] = (
-                "initialize --confirm-resign"
+                "initialize --confirm-resign --terminal-authorize"
                 if args.command == "initialize"
-                else "prepare-wechat --confirm-resign"
+                else "prepare-wechat --confirm-resign --terminal-authorize"
             )
         if exc.error_code in retry_commands:
             payload["retry_command"] = retry_commands[exc.error_code]
@@ -2141,7 +2240,21 @@ def main(argv: list[str] | None = None) -> int:
             retry_command = args.command
             if getattr(args, "confirm_resign", False):
                 retry_command += " --confirm-resign"
+            if getattr(args, "terminal_authorize", False):
+                retry_command += " --terminal-authorize"
             payload["retry_command"] = retry_command
+        if args.command in {"initialize", "prepare-wechat"} and (
+            exc.error_code in {
+                "wechat_not_adhoc_signed",
+                "wechat_resign_confirmation_required",
+                "terminal_authorization_required",
+                "terminal_authorization_cancelled",
+                "terminal_privileged_action_failed",
+                "task_for_pid_failed",
+            }
+            or getattr(args, "terminal_authorize", False)
+        ):
+            payload["terminal_command"] = _terminal_command(args)
         reporter.result(payload)
         return 1
     except Exception as exc:

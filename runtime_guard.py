@@ -11,7 +11,7 @@ from pathlib import Path
 
 DEVELOPMENT_MARKER = ".wechat-decrypt-development"
 INSTALLED_RUNTIME_MARKER = ".wechat-decrypt-installed-runtime"
-CANONICAL_INSTALL_COMMAND = "./install.sh --initialize"
+CANONICAL_INSTALL_COMMAND = "./install.sh --initialize --terminal-authorize"
 
 
 def execution_mode(root: Path | None = None) -> str | None:

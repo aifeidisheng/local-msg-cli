@@ -23,7 +23,10 @@ class RuntimeGuardTests(unittest.TestCase):
         payload = json.loads(stderr.getvalue())
         self.assertEqual(payload["error_code"], "end_user_must_use_installer")
         self.assertEqual(payload["command"], "main.py init")
-        self.assertEqual(payload["canonical_command"], "./install.sh --initialize")
+        self.assertEqual(
+            payload["canonical_command"],
+            "./install.sh --initialize --terminal-authorize",
+        )
 
     def test_development_marker_allows_source_commands(self):
         with tempfile.TemporaryDirectory() as tmp:

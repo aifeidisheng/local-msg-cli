@@ -7,13 +7,13 @@
 If you are an AI agent helping a user install/set up/connect this MCP:
 
 1. **Read `AGENTS.md` NOW** — it is the authoritative installation guide
-2. **The ONLY entry point is `install.sh --initialize`** — one command does everything
+2. **The ONLY entry point is `install.sh --initialize --terminal-authorize`** — one command does everything
 3. **Do NOT** follow any manual steps in this README (pip install, venv, compile, main.py, etc.)
 4. **Do NOT** `git clone` this repo just to obtain `install.sh` — download it directly via `curl`:
    ```bash
    curl -fsSL https://raw.githubusercontent.com/aifeidisheng/local-msg-cli/main/install.sh \
      -o /tmp/wechat-decrypt-install.sh && chmod +x /tmp/wechat-decrypt-install.sh
-   /tmp/wechat-decrypt-install.sh --initialize
+   /tmp/wechat-decrypt-install.sh --initialize --terminal-authorize
    ```
    `install.sh` is self-contained and will clone the verified `main` release internally.
 
@@ -42,7 +42,7 @@ If you are an AI agent helping a user install/set up/connect this MCP:
 - 允许区间内的 WeChat 版本正在运行
 - macOS 需 Xcode Command Line Tools: `xcode-select --install`
 - Windows 首次提取密钥需使用“以管理员身份运行”的 PowerShell
-- macOS 正式安装始终以普通用户运行管理 CLI，仅在密钥扫描时通过系统授权弹窗提权；Linux 读取进程内存需要 root 或 `CAP_SYS_PTRACE`
+- macOS 正式安装始终以普通用户运行管理 CLI；固定的重签和密钥扫描子命令才会在本机 Terminal 中通过 `sudo` 提权。不要把管理 CLI 本身放在 `sudo` 后运行。Linux 读取进程内存需要 root 或 `CAP_SYS_PTRACE`
 
 正式安装会创建项目自己的 Python 虚拟环境，不依赖 Desktop/AEJarvis 内置 Python。用于启动服务的运行目录、Python 环境和敏感数据目录也都独立于 Git 暂存目录。
 
@@ -55,13 +55,13 @@ If you are an AI agent helping a user install/set up/connect this MCP:
 从仓库任意工作树运行统一引导入口即可。引导脚本不会部署当前工作树；它会重新拉取并校验受保护的 `main`，然后交给正式安装器：
 
 ```bash
-./install.sh --initialize
+./install.sh --initialize --terminal-authorize
 ```
 
 如团队维护了经过确认的备用发布源，可显式传入；只有主源不可达时才会使用备用源：
 
 ```bash
-./install.sh --initialize \
+./install.sh --initialize --terminal-authorize \
   --repository 'https://github.com/aifeidisheng/local-msg-cli.git' \
   --fallback-repository 'https://gitee.com/aifeidisheng/local-msg-cli.git'
 ```
@@ -83,25 +83,26 @@ Git 网络操作会重试一次，并在持续低于 1 KiB/s 达 15 秒时快速
 - 记录安装 commit，支持检查和升级到 `main` 的最新提交。
 - 记录主发布源、备用发布源和本次实际使用源；更新时自动切换不可达的发布源。
 
-密钥提取和数据库预解密是安装器中的敏感步骤。Agent 必须先说明会出现 macOS 系统管理员授权弹窗并取得用户明确确认，然后直接执行上面的 `./install.sh --initialize`。安装器仅在内置 C 扫描器或用户另行明确确认的 WeChat 重签命令中请求管理员权限；管理 CLI、配置、缓存和 LaunchAgent 始终以当前登录用户运行。
+密钥提取和数据库预解密是安装器中的敏感步骤。Agent 必须先说明 Terminal 会请求 macOS 管理员密码，并取得用户明确确认；随后只向用户提供上面的官方安装命令。用户在本机 Terminal 运行该命令并输入密码。管理 CLI、Python 运行时、配置、缓存和 LaunchAgent 始终以当前登录用户运行，只有安装器固定生成的 `xattr`、`codesign` 和本地 C 扫描器子命令通过 `sudo` 执行。
 
-`initialize` 会先以普通用户权限完成数据目录、版本门禁、微信进程和 ad-hoc 签名预检；预检失败不会弹出授权窗口。普通 `initialize` 最多调用一次 `osascript`，该授权只覆盖扫描器本身；用户另行确认的 `initialize --confirm-resign` 可能为安全重签和密钥扫描分别显示一次系统授权。不要直接拼接额外的 `osascript` 命令，也不要为修改 `config.json`、`all_keys.json` 或文件所有权再次请求密码；旧流程遗留的单文件所有权问题会由管理 CLI 在普通用户上下文中原子修复。
+`initialize` 会先以普通用户权限完成数据目录、版本门禁、微信进程和 ad-hoc 签名预检；预检失败不会调用 `sudo`。`--terminal-authorize` 表示用户明确允许本次初始化执行固定的高权限步骤；`sudo -v` 可能请求一次密码，后续固定操作复用 Terminal 的短期凭据缓存。不要直接拼接额外的 `sudo`、`osascript`、`codesign`、`xattr` 或扫描器命令，也不要为修改 `config.json`、`all_keys.json` 或文件所有权再次请求密码；旧流程遗留的单文件所有权问题会由管理 CLI 在普通用户上下文中原子修复。成功或失败 JSON 中 `authorization_prompt_count` 固定为 `0`，实际授权方式和固定高权限步骤数分别见 `authorization_method` 与 `terminal_privileged_action_count`。
 
 安装入口的 stdout 始终只输出一条 JSON。失败结果中的 `phase` 标识失败阶段；当 `install_complete: true`、`initialize_complete: false` 且 `phase: "initialize"` 时，表示运行时和 LaunchAgent 已安装成功，不应重新下载或重装。按 `error_code` 完成恢复动作后，只重试下面的已安装管理入口即可。
 
 仅当初始化已经执行过但返回结构化错误，并且用户按 `error_code` 对应动作处理完问题后，才使用已安装的管理 CLI 重试初始化：
 
 ```bash
-"$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light" --json initialize
+"$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light" \
+  --json initialize --terminal-authorize
 ```
 
-不要在上述命令前添加 `sudo`。如果错误使用 `sudo`，管理 CLI 会拒绝运行并返回 `management_cli_must_not_run_as_root`。在系统弹窗中授权即可；扫描器会把 `all_keys.json` 直接写入独立 `data/` 目录，不需要打开终端执行额外扫描命令、移动密钥文件、修改目录所有者或重新加载 LaunchAgent。
+不要在上述命令前添加 `sudo`。如果错误使用 `sudo`，管理 CLI 会拒绝运行并返回 `management_cli_must_not_run_as_root`。只在该命令内部出现的 Terminal 密码提示中授权；扫描器会把 `all_keys.json` 直接写入独立 `data/` 目录，不需要执行额外扫描命令、移动密钥文件、修改目录所有者或重新加载 LaunchAgent。
 
-如果返回 `wechat_not_adhoc_signed`，Agent 应先向用户说明会修改 WeChat.app 的签名、自动退出并重新打开 WeChat，在取得明确确认后执行返回的 `retry_command`。当前版本返回 `initialize --confirm-resign`，Agent 应将它原样追加到已安装管理入口及 `--json` 之后。该命令会自动退出 WeChat，只允许重签版本门禁实际检测到、bundle id 正确的 WeChat.app；重签时会在同一次系统管理员授权中先清理扩展属性、再执行固定参数签名，完成后复核签名、重新打开 WeChat 并继续初始化。不要预先要求用户登录或退出 WeChat，也不要让用户在终端手工运行 `codesign`、`xattr`、`killall` 等修复命令。
+如果返回 `wechat_not_adhoc_signed`，Agent 应先向用户说明会修改 WeChat.app 的签名、自动退出并重新打开 WeChat，在取得明确确认后让用户运行 JSON 返回的 `terminal_command`。当前版本的 `retry_command` 为 `initialize --confirm-resign --terminal-authorize`。该命令只允许重签版本门禁实际检测到、bundle id 正确的 WeChat.app；重签时先清理扩展属性、再执行固定参数签名，完成后复核签名、重新打开 WeChat 并继续初始化。不要预先要求用户登录或退出 WeChat，也不要让用户手工拆出 `sudo codesign`、`xattr`、`pkill` 或扫描器命令。
 
-多账号场景下，`initialize` 会在同一次密钥扫描中校验所有检测到的数据目录，并把唯一匹配当前 WeChat 进程的账号写入单一 `data/config.json`；已有密钥也会先在所有候选账号上本地验证，可在不弹授权窗口的情况下纠正旧配置。只有自动匹配仍无法恢复时，才使用已安装管理入口的 `accounts` 和 `select-account --account <account_id>`，不要手工编辑 config 或移动密钥文件。
+多账号场景下，`initialize` 会在同一次密钥扫描中校验所有检测到的数据目录，并把唯一匹配当前 WeChat 进程的账号写入单一 `data/config.json`；已有密钥也会先在所有候选账号上本地验证，可在不调用 `sudo` 的情况下纠正旧配置。只有自动匹配仍无法恢复时，才使用已安装管理入口的 `accounts` 和 `select-account --account <account_id>`，不要手工编辑 config 或移动密钥文件。
 
-所有失败 JSON 同时包含可直接展示的 `user_message`；需要用户动作时还会包含 `requires_user_action`，可重试的管理操作包含带必要参数的 `retry_command`。Agent 每次只处理当前 JSON 指定的一项错误，执行 `retry_command` 时不得丢弃 `--confirm-resign` 等参数。`error_code` 和 `next_action` 仍是 Agent 判断恢复分支的稳定机器字段。不得根据日志自行猜测版本、quarantine、hardened runtime 或授权状态，也不得在没有 `version_not_allowed` 时建议升级 WeChat。
+所有失败 JSON 同时包含可直接展示的 `user_message`；需要用户动作时还会包含 `requires_user_action`，可重试的管理操作包含带必要参数的 `retry_command`。需要真实 TTY 时还会返回可复制到本机 Terminal 的完整 `terminal_command`。Agent 每次只处理当前 JSON 指定的一项错误，不得丢弃 `--confirm-resign` 或 `--terminal-authorize`。`error_code` 和 `next_action` 仍是 Agent 判断恢复分支的稳定机器字段。不得根据日志自行猜测版本、quarantine、hardened runtime 或授权状态，也不得在没有 `version_not_allowed` 时建议升级 WeChat。
 
 如果初始化数据已经成功、但 LaunchAgent 启动命令失败，或等待后状态仍为 `stopped` / `stale_configuration`，管理入口会返回 `service_not_query_ready` 和 `retry_command: "repair"`。Agent 应执行该已安装管理命令修复并复核服务，不要手工调用 `launchctl load`。
 
@@ -165,9 +166,9 @@ Windows 不需要重签名微信。首次执行 `init` 或 `decrypt` 时会读�
 
 ## macOS 源码调试
 
-<!-- AGENT: DO NOT execute these commands for end-user installation. Use ./install.sh --initialize instead. -->
+<!-- AGENT: DO NOT execute these commands for end-user installation. Use ./install.sh --initialize --terminal-authorize instead. -->
 
-> **仅限源码开发者。** Agent 为最终用户安装时禁止执行以下步骤，请使用 `./install.sh --initialize`。
+> **仅限源码开发者。** Agent 为最终用户安装时禁止执行以下步骤，请使用 `./install.sh --initialize --terminal-authorize`。
 
 ```bash
 # 1. 退出微信并重签名
@@ -183,7 +184,7 @@ sudo ./find_all_keys_macos --output "$PWD/all_keys.json"
 .venv/bin/python3 main.py init
 ```
 
-在源码调试模式下，`init` 成功后会自动安装指向当前工作树的常驻服务。正式安装应使用上面的 `./install.sh --initialize`，LaunchAgent 才会指向固定版本运行目录，不会依赖可能被删除的 Git 暂存目录。电脑登录后 launchd 自动加载服务；进程异常退出时会自动恢复。常驻服务不依赖终端窗口、shell 激活状态或 AEJarvis，也不需要 `sudo`。
+在源码调试模式下，`init` 成功后会自动安装指向当前工作树的常驻服务。正式安装应使用上面的 `./install.sh --initialize --terminal-authorize`，LaunchAgent 才会指向固定版本运行目录，不会依赖可能被删除的 Git 暂存目录。电脑登录后 launchd 自动加载服务；进程异常退出时会自动恢复。常驻服务不依赖终端窗口、shell 激活状态或 AEJarvis，也不需要 `sudo`。
 
 服务使用单实例锁防止手动启动和 LaunchAgent 同时运行两份 MCP。安装和状态检查会同时核对 LaunchAgent 路径、launchd 管理的 PID 与端口监听 PID；如果旧项目或其他进程占用了目标端口，安装器会拒绝自动终止该进程并报告 PID，避免把“其他服务正在监听”误判为安装成功。`status` 将“等待微信”视为正常状态，并会单独报告旧项目配置、端口冲突和恢复中等状态。
 

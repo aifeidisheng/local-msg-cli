@@ -12,6 +12,7 @@ readonly MANAGEMENT_CLI="$HOME/Library/Application Support/WeChatDecryptLight/bi
 repositories=("${WECHAT_DECRYPT_REPOSITORY:-$DEFAULT_REPOSITORY}")
 python_bin="${WECHAT_DECRYPT_PYTHON:-}"
 do_initialize=false
+terminal_authorize=false
 result_emitted=false
 
 command_name() {
@@ -50,7 +51,7 @@ trap 'unexpected_error "$LINENO"' ERR
 
 usage() {
     cat <<'EOF'
-Usage: ./install.sh --initialize [options]
+Usage: ./install.sh --initialize --terminal-authorize [options]
 
 Installs the protected main release into the user's independent runtime.
 This command is for end users; source development uses setup.sh --development.
@@ -60,8 +61,10 @@ Options:
   --fallback-repository URL  Confirmed fallback repository (repeatable)
   --python PATH              Python 3.10+ used to create the runtime environment
   --initialize               Canonical end-user flow: install and immediately initialize
-                             (extracts DB keys via macOS admin prompt, then
+                             (extracts DB keys via controlled Terminal authorization, then
                              pre-decrypts databases so MCP is query-ready)
+  --terminal-authorize       Allow the user-run Terminal process to invoke the fixed
+                             sudo helpers required for re-signing and key extraction
   -h, --help                 Show this help
 EOF
 }
@@ -99,6 +102,10 @@ while (($#)); do
             do_initialize=true
             shift
             ;;
+        --terminal-authorize)
+            terminal_authorize=true
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -111,6 +118,11 @@ while (($#)); do
             ;;
     esac
 done
+
+if [[ "$terminal_authorize" == true && "$do_initialize" != true ]]; then
+    emit_error_json "invalid_arguments" "arguments" "--terminal-authorize requires --initialize." "correct_the_install_arguments"
+    exit 2
+fi
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
     echo "The independent end-user installer currently supports macOS only." >&2
@@ -252,8 +264,14 @@ if [[ "$do_initialize" != true ]]; then
 fi
 
 # Chain initialize: extract keys + pre-decrypt databases
-echo "[initialize] Running initialization (macOS admin prompt will appear)..." >&2
-if init_output=$("$MANAGEMENT_CLI" --json initialize); then
+init_args=(--json initialize)
+if [[ "$terminal_authorize" == true ]]; then
+    init_args+=(--confirm-resign --terminal-authorize)
+    echo "[initialize] Running initialization (Terminal may request the macOS administrator password)..." >&2
+else
+    echo "[initialize] Running unprivileged initialization preflight..." >&2
+fi
+if init_output=$("$MANAGEMENT_CLI" "${init_args[@]}"); then
     init_exit=0
 else
     init_exit=$?
@@ -282,12 +300,14 @@ combined = {
     'install': install_data,
     'initialize': init_data,
     'authorization_prompt_count': init_data.get('authorization_prompt_count', 0),
+    'authorization_method': init_data.get('authorization_method'),
+    'terminal_privileged_action_count': init_data.get('terminal_privileged_action_count', 0),
     'query_ready': init_data.get('query_ready', False),
     'endpoint': init_data.get('endpoint') or install_data.get('installation', {}).get('endpoint'),
 }
 if not init_data.get('ok', False):
     for key in ('error_code', 'error', 'user_message', 'requires_user_action',
-                'retry_command', 'next_action', 'details'):
+                'retry_command', 'terminal_command', 'next_action', 'details'):
         if key in init_data:
             combined[key] = init_data[key]
 if combined['query_ready']:

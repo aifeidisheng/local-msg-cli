@@ -34,13 +34,14 @@ or debug this repository's source code.
 
 ### Step 1 — Install + Initialize (the ONLY entry point)
 
-Ask the user for **explicit confirmation** (a macOS admin authorization
-prompt will appear), then run:
+Explain that the official installer will request the macOS administrator
+password in the user's local Terminal, ask for **explicit confirmation**, then
+give the user this single official Terminal command:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aifeidisheng/local-msg-cli/main/install.sh \
   -o /tmp/wechat-decrypt-install.sh && chmod +x /tmp/wechat-decrypt-install.sh
-/tmp/wechat-decrypt-install.sh --initialize
+/tmp/wechat-decrypt-install.sh --initialize --terminal-authorize
 ```
 
 #### Optional: pre-cache acceleration
@@ -56,7 +57,7 @@ pip download -d /tmp/whl-cache \
   pycryptodome==3.23.0 zstandard==0.25.0 fastmcp==2.14.7 uvicorn==0.51.0
 
 # 2. Run install with pre-cached wheels (pip finds local files first)
-PIP_FIND_LINKS=/tmp/whl-cache /tmp/wechat-decrypt-install.sh --initialize
+PIP_FIND_LINKS=/tmp/whl-cache /tmp/wechat-decrypt-install.sh --initialize --terminal-authorize
 ```
 
 When `PIP_FIND_LINKS` is set, both `uv` (if available) and `pip` will
@@ -74,7 +75,7 @@ If running from an existing working tree (source-development context), the
 relative form also works:
 
 ```bash
-./install.sh --initialize
+./install.sh --initialize --terminal-authorize
 ```
 
 This single command does everything:
@@ -82,7 +83,7 @@ This single command does everything:
 2. Creates an isolated venv and installs dependencies
 3. Compiles and signs the macOS key scanner
 4. Installs a LaunchAgent (auto-start on login)
-5. Extracts DB keys via macOS system authorization (admin popup)
+5. Uses fixed Terminal `sudo` subcommands to re-sign WeChat when confirmed and extract DB keys
 6. Pre-decrypts databases so MCP becomes `query_ready`
 
 The command outputs a single JSON line to stdout. Check:
@@ -92,10 +93,10 @@ The command outputs a single JSON line to stdout. Check:
   installed management CLI instead of rerunning the full installer
 - `ok: false` → see Error Recovery below
 
-**Important UX rule**: Do NOT output manual commands for the user to run
-in a terminal. Execute everything directly. User interaction is limited to
-confirming sensitive actions, quitting/signing in to WeChat when requested,
-and clicking "OK" on the macOS admin authorization popup.
+**Important UX rule**: The official installer or returned `terminal_command` is
+the only command the user should run manually. Password entry must happen only
+in the user's local Terminal `sudo` prompt. Do not expose or ask the user to run
+the underlying `xattr`, `codesign`, scanner, `pkill`, or other repair commands.
 
 Do not ask the user to prepare speculative prerequisites. In particular, do
 not ask them to start, sign in to, quit, upgrade, or reconfigure WeChat until
@@ -110,13 +111,14 @@ running status) and returns the appropriate structured error. Handle errors
 sequentially as they arise — this avoids unnecessary login → quit → login
 cycles when re-signing is needed.
 
-Before that popup, `initialize` performs all unprivileged checks (data path,
-version policy, running process, and ad-hoc signature). A normal `initialize`
-attempt invokes `osascript` at most once for key scanning. A separately
-confirmed `initialize --confirm-resign` retry may show one authorization prompt
-for re-signing and one for key scanning. If it returns a structured error,
-follow only the matching recovery row below; never wrap a repair command in a
-new `osascript` authorization request.
+Before `sudo`, `initialize` performs all unprivileged checks (data path, version
+policy, running process, and ad-hoc signature). `--terminal-authorize` is the
+user's explicit authorization for the installer's fixed privileged steps.
+`sudo -v` may request the password once and subsequent fixed steps reuse the
+short-lived Terminal credential cache. The management CLI and Python runtime
+must remain unprivileged. If the command returns a structured error, follow
+only the matching recovery row below and use its `terminal_command` when one is
+present.
 
 If `--initialize` is omitted, install.sh only does steps 1-4 and outputs
 `next_step: "run_init_with_user_confirmation"`.
@@ -133,8 +135,8 @@ Do NOT perform any of the following during end-user installation:
 - `setup.sh` / `setup.py` / `service.py install`
 - Any `sudo` command prefixed to the management CLI
 - Any direct `osascript ... with administrator privileges` command
-- Any direct `sudo codesign ... WeChat.app` command; use the installed
-  `prepare-wechat` management command after explicit user confirmation
+- Any direct `sudo codesign ... WeChat.app` command; use only the complete
+  installer-provided `terminal_command` after explicit user confirmation
 - Any direct `codesign`, `xattr`, `killall`, or hand-built app repair command,
   whether executed by the Agent or handed to the user
 - `chown` / privileged writes for `config.json` or `all_keys.json`
@@ -172,9 +174,11 @@ Use ONLY the JSON response fields to decide next steps:
    `requires_user_action`, `retry_command`, `next_action`, and `details`.
 2. Handle exactly one returned error at a time. Tell the user the concrete
    requested action and why it is needed; do not speculate about later steps.
-3. After the requested action or confirmation, invoke the installed management
+3. After the requested action or confirmation, use the returned
+   `terminal_command` when present. Otherwise invoke the installed management
    CLI with the returned `retry_command`. Arguments such as `--confirm-resign`
-   are part of the command contract and must not be dropped.
+   and `--terminal-authorize` are part of the command contract and must not be
+   dropped.
 4. If a field is missing or an error is unknown, report `error_code` and
    `next_action`; do not infer a repair from logs or system attributes.
 
@@ -187,11 +191,13 @@ report, but they do not override `error_code`, `retry_command`, or `next_action`
 | `error_code` | Action |
 |---|---|
 | `wechat_not_running` | Ask user to open WeChat and retry `initialize` |
-| `wechat_not_adhoc_signed` | Ask the user to confirm re-signing, then execute the returned `retry_command` (current releases return `initialize --confirm-resign`). It auto-quits WeChat, safely re-signs, reopens it, and continues initialization. |
-| `wechat_must_quit_for_resign` | Ask the user to quit WeChat, then execute the returned `retry_command` unchanged. |
+| `wechat_not_adhoc_signed` | Ask the user to confirm re-signing, then ask them to run the returned `terminal_command` (current `retry_command` is `initialize --confirm-resign --terminal-authorize`). It auto-quits WeChat, safely re-signs, reopens it, and continues initialization. |
+| `wechat_must_quit_for_resign` | Ask the user to quit WeChat, then use the returned `terminal_command` when present; otherwise execute `retry_command` unchanged. |
 | `version_not_allowed` | Report the version mismatch; do NOT modify policy files |
-| `task_for_pid_failed` | The system auth prompt was denied; ask user to retry and approve |
-| `administrator_authorization_cancelled` | User cancelled the admin popup; ask to retry |
+| `task_for_pid_failed` | Ask the user to retry the returned Terminal command and complete `sudo` authorization |
+| `terminal_authorization_required` | The command lacks a real TTY; ask the user to run the returned `terminal_command` locally |
+| `terminal_authorization_cancelled` | The Terminal `sudo` authorization failed or was cancelled; retry the returned command |
+| `terminal_privileged_action_failed` | Report the structured failed stage and retry only the returned command |
 | `management_cli_must_not_run_as_root` | You ran with `sudo` — remove it and retry |
 | `wechat_account_not_found` | Run installed `accounts`, select one returned `account_id` with installed `select-account`, then retry `initialize` |
 | `service_not_query_ready` | Execute the returned installed `repair` command, then re-check service status; do not invoke `launchctl` directly |
@@ -203,23 +209,26 @@ files, change directory ownership, or modify policy files.
 To retry initialization after fixing the issue:
 
 ```bash
-"$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light" --json initialize
+"$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light" \
+  --json initialize --terminal-authorize
 ```
 
 **Preferred for first-time install (single command, no manual quit):**
-After user confirms re-signing, run `initialize --confirm-resign`. This
-auto-quits WeChat via AppleScript, re-signs inline, reopens WeChat, waits for
+After user confirms re-signing, ask them to run the returned Terminal command
+for `initialize --confirm-resign --terminal-authorize`. This auto-quits WeChat,
+re-signs inline, reopens WeChat, waits for
 the process, and then continues directly to key extraction — eliminating the
 extra prepare-wechat round-trip and the "login → quit → login again" cycle:
 
 ```bash
 "$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light" \
-  --json initialize --confirm-resign
+  --json initialize --confirm-resign --terminal-authorize
 ```
 
-For `retry_command`, prepend only the installed management CLI path and
-`--json`. For example, `initialize --confirm-resign` becomes the command above.
-Do not translate it into a different subcommand or omit its flags.
+Prefer the exact `terminal_command` returned by the JSON. If only a
+`retry_command` is available, prepend the installed management CLI path and
+`--json` without translating the subcommand or omitting its flags. Never prefix
+the management CLI itself with `sudo`.
 
 **Fallback (separate prepare-wechat):** If the user has already manually quit
 WeChat, you can use the standalone re-sign command. It validates the detected
@@ -228,7 +237,7 @@ the new signature, and reopens WeChat:
 
 ```bash
 "$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light" \
-  --json prepare-wechat --confirm-resign
+  --json prepare-wechat --confirm-resign --terminal-authorize
 ```
 
 For account recovery, use the installed `accounts` and `select-account`

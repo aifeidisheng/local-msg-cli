@@ -2,7 +2,6 @@ import argparse
 import json
 import os
 import plistlib
-import shlex
 import tempfile
 import unittest
 from pathlib import Path
@@ -568,6 +567,26 @@ class JsonCliTests(unittest.TestCase):
         payload = result.call_args.args[0]
         self.assertEqual(payload["authorization_prompt_count"], 0)
 
+    def test_management_cli_lifts_terminal_authorization_details(self):
+        error = installer.InstallerError(
+            "authorization needed",
+            error_code="terminal_authorization_required",
+            details={
+                "authorization_prompt_count": 0,
+                "authorization_method": "terminal_sudo",
+                "terminal_privileged_action_count": 1,
+            },
+        )
+        with patch.object(installer, "initialize", side_effect=error), \
+             patch.object(installer.Reporter, "result") as result:
+            exit_code = installer.main(["initialize", "--json"])
+
+        self.assertEqual(exit_code, 1)
+        payload = result.call_args.args[0]
+        self.assertEqual(payload["authorization_method"], "terminal_sudo")
+        self.assertEqual(payload["terminal_privileged_action_count"], 1)
+        self.assertIn("--terminal-authorize", payload["terminal_command"])
+
     def test_management_cli_adds_user_recovery_fields(self):
         error = installer.InstallerError(
             "微信尚未运行",
@@ -597,21 +616,34 @@ class JsonCliTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         payload = result.call_args.args[0]
         self.assertEqual(payload["requires_user_action"], "confirm_wechat_resign")
-        self.assertEqual(payload["retry_command"], "initialize --confirm-resign")
+        self.assertEqual(
+            payload["retry_command"],
+            "initialize --confirm-resign --terminal-authorize",
+        )
+        self.assertIn("--terminal-authorize", payload["terminal_command"])
 
-    def test_confirmed_initialize_retry_preserves_confirmation_flag(self):
+    def test_terminal_authorization_retry_preserves_required_flags(self):
         error = installer.InstallerError(
-            "用户取消了管理员授权",
-            error_code="administrator_authorization_cancelled",
-            next_action="retry_initialize_and_approve_the_macos_administrator_prompt",
+            "Terminal 管理员授权已取消",
+            error_code="terminal_authorization_cancelled",
+            next_action="retry_the_returned_terminal_command",
         )
         with patch.object(installer, "initialize", side_effect=error), \
              patch.object(installer.Reporter, "result") as result:
-            exit_code = installer.main(["initialize", "--confirm-resign", "--json"])
+            exit_code = installer.main([
+                "initialize",
+                "--confirm-resign",
+                "--terminal-authorize",
+                "--json",
+            ])
 
         self.assertEqual(exit_code, 1)
         payload = result.call_args.args[0]
-        self.assertEqual(payload["retry_command"], "initialize --confirm-resign")
+        self.assertEqual(
+            payload["retry_command"],
+            "initialize --confirm-resign --terminal-authorize",
+        )
+        self.assertEqual(payload["requires_user_action"], "retry_terminal_authorization")
 
     def test_must_quit_retries_the_same_confirmed_initialize_command(self):
         error = installer.InstallerError(
@@ -621,12 +653,20 @@ class JsonCliTests(unittest.TestCase):
         )
         with patch.object(installer, "initialize", side_effect=error), \
              patch.object(installer.Reporter, "result") as result:
-            exit_code = installer.main(["initialize", "--confirm-resign", "--json"])
+            exit_code = installer.main([
+                "initialize",
+                "--confirm-resign",
+                "--terminal-authorize",
+                "--json",
+            ])
 
         self.assertEqual(exit_code, 1)
         payload = result.call_args.args[0]
         self.assertEqual(payload["requires_user_action"], "quit_wechat")
-        self.assertEqual(payload["retry_command"], "initialize --confirm-resign")
+        self.assertEqual(
+            payload["retry_command"],
+            "initialize --confirm-resign --terminal-authorize",
+        )
 
     def test_service_recovery_uses_installed_repair_command(self):
         error = installer.InstallerError(
@@ -718,15 +758,17 @@ class MacInitializeTests(unittest.TestCase):
             self.assertEqual(raised.exception.error_code, "wechat_must_quit_for_resign")
             self.assertEqual(run.call_count, 1)
 
-    def test_prepare_wechat_cleans_attributes_and_signs_in_one_authorized_command(self):
+    def test_prepare_wechat_uses_fixed_terminal_sudo_commands(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             app = self._make_wechat_app(home)
-            args = argparse.Namespace(home=str(home), confirm_resign=True)
+            args = argparse.Namespace(
+                home=str(home), confirm_resign=True, terminal_authorize=True
+            )
             preflight = {"config": {}, "detected": {"app_path": str(app)}}
             stopped = CompletedProcess([], 1, "", "")
             official = CompletedProcess([], 0, "", "Authority=Apple Distribution\n")
-            direct_xattr_failed = CompletedProcess([], 1, "", "Operation not permitted")
+            sudo_authorized = CompletedProcess([], 0, "", "")
             authorized = CompletedProcess([], 0, "", "")
             adhoc = CompletedProcess([], 0, "", "Signature=adhoc\n")
             opened = CompletedProcess([], 0, "", "")
@@ -739,58 +781,59 @@ class MacInitializeTests(unittest.TestCase):
                      side_effect=[
                          stopped,
                          official,
-                         direct_xattr_failed,
+                         sudo_authorized,
+                         authorized,
+                         sudo_authorized,
                          authorized,
                          adhoc,
                          opened,
                      ],
-                 ) as run:
+                 ) as run, \
+                 patch.object(installer.sys.stdin, "isatty", return_value=True):
                 payload = installer.prepare_wechat(args, installer.Reporter(json_mode=True))
 
             self.assertTrue(payload["ok"])
-            self.assertEqual(payload["authorization_prompt_count"], 1)
-            authorization_calls = [
-                call for call in run.call_args_list if call.args[0][0] == "/usr/bin/osascript"
-            ]
-            self.assertEqual(len(authorization_calls), 1)
-            command = authorization_calls[0].args[0][-1]
+            self.assertEqual(payload["authorization_prompt_count"], 0)
+            self.assertEqual(payload["authorization_method"], "terminal_sudo")
+            self.assertEqual(payload["terminal_privileged_action_count"], 2)
+            commands = [call.args[0] for call in run.call_args_list]
+            self.assertNotIn("/usr/bin/osascript", [command[0] for command in commands])
             self.assertEqual(
-                command,
-                " && ".join(
+                commands[2:6],
+                [
+                    ["/usr/bin/sudo", "-v"],
+                    ["/usr/bin/sudo", "-n", "/usr/bin/xattr", "-cr", str(app.resolve())],
+                    ["/usr/bin/sudo", "-v"],
                     [
-                        shlex.join(["/usr/bin/xattr", "-cr", str(app.resolve())]),
-                        shlex.join(
-                            [
-                                "/usr/bin/codesign",
-                                "--force",
-                                "--deep",
-                                "--sign",
-                                "-",
-                                str(app.resolve()),
-                            ]
-                        ),
-                    ]
-                ),
+                        "/usr/bin/sudo", "-n", "/usr/bin/codesign",
+                        "--force", "--deep", "--sign", "-", str(app.resolve()),
+                    ],
+                ],
             )
 
-    def test_resign_cleans_attributes_before_direct_codesign(self):
+    def test_resign_cleans_attributes_before_terminal_codesign(self):
         with tempfile.TemporaryDirectory() as tmp:
             app = self._make_wechat_app(Path(tmp))
             succeeded = CompletedProcess([], 0, "", "")
 
             with patch.object(installer.subprocess, "run", return_value=succeeded) as run, \
-                 patch.object(installer, "_is_adhoc_signed", return_value=True):
-                prompt_count = installer._resign_wechat_app(app)
+                 patch.object(installer, "_is_adhoc_signed", return_value=True), \
+                 patch.object(installer.sys.stdin, "isatty", return_value=True):
+                action_count = installer._resign_wechat_app(
+                    app, terminal_authorize=True
+                )
 
-            self.assertEqual(prompt_count, 0)
-            self.assertEqual(run.call_count, 2)
-            self.assertEqual(
-                run.call_args_list[0].args[0],
-                ["/usr/bin/xattr", "-cr", str(app)],
-            )
+            self.assertEqual(action_count, 2)
+            self.assertEqual(run.call_count, 4)
             self.assertEqual(
                 run.call_args_list[1].args[0],
+                ["/usr/bin/sudo", "-n", "/usr/bin/xattr", "-cr", str(app)],
+            )
+            self.assertEqual(
+                run.call_args_list[3].args[0],
                 [
+                    "/usr/bin/sudo",
+                    "-n",
                     "/usr/bin/codesign",
                     "--force",
                     "--deep",
@@ -1073,10 +1116,10 @@ class MacInitializeTests(unittest.TestCase):
         commands = [call.args[0][0] for call in run.call_args_list]
         self.assertEqual(
             commands,
-            ["/usr/bin/pgrep", "/usr/bin/osascript", "/usr/bin/pkill", "/usr/bin/pgrep"],
+            ["/usr/bin/pgrep", "/usr/bin/pkill", "/usr/bin/pkill", "/usr/bin/pgrep"],
         )
 
-    def test_key_extraction_counts_resign_and_scanner_authorization_prompts(self):
+    def test_key_extraction_counts_terminal_privileged_actions(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             runtime = base / "runtime"
@@ -1092,19 +1135,20 @@ class MacInitializeTests(unittest.TestCase):
                 keys_file.write_text("{}\n", encoding="utf-8")
                 return success
 
-            with patch.object(installer, "_preflight_macos_scanner", return_value=1), \
+            with patch.object(installer, "_preflight_macos_scanner", return_value=2), \
                  patch.object(installer, "_discover_db_salts", return_value=None), \
-                 patch.object(installer.subprocess, "run", side_effect=run_scanner), \
+                 patch.object(installer, "_run_terminal_privileged", side_effect=run_scanner), \
                  patch.object(installer, "_valid_key_file", side_effect=[False, True]):
-                prompt_count = installer._extract_macos_keys(
+                action_count = installer._extract_macos_keys(
                     runtime,
                     layout,
                     installer.Reporter(json_mode=True),
                     {"db_dir": None},
                     confirm_resign=True,
+                    terminal_authorize=True,
                 )
 
-        self.assertEqual(prompt_count, 2)
+        self.assertEqual(action_count, 3)
 
     def test_scanner_summary_does_not_include_key_material(self):
         summary = installer._parse_scanner_summary(
@@ -1142,10 +1186,11 @@ class MacInitializeTests(unittest.TestCase):
             failed = CompletedProcess([], 0, output, "")
 
             with patch.object(installer, "_preflight_macos_scanner"), \
-                 patch.object(installer.subprocess, "run", return_value=failed):
+                 patch.object(installer, "_run_terminal_privileged", return_value=failed):
                 with self.assertRaises(installer.InstallerError) as raised:
                     installer._extract_macos_keys(
-                        runtime, layout, installer.Reporter(json_mode=True), {}
+                        runtime, layout, installer.Reporter(json_mode=True), {},
+                        terminal_authorize=True,
                     )
 
         self.assertEqual(raised.exception.error_code, "wechat_key_database_mismatch")
@@ -1156,7 +1201,7 @@ class MacInitializeTests(unittest.TestCase):
         self.assertEqual(raised.exception.details["encrypted_db_count"], 20)
         self.assertEqual(raised.exception.details["matched_key_count"], 0)
 
-    def test_scanner_uses_macos_authorization_and_writes_to_data_directory(self):
+    def test_scanner_uses_fixed_terminal_sudo_command_and_data_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             runtime = base / "runtime"
@@ -1175,21 +1220,22 @@ class MacInitializeTests(unittest.TestCase):
                 return CompletedProcess(command, 0, "Saved\n", "")
 
             with patch.object(installer, "_preflight_macos_scanner", return_value=0), \
-                 patch.object(installer.subprocess, "run", side_effect=fake_run) as run:
-                prompted = installer._extract_macos_keys(
-                    runtime, layout, installer.Reporter(json_mode=True), {}
+                 patch.object(installer.subprocess, "run", side_effect=fake_run) as run, \
+                 patch.object(installer.sys.stdin, "isatty", return_value=True):
+                action_count = installer._extract_macos_keys(
+                    runtime, layout, installer.Reporter(json_mode=True), {},
+                    terminal_authorize=True,
                 )
 
-            self.assertEqual(prompted, 1)
-            self.assertEqual(run.call_count, 1)
-            command = run.call_args.args[0]
-            self.assertEqual(command[0], "/usr/bin/osascript")
-            self.assertTrue(any("with administrator privileges" in argument for argument in command))
-            authorized_command = command[-1]
-            self.assertIn(shlex.quote(str(scanner)), authorized_command)
-            self.assertIn(shlex.quote(str(layout.data_dir / "all_keys.json")), authorized_command)
-            self.assertIn("--owner-uid", authorized_command)
-            self.assertIn("--owner-gid", authorized_command)
+            self.assertEqual(action_count, 1)
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args_list[0].args[0], ["/usr/bin/sudo", "-v"])
+            command = run.call_args_list[1].args[0]
+            self.assertEqual(command[:3], ["/usr/bin/sudo", "-n", str(scanner)])
+            self.assertIn(str(layout.data_dir / "all_keys.json"), command)
+            self.assertIn("--owner-uid", command)
+            self.assertIn("--owner-gid", command)
+            self.assertNotIn("python", " ".join(command).lower())
             self.assertEqual((layout.data_dir / "all_keys.json").stat().st_mode & 0o777, 0o600)
 
     def test_initialize_extracts_keys_before_running_unprivileged_init(self):
@@ -1228,6 +1274,7 @@ class MacInitializeTests(unittest.TestCase):
                 unittest.mock.ANY,
                 {"db_dir": None},
                 confirm_resign=False,
+                terminal_authorize=False,
             )
             init_command = run.call_args.args[0]
             self.assertEqual(init_command, [str(runtime_python), str(runtime / "main.py"), "init"])
@@ -1239,7 +1286,9 @@ class MacInitializeTests(unittest.TestCase):
                 ["restart"],
                 error_context="MCP 服务重启失败",
             )
-            self.assertEqual(payload["authorization_prompt_count"], 1)
+            self.assertEqual(payload["authorization_prompt_count"], 0)
+            self.assertEqual(payload["authorization_method"], "terminal_sudo")
+            self.assertEqual(payload["terminal_privileged_action_count"], 1)
             self.assertEqual(payload["next_step"], "register_with_mcporter")
 
     def test_initialize_starts_existing_service_without_reinstalling_it(self):
@@ -1379,41 +1428,64 @@ class MacInitializeTests(unittest.TestCase):
             failed = CompletedProcess([], 1, "", "task_for_pid failed: 5")
 
             with patch.object(installer, "_preflight_macos_scanner"), \
-                 patch.object(installer.subprocess, "run", return_value=failed):
+                 patch.object(installer, "_run_terminal_privileged", return_value=failed):
                 with self.assertRaises(installer.InstallerError) as raised:
                     installer._extract_macos_keys(
-                        runtime, layout, installer.Reporter(json_mode=True), {}
+                        runtime, layout, installer.Reporter(json_mode=True), {},
+                        terminal_authorize=True,
                     )
 
             self.assertEqual(raised.exception.error_code, "task_for_pid_failed")
             self.assertEqual(
                 raised.exception.next_action,
-                "retry_initialize_and_approve_the_macos_administrator_prompt",
+                "retry_the_returned_terminal_command_and_enter_the_administrator_password",
             )
 
-    def test_cancelled_macos_authorization_has_a_retryable_error_code(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            runtime = base / "runtime"
-            runtime.mkdir()
-            scanner = runtime / "find_all_keys_macos"
-            scanner.write_text("", encoding="utf-8")
-            scanner.chmod(0o700)
-            layout = installer.default_layout(base / "home")
-            cancelled = CompletedProcess([], 1, "", "execution error: User canceled. (-128)")
+    def test_cancelled_terminal_authorization_has_a_retryable_error_code(self):
+        cancelled = CompletedProcess([], 1, "", "")
+        with patch.object(installer.sys.stdin, "isatty", return_value=True), \
+             patch.object(installer.subprocess, "run", return_value=cancelled):
+            with self.assertRaises(installer.InstallerError) as raised:
+                installer._run_terminal_privileged(
+                    ["/usr/bin/true"],
+                    reporter=None,
+                    step="test",
+                    message="test",
+                )
 
-            with patch.object(installer, "_preflight_macos_scanner"), \
-                 patch.object(installer.subprocess, "run", return_value=cancelled):
-                with self.assertRaises(installer.InstallerError) as raised:
-                    installer._extract_macos_keys(
-                        runtime, layout, installer.Reporter(json_mode=True), {}
-                    )
+        self.assertEqual(raised.exception.error_code, "terminal_authorization_cancelled")
+        self.assertEqual(raised.exception.details["authorization_method"], "terminal_sudo")
 
-            self.assertEqual(raised.exception.error_code, "administrator_authorization_cancelled")
-            self.assertEqual(
-                raised.exception.next_action,
-                "retry_initialize_and_approve_the_macos_administrator_prompt",
-            )
+    def test_terminal_authorization_requires_a_real_tty_before_sudo(self):
+        with patch.object(installer.sys.stdin, "isatty", return_value=False), \
+             patch.object(installer.subprocess, "run") as run:
+            with self.assertRaises(installer.InstallerError) as raised:
+                installer._run_terminal_privileged(
+                    ["/usr/bin/true"],
+                    reporter=None,
+                    step="test",
+                    message="test",
+                )
+
+        self.assertEqual(raised.exception.error_code, "terminal_authorization_required")
+        run.assert_not_called()
+
+    def test_terminal_sudo_execution_failure_is_structured(self):
+        authorized = CompletedProcess([], 0, "", "")
+        failed = CompletedProcess([], 1, "", "sudo: a password is required")
+        with patch.object(installer.sys.stdin, "isatty", return_value=True), \
+             patch.object(installer.subprocess, "run", side_effect=[authorized, failed]):
+            with self.assertRaises(installer.InstallerError) as raised:
+                installer._run_terminal_privileged(
+                    ["/usr/bin/true"],
+                    reporter=None,
+                    step="test_action",
+                    message="test",
+                )
+
+        self.assertEqual(raised.exception.error_code, "terminal_privileged_action_failed")
+        self.assertEqual(raised.exception.details["failed_stage"], "test_action")
+        self.assertEqual(raised.exception.details["authorization_method"], "terminal_sudo")
 
 
 if __name__ == "__main__":

@@ -36,7 +36,10 @@ class InstallEntrypointTests(unittest.TestCase):
         result = self.run_script("install.sh", "--help")
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Usage: ./install.sh --initialize", result.stdout)
+        self.assertIn(
+            "Usage: ./install.sh --initialize --terminal-authorize",
+            result.stdout,
+        )
         self.assertIn("independent runtime", result.stdout)
         self.assertIn("setup.sh --development", result.stdout)
 
@@ -49,15 +52,26 @@ class InstallEntrypointTests(unittest.TestCase):
         self.assertEqual(payload["error_code"], "invalid_arguments")
         self.assertEqual(payload["phase"], "arguments")
 
+    def test_install_rejects_terminal_authorization_without_initialize(self):
+        result = self.run_script("install.sh", "--terminal-authorize")
+
+        self.assertEqual(result.returncode, 2)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["error_code"], "invalid_arguments")
+        self.assertEqual(payload["phase"], "arguments")
+
     def test_setup_refuses_to_act_as_an_end_user_installer(self):
         result = self.run_script("setup.sh")
 
         self.assertEqual(result.returncode, 2)
-        self.assertIn("./install.sh --initialize", result.stderr)
+        self.assertIn(
+            "./install.sh --initialize --terminal-authorize",
+            result.stderr,
+        )
         self.assertIn("./setup.sh --development", result.stderr)
 
     def test_end_user_docs_use_the_canonical_macos_command(self):
-        canonical = "./install.sh --initialize"
+        canonical = "./install.sh --initialize --terminal-authorize"
         agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         usage = (ROOT / "USAGE.md").read_text(encoding="utf-8")
@@ -74,7 +88,9 @@ class InstallEntrypointTests(unittest.TestCase):
 
         self.assertIn("Do NOT diagnose a version, quarantine attribute", agents)
         self.assertIn("Any direct `codesign`, `xattr`, `killall`", agents)
-        self.assertIn("initialize --confirm-resign", readme)
+        self.assertIn("initialize --confirm-resign --terminal-authorize", readme)
+        self.assertIn("terminal_command", agents)
+        self.assertNotIn("admin authorization popup", agents)
         self.assertIn("不得根据日志自行猜测版本", readme)
 
     def test_initialize_failure_still_returns_combined_json(self):
@@ -112,6 +128,10 @@ class InstallEntrypointTests(unittest.TestCase):
             management_cli.parent.mkdir(parents=True)
             management_cli.write_text(
                 "#!/bin/bash\n"
+                "case \" $* \" in *\" --confirm-resign \"*) ;; \n"
+                "*) echo '{\"ok\":false,\"error_code\":\"missing_terminal_flags\"}'; exit 1 ;; esac\n"
+                "case \" $* \" in *\" --terminal-authorize \"*) ;; \n"
+                "*) echo '{\"ok\":false,\"error_code\":\"missing_terminal_flags\"}'; exit 1 ;; esac\n"
                 "echo '{\"ok\":false,\"error_code\":\"wechat_not_running\","
                 "\"error\":\"WeChat is not running\","
                 "\"user_message\":\"请打开并登录微信\","
@@ -138,6 +158,7 @@ class InstallEntrypointTests(unittest.TestCase):
                     "/bin/bash",
                     str(ROOT / "install.sh"),
                     "--initialize",
+                    "--terminal-authorize",
                     "--repository",
                     str(repository),
                     "--python",
