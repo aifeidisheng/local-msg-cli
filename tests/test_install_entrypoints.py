@@ -68,6 +68,15 @@ class InstallEntrypointTests(unittest.TestCase):
         self.assertNotIn("\n./install.sh\n", macos_install)
         self.assertIn(canonical, usage)
 
+    def test_agent_docs_forbid_speculative_manual_wechat_repairs(self):
+        agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("Do NOT diagnose a version, quarantine attribute", agents)
+        self.assertIn("Any direct `codesign`, `xattr`, `killall`", agents)
+        self.assertIn("initialize --confirm-resign", readme)
+        self.assertIn("不得根据日志自行猜测版本", readme)
+
     def test_initialize_failure_still_returns_combined_json(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

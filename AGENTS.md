@@ -97,6 +97,13 @@ in a terminal. Execute everything directly. User interaction is limited to
 confirming sensitive actions, quitting/signing in to WeChat when requested,
 and clicking "OK" on the macOS admin authorization popup.
 
+Do not ask the user to prepare speculative prerequisites. In particular, do
+not ask them to start, sign in to, quit, upgrade, or reconfigure WeChat until
+the latest JSON response requests that exact action. Describe sensitive effects
+accurately: re-signing changes the app signature but not message data; do not
+promise that functionality is completely unaffected, and do not recommend
+disabling updates unless the structured response or current release docs say so.
+
 **Do NOT pre-require WeChat to be running/logged-in before executing
 `initialize`.** The command detects the actual state (version, signature,
 running status) and returns the appropriate structured error. Handle errors
@@ -104,8 +111,10 @@ sequentially as they arise — this avoids unnecessary login → quit → login
 cycles when re-signing is needed.
 
 Before that popup, `initialize` performs all unprivileged checks (data path,
-version policy, running process, and ad-hoc signature). A single `initialize`
-attempt invokes `osascript` at most once. If it returns a structured error,
+version policy, running process, and ad-hoc signature). A normal `initialize`
+attempt invokes `osascript` at most once for key scanning. A separately
+confirmed `initialize --confirm-resign` retry may show one authorization prompt
+for re-signing and one for key scanning. If it returns a structured error,
 follow only the matching recovery row below; never wrap a repair command in a
 new `osascript` authorization request.
 
@@ -126,6 +135,8 @@ Do NOT perform any of the following during end-user installation:
 - Any direct `osascript ... with administrator privileges` command
 - Any direct `sudo codesign ... WeChat.app` command; use the installed
   `prepare-wechat` management command after explicit user confirmation
+- Any direct `codesign`, `xattr`, `killall`, or hand-built app repair command,
+  whether executed by the Agent or handed to the user
 - `chown` / privileged writes for `config.json` or `all_keys.json`
 - Cloning the repo manually and running components separately
 
@@ -157,11 +168,27 @@ maintainer and updated exclusively through upstream releases.
 
 Use ONLY the JSON response fields to decide next steps:
 
+1. Parse the final JSON object and retain `phase`, `error_code`, `user_message`,
+   `requires_user_action`, `retry_command`, `next_action`, and `details`.
+2. Handle exactly one returned error at a time. Tell the user the concrete
+   requested action and why it is needed; do not speculate about later steps.
+3. After the requested action or confirmation, invoke the installed management
+   CLI with the returned `retry_command`. Arguments such as `--confirm-resign`
+   are part of the command contract and must not be dropped.
+4. If a field is missing or an error is unknown, report `error_code` and
+   `next_action`; do not infer a repair from logs or system attributes.
+
+Do NOT diagnose a version, quarantine attribute, hardened-runtime flag,
+authorization decision, or signing cause unless the current structured result
+identifies it. Never recommend an upgrade unless `error_code` is
+`version_not_allowed`. Human-readable stderr and logs may be included in a bug
+report, but they do not override `error_code`, `retry_command`, or `next_action`.
+
 | `error_code` | Action |
 |---|---|
 | `wechat_not_running` | Ask user to open WeChat and retry `initialize` |
-| `wechat_not_adhoc_signed` | **Preferred (first-time install):** Ask the user to confirm re-signing, then run `initialize --confirm-resign` which auto-quits WeChat, re-signs inline, reopens and continues to key extraction in one shot. **Fallback:** If `initialize --confirm-resign` is unavailable, check `details.wechat_running`: if **true** → ask user to quit WeChat; then run `prepare-wechat --confirm-resign`, wait for login, and retry `initialize` |
-| `wechat_must_quit_for_resign` | Ask the user to quit WeChat, then retry the same installed `prepare-wechat --confirm-resign` command |
+| `wechat_not_adhoc_signed` | Ask the user to confirm re-signing, then execute the returned `retry_command` (current releases return `initialize --confirm-resign`). It auto-quits WeChat, safely re-signs, reopens it, and continues initialization. |
+| `wechat_must_quit_for_resign` | Ask the user to quit WeChat, then execute the returned `retry_command` unchanged. |
 | `version_not_allowed` | Report the version mismatch; do NOT modify policy files |
 | `task_for_pid_failed` | The system auth prompt was denied; ask user to retry and approve |
 | `administrator_authorization_cancelled` | User cancelled the admin popup; ask to retry |
@@ -188,6 +215,10 @@ extra prepare-wechat round-trip and the "login → quit → login again" cycle:
 "$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light" \
   --json initialize --confirm-resign
 ```
+
+For `retry_command`, prepend only the installed management CLI path and
+`--json`. For example, `initialize --confirm-resign` becomes the command above.
+Do not translate it into a different subcommand or omit its flags.
 
 **Fallback (separate prepare-wechat):** If the user has already manually quit
 WeChat, you can use the standalone re-sign command. It validates the detected
@@ -217,6 +248,11 @@ Desktop connector (via mcporter install + enable).
 Call the MCP tool `data_source_status`. Only report success when it returns
 `status: "ready"`. Do NOT call `list_contacts`, `query_messages`, or any
 tool that returns user data merely to verify installation.
+
+In the final report, preserve the exact non-sensitive validation fields used
+for the decision (at minimum `status`, `initialized`, database accessibility,
+message shard count, and coverage/reason fields when present). Do not replace
+them solely with an unverifiable narrative such as "status checked".
 
 ---
 

@@ -527,7 +527,7 @@ def _preflight_macos_scanner(
     *,
     confirm_resign: bool = False,
     reporter: Reporter | None = None,
-) -> None:
+) -> int:
     """Validate process and signature before the one privileged scanner call."""
     detected = preflight.get("detected") or {}
     app_path = str(detected.get("app_path") or "")
@@ -550,11 +550,12 @@ def _preflight_macos_scanner(
         wechat_running = probe.returncode == 0 and bool(probe.stdout.strip())
 
         if not confirm_resign:
-            # 无 --confirm-resign：报错让 Agent 处理（向后兼容）
+            # No confirmation yet: return one explicit recovery action. The
+            # confirmed initialize retry can quit a running WeChat itself.
             raise InstallerError(
                 "微信尚未完成 ad-hoc 重签名；未弹出管理员授权窗口",
                 error_code="wechat_not_adhoc_signed",
-                next_action="quit_wechat_and_run_prepare_wechat" if wechat_running else "confirm_and_run_prepare_wechat",
+                next_action="confirm_and_retry_initialize_with_resign",
                 details={
                     "authorization_prompt_count": 0,
                     "app_path": app_path,
@@ -582,16 +583,28 @@ def _preflight_macos_scanner(
                 if check.returncode != 0 or not check.stdout.strip():
                     break
             else:
-                # 超时仍未退出，尝试 SIGTERM
+                # The graceful quit timed out. Try SIGTERM once, then verify
+                # the process really stopped before touching the app bundle.
                 subprocess.run(
                     ["/usr/bin/pkill", "-TERM", "-x", process_name],
                     check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 )
                 time.sleep(2)
+                check = subprocess.run(
+                    ["/usr/bin/pgrep", "-x", process_name],
+                    check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                )
+                if check.returncode == 0 and check.stdout.strip():
+                    raise InstallerError(
+                        "WeChat 未能自动退出；请正常退出后重试同一初始化命令",
+                        error_code="wechat_must_quit_for_resign",
+                        next_action="quit_wechat_and_retry_initialize_with_resign",
+                        details={"authorization_prompt_count": 0},
+                    )
 
         # 执行重签名
         app = _validate_wechat_bundle(app_path, preflight.get("config", {}).get("home") or Path.home())
-        _resign_wechat_app(app, reporter)
+        resign_authorization_prompt_count = _resign_wechat_app(app, reporter)
 
         # 重签名完成，打开微信
         subprocess.run(
@@ -607,7 +620,7 @@ def _preflight_macos_scanner(
                 check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
             if check.returncode == 0 and check.stdout.strip():
-                return  # 进程已出现，继续到密钥提取
+                return resign_authorization_prompt_count
         # 进程未出现，提示用户启动
         raise InstallerError(
             "重签名完成，微信尚未启动；未弹出管理员授权窗口",
@@ -633,6 +646,7 @@ def _preflight_macos_scanner(
             next_action="start_wechat_and_retry_initialize",
             details={"authorization_prompt_count": 0},
         )
+    return 0
 
 
 def _is_adhoc_signed(app_path: str | Path) -> bool:
@@ -813,7 +827,7 @@ def _extract_macos_keys(
     preflight: dict,
     *,
     confirm_resign: bool = False,
-) -> bool:
+) -> int:
     keys_file = layout.data_dir / "all_keys.json"
     configured_db_dir = preflight.get("db_dir")
     accounts = list(preflight.get("account_candidates") or [])
@@ -824,9 +838,9 @@ def _extract_macos_keys(
             _save_account_selection(layout, selected, "validated_existing_keys")
             preflight["db_dir"] = selected
             preflight["account_changed"] = True
-        return False
+        return 0
     if not accounts and _valid_key_file(keys_file, configured_db_dir):
-        return False
+        return 0
     if keys_file.exists() or keys_file.is_symlink():
         try:
             keys_file.unlink()
@@ -848,7 +862,15 @@ def _extract_macos_keys(
 
     # These checks require no privileges and must happen before osascript so a
     # failed attempt never consumes an administrator prompt unnecessarily.
-    _preflight_macos_scanner(preflight, confirm_resign=confirm_resign, reporter=reporter)
+    resign_prompt_count = int(
+        _preflight_macos_scanner(
+            preflight,
+            confirm_resign=confirm_resign,
+            reporter=reporter,
+        )
+        or 0
+    )
+    total_prompt_count = resign_prompt_count + 1
 
     # Pre-discover DB salts in user context (has FDA) to avoid requiring
     # Full Disk Access for the elevated scanner binary.
@@ -902,7 +924,7 @@ def _extract_macos_keys(
         details = result.stderr.strip()
         normalized = details.lower()
         summary = _parse_scanner_summary("\n".join((result.stdout, result.stderr)))
-        summary["authorization_prompt_count"] = 1
+        summary["authorization_prompt_count"] = total_prompt_count
         if result.returncode == 4:
             code, action, message = _empty_key_result(summary)
             raise InstallerError(message, error_code=code, next_action=action, details=summary)
@@ -937,7 +959,7 @@ def _extract_macos_keys(
             configured_db_dir = selected
     if not _valid_key_file(keys_file, configured_db_dir):
         summary = _parse_scanner_summary("\n".join((result.stdout, result.stderr)))
-        summary["authorization_prompt_count"] = 1
+        summary["authorization_prompt_count"] = total_prompt_count
         code, action, message = _empty_key_result(summary)
         raise InstallerError(
             message,
@@ -952,9 +974,9 @@ def _extract_macos_keys(
             "密钥文件所有者异常；请勿使用 sudo 运行管理 CLI",
             error_code="key_file_ownership_invalid",
             next_action="report_key_file_ownership_error_without_privileged_repair",
-            details={"authorization_prompt_count": 1},
+            details={"authorization_prompt_count": total_prompt_count},
         ) from exc
-    return True
+    return total_prompt_count
 
 
 def _git(source: Path, *args: str, error_context: str) -> str:
@@ -2073,15 +2095,23 @@ def main(argv: list[str] | None = None) -> int:
         if exc.error_code in user_actions:
             payload["requires_user_action"] = user_actions[exc.error_code]
         retry_commands = {
-            "wechat_not_adhoc_signed": "prepare-wechat",
-            "wechat_resign_confirmation_required": "prepare-wechat",
-            "wechat_must_quit_for_resign": "prepare-wechat",
+            "wechat_not_adhoc_signed": "initialize --confirm-resign",
+            "wechat_resign_confirmation_required": "prepare-wechat --confirm-resign",
             "wechat_account_not_found": "accounts",
         }
+        if exc.error_code == "wechat_must_quit_for_resign":
+            retry_commands[exc.error_code] = (
+                "initialize --confirm-resign"
+                if args.command == "initialize"
+                else "prepare-wechat --confirm-resign"
+            )
         if exc.error_code in retry_commands:
             payload["retry_command"] = retry_commands[exc.error_code]
         elif args.command in {"initialize", "prepare-wechat", "select-account"}:
-            payload["retry_command"] = args.command
+            retry_command = args.command
+            if getattr(args, "confirm_resign", False):
+                retry_command += " --confirm-resign"
+            payload["retry_command"] = retry_command
         reporter.result(payload)
         return 1
     except Exception as exc:
