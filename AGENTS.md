@@ -127,6 +127,20 @@ inspect -> prepare-wechat (only when requested) -> initialize
 `inspect` is read-only and never authorizes or modifies WeChat. Handle its
 `next_step` sequentially; this avoids unnecessary login → quit → login cycles.
 
+**Critical stage ordering — never ask the user to sign in prematurely:**
+
+```text
+ensure_wechat_installed → prepare_wechat (re-sign, WeChat must be QUIT)
+                        → sign_in_to_wechat (only AFTER re-sign is done)
+                        → initialize (extract keys from running process)
+```
+
+The correct sequence is: install/locate app → re-sign (quit) → sign in → extract keys.
+Do NOT conflate "ensure app exists" with "open and sign in". When `inspect` returns
+`wechat_app_not_found`, the user only needs to confirm WeChat is installed — no login.
+When it returns `wechat_not_adhoc_signed`, the user needs to QUIT (not sign in).
+Only after `prepare-wechat` succeeds should the user be asked to sign in.
+
 Before any popup, `inspect` and the `initialize` preflight perform all
 unprivileged checks (data path, version policy, running process, and ad-hoc
 signature). `prepare-wechat` may request one administrator authorization after
@@ -188,7 +202,7 @@ Use ONLY the JSON response fields to decide next steps:
 | `error_code` | Action |
 |---|---|
 | `wechat_not_running` | Ask user to open and sign in to WeChat, then retry `initialize` |
-| `wechat_app_not_found` | Ask the user to install or open WeChat, then retry `inspect`; do not report a version-policy failure |
+| `wechat_app_not_found` | Ask the user to ensure WeChat is installed (do NOT ask them to sign in — login is not needed at this stage). Then retry `inspect`. The next `inspect` will check the ad-hoc signature; if re-signing is required, it returns `wechat_not_adhoc_signed` and only AFTER re-signing should the user be asked to sign in. This avoids the unnecessary login → quit → login cycle |
 | `wechat_not_adhoc_signed` | Keep the two stages separate. Check `details.wechat_running`: if **true** → ask the user to quit WeChat. After the user explicitly confirms re-signing, run installed `prepare-wechat --confirm-resign`. Wait for the user to sign in after WeChat reopens, then retry plain `initialize` |
 | `wechat_must_quit_for_resign` | Ask the user to quit WeChat, then retry the same installed `prepare-wechat --confirm-resign` command |
 | `app_management_permission_required` | The installer opens **Privacy & Security → App Management**. Ask the user to enable `details.responsible_app` (or the app currently running the installation if it could not be identified), then retry only the same installed `prepare-wechat --confirm-resign` command. Do not retry `initialize`, edit TCC, or disable SIP |

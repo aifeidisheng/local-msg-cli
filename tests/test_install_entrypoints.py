@@ -115,7 +115,7 @@ class InstallEntrypointTests(unittest.TestCase):
                 "echo '{\"ok\":false,\"error_code\":\"wechat_not_running\","
                 "\"error\":\"WeChat is not running\","
                 "\"user_message\":\"请打开并登录微信\","
-                "\"requires_user_action\":\"open_wechat\","
+                "\"requires_user_action\":\"open_and_sign_in_wechat\","
                 "\"retry_command\":\"inspect\","
                 "\"authorization_prompt_count\":0,"
                 "\"next_action\":\"start_wechat_and_retry_initialize\"}'\n"
@@ -161,7 +161,7 @@ class InstallEntrypointTests(unittest.TestCase):
         self.assertEqual(payload["next_action"], "start_wechat_and_retry_initialize")
         self.assertEqual(payload["authorization_prompt_count"], 0)
         self.assertEqual(payload["user_message"], "请打开并登录微信")
-        self.assertEqual(payload["requires_user_action"], "open_wechat")
+        self.assertEqual(payload["requires_user_action"], "open_and_sign_in_wechat")
         self.assertEqual(payload["retry_command"], "inspect")
         self.assertEqual(payload["inspect"]["error_code"], "wechat_not_running")
 

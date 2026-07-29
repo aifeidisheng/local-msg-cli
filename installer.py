@@ -452,10 +452,11 @@ def _preflight_macos_initialize(runtime: Path, layout: InstallLayout) -> dict:
             for reason in reasons
         )
         if missing_app and not policy_failure:
+            details["requires_login"] = False
             raise InstallerError(
-                "未找到微信应用；请安装微信或打开一次微信后重试。尚未请求管理员授权",
+                "未找到微信应用；请确认微信已安装（无需登录），然后重试检查。尚未请求管理员授权",
                 error_code="wechat_app_not_found",
-                next_action="install_or_open_wechat_and_retry_inspect",
+                next_action="ensure_wechat_installed_and_retry_inspect",
                 details=details,
             )
         raise InstallerError(
@@ -1587,7 +1588,7 @@ def inspect(args: argparse.Namespace, reporter: Reporter) -> dict:
         boundaries = {
             "wechat_not_adhoc_signed": "prepare_wechat",
             "wechat_not_running": "sign_in_to_wechat",
-            "wechat_app_not_found": "open_wechat",
+            "wechat_app_not_found": "ensure_wechat_installed",
             "wechat_database_not_found": "sign_in_to_wechat",
         }
         if exc.error_code not in boundaries:
@@ -2246,8 +2247,8 @@ def main(argv: list[str] | None = None) -> int:
                 if key in exc.details:
                     payload[key] = exc.details[key]
         user_actions = {
-            "wechat_app_not_found": "install_or_open_wechat",
-            "wechat_not_running": "open_wechat",
+            "wechat_app_not_found": "ensure_wechat_installed",
+            "wechat_not_running": "open_and_sign_in_wechat",
             "wechat_not_adhoc_signed": "confirm_wechat_resign",
             "wechat_resign_confirmation_required": "confirm_wechat_resign",
             "wechat_must_quit_for_resign": "quit_wechat",

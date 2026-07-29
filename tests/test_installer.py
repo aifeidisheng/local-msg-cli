@@ -587,7 +587,7 @@ class JsonCliTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         payload = result.call_args.args[0]
         self.assertEqual(payload["user_message"], "微信尚未运行")
-        self.assertEqual(payload["requires_user_action"], "open_wechat")
+        self.assertEqual(payload["requires_user_action"], "open_and_sign_in_wechat")
         self.assertEqual(payload["retry_command"], "initialize")
 
     def test_process_access_failure_retries_read_only_inspection(self):
@@ -1071,7 +1071,7 @@ class MacInitializeTests(unittest.TestCase):
                     installer._preflight_macos_initialize(runtime, layout)
 
             self.assertEqual(raised.exception.error_code, "wechat_app_not_found")
-            self.assertEqual(raised.exception.next_action, "install_or_open_wechat_and_retry_inspect")
+            self.assertEqual(raised.exception.next_action, "ensure_wechat_installed_and_retry_inspect")
 
     def test_stale_configured_account_falls_back_to_discovered_candidates(self):
         with tempfile.TemporaryDirectory() as tmp:
