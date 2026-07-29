@@ -5,18 +5,25 @@
 
 ## How to read this file (zero-clone)
 
-When a user provides the repository URL, read documentation via raw GitHub
-URLs — do NOT `git clone` the repo just to read docs:
+When a user provides the repository URL, read documentation via the release
+source's raw URLs — do NOT `git clone` the repo just to read docs:
 
 ```
-https://raw.githubusercontent.com/aifeidisheng/local-msg-cli/main/AGENTS.md
-https://raw.githubusercontent.com/aifeidisheng/local-msg-cli/main/README.md
+https://gitee.com/feipig_up_tree/local-msg-cli/raw/main/AGENTS.md
+https://gitee.com/feipig_up_tree/local-msg-cli/raw/main/README.md
 ```
 
 The entire end-user installation requires **zero manual git clones**:
 1. Read docs → raw GitHub URL (webfetch / curl)
 2. Obtain installer → `curl` download `install.sh`
 3. Verified clone → handled internally by `install.sh`
+
+When the user provides a repository URL, preserve that exact URL and pass it
+to the **first** bootstrap invocation with `--repository`. Do not first run
+the command without `--repository`: `install.sh` cannot infer a repository
+from the conversation, the current working directory, or an earlier temporary
+clone. Omit `--repository` only when the user did not provide a source URL and
+the documented default release source is intended.
 
 ## Routing: end-user vs source-development
 
@@ -40,13 +47,18 @@ bundled Python explicitly through `--python` (or `WECHAT_DECRYPT_PYTHON`) so
 the user does not lose a retry when system `PATH` has no Python:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/aifeidisheng/local-msg-cli/main/install.sh \
+curl -fsSL https://gitee.com/feipig_up_tree/local-msg-cli/raw/main/install.sh \
   -o /tmp/wechat-decrypt-install.sh && chmod +x /tmp/wechat-decrypt-install.sh
-/tmp/wechat-decrypt-install.sh --initialize
+/tmp/wechat-decrypt-install.sh --repository '<user-provided-repository-url>' --initialize
 ```
 
+If no repository URL was provided, omit `--repository` and use the default
+release source. Never clone the repository separately to establish the source
+for `install.sh`; the bootstrap performs its own verified clone.
+
 When the Desktop host exposes Python 3.10+, use the managed invocation
-`install.sh --python <host-python> --initialize`. The installer still creates
+`install.sh --repository <repository-url> --python <host-python> --initialize`.
+The installer still creates
 its own isolated runtime; the host interpreter is only used to bootstrap it.
 Without an explicit path, the script checks supported Python bundles under
 `/Applications` and `~/Applications`, then falls back to `python3.13` through

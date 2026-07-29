@@ -12,19 +12,26 @@ If you are an AI agent helping a user install/set up/connect this MCP:
 3. **Do NOT** follow any manual steps in this README (pip install, venv, compile, main.py, etc.)
 4. **Do NOT** `git clone` this repo just to obtain `install.sh` — download it directly via `curl`:
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/aifeidisheng/local-msg-cli/main/install.sh \
+   curl -fsSL https://gitee.com/feipig_up_tree/local-msg-cli/raw/main/install.sh \
      -o /tmp/wechat-decrypt-install.sh && chmod +x /tmp/wechat-decrypt-install.sh
-   /tmp/wechat-decrypt-install.sh --initialize
+   /tmp/wechat-decrypt-install.sh \
+     --repository '<user-provided-repository-url>' --initialize
    ```
 
 Desktop 宿主如果提供 Python 3.10+，应优先把该解释器传给引导器：
 
 ```bash
-/tmp/wechat-decrypt-install.sh --python "$CODEX_DESKTOP_PYTHON" --initialize
+/tmp/wechat-decrypt-install.sh \
+  --repository 'https://gitee.com/feipig_up_tree/local-msg-cli.git' \
+  --python "$CODEX_DESKTOP_PYTHON" --initialize
 ```
 
 这只用于启动安装器；正式服务仍运行在安装器创建的独立 `.venv` 中。
 `install.sh` is self-contained and will clone the verified `main` release internally.
+
+如果用户提供了仓库地址，必须在第一次调用 `install.sh` 时显式传入
+`--repository`。安装器不会从对话内容、当前工作目录或之前的临时 clone
+自动推断仓库；没有提供地址时使用内置的 Gitee 默认发布源。
 
 违反以上规则将导致安装失败或安全问题。README 中的所有手动命令仅供源码开发者使用。
 
@@ -64,22 +71,12 @@ Desktop 宿主如果提供 Python 3.10+，应优先把该解释器传给引导�
 从仓库任意工作树运行统一引导入口即可。引导脚本不会部署当前工作树；它会重新拉取并校验受保护的 `main`，然后交给正式安装器：
 
 ```bash
-./install.sh --initialize
+./install.sh \
+  --repository 'https://gitee.com/feipig_up_tree/local-msg-cli.git' \
+  --initialize
 ```
 
-如团队维护了经过确认的备用发布源，可显式传入；只有主源不可达时才会使用备用源：
-
-```bash
-./install.sh --initialize \
-  --repository 'https://github.com/aifeidisheng/local-msg-cli.git' \
-  --fallback-repository 'https://gitee.com/aifeidisheng/local-msg-cli.git'
-```
-
-`main` 必须禁止 force push 和删除，并限制为通过测试的 PR 更新。安装器会校验实际克隆的 `origin` 是否位于用户确认的可信源列表中，并校验 `origin/main`、当前 `HEAD` 和干净工作树。最终完整 commit、可信源列表和本次实际使用的源都会写入本机安装记录。
-
-目前没有经过项目方确认且可公开访问的国内镜像；不要使用随机 GitHub 代理、`ghproxy` 或通过全局 `url.*.insteadOf` 静默改写仓库地址。建议由项目方创建并持续同步公开镜像，例如 `https://gitee.com/aifeidisheng/local-msg-cli.git`，确认可匿名读取后再取消上面示例中的注释。安装和升级会按列表顺序尝试；主源不可达时才切换备用源，并固定备用源实际返回的完整 commit。
-
-Git 网络操作会重试一次，并在持续低于 1 KiB/s 达 15 秒时快速失败。升级失败会返回 `git_source_unreachable` 或 `all_git_sources_unreachable`，不会要求用户手动重复拼接 clone 命令。Python 依赖安装也会自动重试；如团队已确认 PyPI 镜像，可在安装前通过标准 `PIP_INDEX_URL` 提供，不会被安装器硬编码覆盖。
+`main` 必须禁止 force push 和删除，并限制为通过测试的 PR 更新。安装器会校验实际克隆的 `origin`、`origin/main`、当前 `HEAD` 和干净工作树，并把最终完整 commit 与实际使用的源写入本机安装记录。
 
 引导安装阶段会完成以下工作：
 
@@ -89,7 +86,7 @@ Git 网络操作会重试一次，并在持续低于 1 KiB/s 达 15 秒时快速
 - 将配置、密钥和解密缓存保存在独立 `data/` 目录，升级时不覆盖已有数据。
 - 生成稳定管理入口 `~/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light`。
 - 记录安装 commit，支持检查和升级到 `main` 的最新提交。
-- 记录主发布源、备用发布源和本次实际使用源；更新时自动切换不可达的发布源。
+- 记录实际发布源和安装 commit，升级时继续使用该发布源。
 
 `./install.sh --initialize` 兼容旧 Agent 的入口名称，但不再把提权初始化和服务安装串成一次长事务。它只部署运行时并执行只读 `inspect`，不会弹出管理员授权窗口；Agent 根据 JSON 的 `next_step` 继续。用户无需在终端输入命令，交互仅限于确认敏感操作、退出或登录 WeChat，以及批准 macOS 系统弹窗。
 
@@ -305,7 +302,7 @@ python main.py serve --auto-update --port 8765
 - 工作区必须干净；有未提交改动时拒绝自动更新
 - 当前分支必须已跟踪远端 upstream
 - 只允许 `git pull --ff-only`，不做自动合并
-- 如果本地领先远端、与远端分叉、网络拉取失败，都会跳过自动更新并继续使用当前代码启动
+- 如果本地领先远端、与远端分叉或 upstream 配置不安全，都会跳过自动更新并继续使用当前代码启动
 
 单独检查是否有更新：
 
@@ -317,7 +314,7 @@ python main.py update --check
 
 - `0`：已是最新
 - `3`：检测到可更新的远端提交
-- `2`：工作区不干净、分支分叉、未配置 upstream、拉取失败等不安全状态
+- `2`：工作区不干净、分支分叉、未配置 upstream 或其他不安全状态
 
 ## MCP 工具
 

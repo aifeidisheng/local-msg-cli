@@ -40,6 +40,14 @@ class InstallEntrypointTests(unittest.TestCase):
         self.assertIn("independent runtime", result.stdout)
         self.assertIn("setup.sh --development", result.stdout)
 
+    def test_install_defaults_to_the_project_gitee_source(self):
+        script = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn(
+            'readonly DEFAULT_REPOSITORY="https://gitee.com/feipig_up_tree/local-msg-cli.git"',
+            script,
+        )
+        self.assertNotIn("--fallback-repository URL", self.run_script("install.sh", "--help").stdout)
+
     def test_install_rejects_unknown_arguments_before_network_access(self):
         result = self.run_script("install.sh", "--unsupported")
 
@@ -57,16 +65,17 @@ class InstallEntrypointTests(unittest.TestCase):
         self.assertIn("./setup.sh --development", result.stderr)
 
     def test_end_user_docs_use_the_canonical_macos_command(self):
-        canonical = "./install.sh --initialize"
         agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         usage = (ROOT / "USAGE.md").read_text(encoding="utf-8")
         macos_install = readme.split("## macOS 正式安装", 1)[1].split("## 源码开发安装", 1)[0]
 
-        self.assertIn(canonical, agents)
-        self.assertIn(canonical, macos_install)
-        self.assertNotIn("\n./install.sh\n", macos_install)
-        self.assertIn(canonical, usage)
+        self.assertIn("install.sh", agents)
+        self.assertIn("--repository '<user-provided-repository-url>'", agents)
+        self.assertIn("--repository 'https://gitee.com/feipig_up_tree/local-msg-cli.git'", macos_install)
+        self.assertNotIn("--fallback-repository", macos_install)
+        self.assertNotIn("Git 网络操作会重试", macos_install)
+        self.assertIn("install.sh --initialize", usage)
 
     def test_inspect_failure_still_returns_combined_json(self):
         with tempfile.TemporaryDirectory() as tmp:

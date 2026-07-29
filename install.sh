@@ -5,7 +5,10 @@
 # directly; it will clone the verified main release internally.
 set -euo pipefail
 
-readonly DEFAULT_REPOSITORY="https://github.com/aifeidisheng/local-msg-cli.git"
+# The default is used only when the caller did not provide a repository URL.
+# A caller-supplied URL must be passed explicitly with --repository; this
+# script cannot infer it from conversation context or a previous clone.
+readonly DEFAULT_REPOSITORY="https://gitee.com/feipig_up_tree/local-msg-cli.git"
 readonly RELEASE_BRANCH="main"
 readonly MANAGEMENT_CLI="$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light"
 
@@ -56,8 +59,8 @@ Installs the protected main release into the user's independent runtime.
 This command is for end users; source development uses setup.sh --development.
 
 Options:
-  --repository URL           Confirmed primary release repository
-  --fallback-repository URL  Confirmed fallback repository (repeatable)
+  --repository URL           Confirmed primary release repository; pass the
+                             user's URL here on the first invocation
   --python PATH              Python 3.10+ used to create the runtime environment
   --initialize               Compatibility entry point: install, then run a read-only
                              inspection and stop at the next user interaction boundary
