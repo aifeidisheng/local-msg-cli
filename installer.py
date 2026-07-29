@@ -460,30 +460,40 @@ def _preflight_macos_initialize(runtime: Path, layout: InstallLayout) -> dict:
 
 
 def _resign_wechat_app(app: Path, reporter: Reporter | None = None) -> int:
-    """Core re-signing logic shared by prepare-wechat and initialize --confirm-resign.
+    """Re-sign WeChat during the explicit prepare-wechat stage.
 
-    Returns authorization_prompt_count (0 = direct codesign, 1 = osascript admin).
+    Returns authorization_prompt_count (0 = direct repair, 1 = osascript admin).
     Raises InstallerError on failure.
     """
-    # 先尝试非提权签名（用户是 app owner 时不需要 admin 授权弹窗）
+    repair_commands = [
+        ["/usr/bin/xattr", "-cr", str(app)],
+        ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)],
+    ]
+
+    # com.apple.provenance 等扩展属性必须在 codesign 前清理，否则即使已取得
+    # 管理员授权，codesign 仍可能失败。
     if reporter:
         reporter.progress("signature", "尝试直接重签 WeChat（无需管理员授权）")
-    direct_result = subprocess.run(
-        ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)],
-        check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
-    if direct_result.returncode == 0 and _is_adhoc_signed(app):
-        subprocess.run(
-            ["/usr/bin/xattr", "-cr", str(app)],
-            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    direct_succeeded = True
+    for command in repair_commands:
+        direct_result = subprocess.run(
+            command,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
+        if direct_result.returncode != 0:
+            direct_succeeded = False
+            break
+    if direct_succeeded and _is_adhoc_signed(app):
         return 0
 
-    # 非 owner 或权限不足，回退到 osascript 管理员授权
+    # 受保护的 app bundle 在同一次管理员授权中保持先清理、后签名的顺序。
     if reporter:
         reporter.progress("signature", "通过 macOS 系统授权安全重签 WeChat")
-    codesign_command = shlex.join(
-        ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)]
+    authorized_command = " && ".join(
+        shlex.join(command) for command in repair_commands
     )
     result = subprocess.run(
         [
@@ -491,7 +501,7 @@ def _resign_wechat_app(app: Path, reporter: Reporter | None = None) -> int:
             "-e", "on run argv",
             "-e", "do shell script (item 1 of argv) with administrator privileges",
             "-e", "end run",
-            codesign_command,
+            authorized_command,
         ],
         check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
@@ -515,19 +525,10 @@ def _resign_wechat_app(app: Path, reporter: Reporter | None = None) -> int:
             next_action="report_wechat_resign_error",
             details={"authorization_prompt_count": 1},
         )
-    subprocess.run(
-        ["/usr/bin/xattr", "-cr", str(app)],
-        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
     return 1
 
 
-def _preflight_macos_scanner(
-    preflight: dict,
-    *,
-    confirm_resign: bool = False,
-    reporter: Reporter | None = None,
-) -> None:
+def _preflight_macos_scanner(preflight: dict) -> None:
     """Validate process and signature before the one privileged scanner call."""
     detected = preflight.get("detected") or {}
     app_path = str(detected.get("app_path") or "")
@@ -549,71 +550,19 @@ def _preflight_macos_scanner(
         )
         wechat_running = probe.returncode == 0 and bool(probe.stdout.strip())
 
-        if not confirm_resign:
-            # 无 --confirm-resign：报错让 Agent 处理（向后兼容）
-            raise InstallerError(
-                "微信尚未完成 ad-hoc 重签名；未弹出管理员授权窗口",
-                error_code="wechat_not_adhoc_signed",
-                next_action="quit_wechat_and_run_prepare_wechat" if wechat_running else "confirm_and_run_prepare_wechat",
-                details={
-                    "authorization_prompt_count": 0,
-                    "app_path": app_path,
-                    "wechat_running": wechat_running,
-                },
-            )
-
-        # --confirm-resign：内联完成重签名，避免额外 prepare-wechat 调用
-        if wechat_running:
-            # 优雅退出微信（用户已通过 --confirm-resign 确认）
-            if reporter:
-                reporter.progress("signature", "正在优雅退出微信以执行重签名")
-            subprocess.run(
-                ["/usr/bin/osascript", "-e", 'tell application "WeChat" to quit'],
-                check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-            # 等待进程退出（最多 15 秒）
-            deadline = time.monotonic() + 15
-            while time.monotonic() < deadline:
-                time.sleep(1)
-                check = subprocess.run(
-                    ["/usr/bin/pgrep", "-x", process_name],
-                    check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                )
-                if check.returncode != 0 or not check.stdout.strip():
-                    break
-            else:
-                # 超时仍未退出，尝试 SIGTERM
-                subprocess.run(
-                    ["/usr/bin/pkill", "-TERM", "-x", process_name],
-                    check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                )
-                time.sleep(2)
-
-        # 执行重签名
-        app = _validate_wechat_bundle(app_path, preflight.get("config", {}).get("home") or Path.home())
-        _resign_wechat_app(app, reporter)
-
-        # 重签名完成，打开微信
-        subprocess.run(
-            ["/usr/bin/open", str(app)],
-            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        # 等待进程出现（最多 10 秒）
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            time.sleep(1)
-            check = subprocess.run(
-                ["/usr/bin/pgrep", "-x", process_name],
-                check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            )
-            if check.returncode == 0 and check.stdout.strip():
-                return  # 进程已出现，继续到密钥提取
-        # 进程未出现，提示用户启动
         raise InstallerError(
-            "重签名完成，微信尚未启动；未弹出管理员授权窗口",
-            error_code="wechat_not_running",
-            next_action="start_wechat_and_retry_initialize",
-            details={"authorization_prompt_count": 0},
+            "微信尚未完成 ad-hoc 重签名；未弹出管理员授权窗口",
+            error_code="wechat_not_adhoc_signed",
+            next_action=(
+                "quit_wechat_confirm_and_run_prepare_wechat"
+                if wechat_running
+                else "confirm_and_run_prepare_wechat"
+            ),
+            details={
+                "authorization_prompt_count": 0,
+                "app_path": app_path,
+                "wechat_running": wechat_running,
+            },
         )
 
     # 签名已OK，才要求微信运行（密钥提取需要读进程内存）
@@ -811,8 +760,6 @@ def _extract_macos_keys(
     layout: InstallLayout,
     reporter: Reporter,
     preflight: dict,
-    *,
-    confirm_resign: bool = False,
 ) -> bool:
     keys_file = layout.data_dir / "all_keys.json"
     configured_db_dir = preflight.get("db_dir")
@@ -848,7 +795,7 @@ def _extract_macos_keys(
 
     # These checks require no privileges and must happen before osascript so a
     # failed attempt never consumes an administrator prompt unnecessarily.
-    _preflight_macos_scanner(preflight, confirm_resign=confirm_resign, reporter=reporter)
+    _preflight_macos_scanner(preflight)
 
     # Pre-discover DB salts in user context (has FDA) to avoid requiring
     # Full Disk Access for the elevated scanner binary.
@@ -1765,10 +1712,7 @@ def initialize(args: argparse.Namespace, reporter: Reporter) -> dict:
     if platform.system().lower() == "darwin":
         preflight = _preflight_macos_initialize(runtime, layout)
         authorization_prompt_count = int(
-            _extract_macos_keys(
-                runtime, layout, reporter, preflight,
-                confirm_resign=getattr(args, "confirm_resign", False),
-            )
+            _extract_macos_keys(runtime, layout, reporter, preflight)
         )
     reporter.progress("initialize", "执行密钥提取和本地数据库预解密")
     _run(
@@ -1853,8 +1797,14 @@ def prepare_wechat(args: argparse.Namespace, reporter: Reporter) -> dict:
         layout.home,
     )
 
+    # codesign --deep 会遍历整个 app bundle；主进程退出但 helper 仍在收尾时
+    # 也不能开始重签。按可执行文件绝对路径检查 bundle 内的全部进程。
     running = subprocess.run(
-        ["/usr/bin/pgrep", "-x", str((preflight.get("config") or {}).get("wechat_process") or "WeChat")],
+        [
+            "/usr/bin/pgrep",
+            "-f",
+            f"^{re.escape(str(app))}/Contents/",
+        ],
         check=False,
         text=True,
         stdout=subprocess.PIPE,
@@ -1862,10 +1812,13 @@ def prepare_wechat(args: argparse.Namespace, reporter: Reporter) -> dict:
     )
     if running.returncode == 0 and running.stdout.strip():
         raise InstallerError(
-            "请先正常退出 WeChat，再继续安全重签",
+            "WeChat 或其辅助进程仍在运行；请等待其完全退出后再继续安全重签",
             error_code="wechat_must_quit_for_resign",
             next_action="quit_wechat_and_retry_prepare_wechat",
-            details={"authorization_prompt_count": 0},
+            details={
+                "authorization_prompt_count": 0,
+                "running_pids": running.stdout.split(),
+            },
         )
     if _is_adhoc_signed(app):
         return {
@@ -2004,7 +1957,8 @@ def build_parser() -> argparse.ArgumentParser:
     repair_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
     initialize_parser = subparsers.add_parser("initialize", help="经用户确认后提取密钥并预解密本机数据库")
     initialize_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
-    initialize_parser.add_argument("--confirm-resign", action="store_true", help="允许内联重签 WeChat 并自动退出/重启，避免额外 prepare-wechat 调用")
+    # 兼容可能仍传入旧参数的 Agent；该参数不再授权 initialize 修改 WeChat。
+    initialize_parser.add_argument("--confirm-resign", action="store_true", help=argparse.SUPPRESS)
     prepare_parser = subparsers.add_parser("prepare-wechat", help="经用户确认后安全重签 WeChat")
     prepare_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
     prepare_parser.add_argument("--confirm-resign", action="store_true", help="确认允许修改 WeChat.app 签名")
@@ -2073,9 +2027,9 @@ def main(argv: list[str] | None = None) -> int:
         if exc.error_code in user_actions:
             payload["requires_user_action"] = user_actions[exc.error_code]
         retry_commands = {
-            "wechat_not_adhoc_signed": "prepare-wechat",
-            "wechat_resign_confirmation_required": "prepare-wechat",
-            "wechat_must_quit_for_resign": "prepare-wechat",
+            "wechat_not_adhoc_signed": "prepare-wechat --confirm-resign",
+            "wechat_resign_confirmation_required": "prepare-wechat --confirm-resign",
+            "wechat_must_quit_for_resign": "prepare-wechat --confirm-resign",
             "wechat_account_not_found": "accounts",
         }
         if exc.error_code in retry_commands:

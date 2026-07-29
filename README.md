@@ -97,7 +97,7 @@ Git 网络操作会重试一次，并在持续低于 1 KiB/s 达 15 秒时快速
 
 不要在上述命令前添加 `sudo`。如果错误使用 `sudo`，管理 CLI 会拒绝运行并返回 `management_cli_must_not_run_as_root`。在系统弹窗中授权即可；扫描器会把 `all_keys.json` 直接写入独立 `data/` 目录，不需要打开终端执行额外扫描命令、移动密钥文件、修改目录所有者或重新加载 LaunchAgent。
 
-如果返回 `wechat_not_adhoc_signed`，Agent 应先请用户退出 WeChat 并明确确认允许修改应用签名，然后直接执行已安装管理入口的 `prepare-wechat --confirm-resign`。该命令只允许重签版本门禁实际检测到、bundle id 正确的 WeChat.app，只授权固定的 `codesign` 参数，完成后复核签名并重新打开 WeChat；不要让用户在终端手工运行 `sudo codesign`。用户登录后只需重新执行同一条 `initialize` 命令。
+如果返回 `wechat_not_adhoc_signed`，必须保持重签名与密钥提取的两阶段边界：Agent 应先请用户退出 WeChat 并明确确认允许修改应用签名，然后直接执行已安装管理入口的 `prepare-wechat --confirm-resign`。该命令只允许处理版本门禁实际检测到、bundle id 正确的 WeChat.app，只授权固定的扩展属性清理和 `codesign` 操作，完成后复核签名并重新打开 WeChat；不要让用户在终端手工运行 `sudo codesign`，也不要向 `initialize` 传入 `--confirm-resign`。等待用户完成登录后，再重新执行普通 `initialize`；这样密钥提取不会与同一次 WeChat 退出/重启产生竞态。
 
 多账号场景下，`initialize` 会在同一次密钥扫描中校验所有检测到的数据目录，并把唯一匹配当前 WeChat 进程的账号写入单一 `data/config.json`；已有密钥也会先在所有候选账号上本地验证，可在不弹授权窗口的情况下纠正旧配置。只有自动匹配仍无法恢复时，才使用已安装管理入口的 `accounts` 和 `select-account --account <account_id>`，不要手工编辑 config 或移动密钥文件。
 

@@ -160,7 +160,7 @@ Use ONLY the JSON response fields to decide next steps:
 | `error_code` | Action |
 |---|---|
 | `wechat_not_running` | Ask user to open WeChat and retry `initialize` |
-| `wechat_not_adhoc_signed` | **Preferred (first-time install):** Ask the user to confirm re-signing, then run `initialize --confirm-resign` which auto-quits WeChat, re-signs inline, reopens and continues to key extraction in one shot. **Fallback:** If `initialize --confirm-resign` is unavailable, check `details.wechat_running`: if **true** → ask user to quit WeChat; then run `prepare-wechat --confirm-resign`, wait for login, and retry `initialize` |
+| `wechat_not_adhoc_signed` | Keep the two stages separate. Check `details.wechat_running`: if **true** → ask the user to quit WeChat. After the user explicitly confirms re-signing, run installed `prepare-wechat --confirm-resign`. Wait for the user to sign in after WeChat reopens, then retry plain `initialize` |
 | `wechat_must_quit_for_resign` | Ask the user to quit WeChat, then retry the same installed `prepare-wechat --confirm-resign` command |
 | `version_not_allowed` | Report the version mismatch; do NOT modify policy files |
 | `task_for_pid_failed` | The system auth prompt was denied; ask user to retry and approve |
@@ -178,26 +178,21 @@ To retry initialization after fixing the issue:
 "$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light" --json initialize
 ```
 
-**Preferred for first-time install (single command, no manual quit):**
-After user confirms re-signing, run `initialize --confirm-resign`. This
-auto-quits WeChat via AppleScript, re-signs inline, reopens WeChat, waits for
-the process, and then continues directly to key extraction — eliminating the
-extra prepare-wechat round-trip and the "login → quit → login again" cycle:
-
-```bash
-"$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light" \
-  --json initialize --confirm-resign
-```
-
-**Fallback (separate prepare-wechat):** If the user has already manually quit
-WeChat, you can use the standalone re-sign command. It validates the detected
-app's bundle identity, authorizes only a fixed `codesign` invocation, verifies
-the new signature, and reopens WeChat:
+**Required separate re-sign stage:** After the user has quit WeChat and
+explicitly confirmed the app modification, run the standalone re-sign command.
+It validates the detected app's bundle identity, authorizes only the fixed
+attribute-cleanup and `codesign` operations, verifies the new signature, and
+reopens WeChat:
 
 ```bash
 "$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light" \
   --json prepare-wechat --confirm-resign
 ```
+
+Do not pass `--confirm-resign` to `initialize`. After `prepare-wechat` returns
+success, wait for the user to finish signing in, then retry the plain
+`initialize` command shown above. This boundary prevents re-signing and key
+extraction from racing the same WeChat shutdown/restart.
 
 For account recovery, use the installed `accounts` and `select-account`
 commands. Do not edit `config.json` or move `all_keys.json` manually. Normal

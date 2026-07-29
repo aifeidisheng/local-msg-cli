@@ -584,6 +584,25 @@ class JsonCliTests(unittest.TestCase):
         self.assertEqual(payload["requires_user_action"], "open_wechat")
         self.assertEqual(payload["retry_command"], "initialize")
 
+    def test_legacy_initialize_resign_flag_routes_to_separate_prepare_stage(self):
+        error = installer.InstallerError(
+            "微信尚未完成 ad-hoc 重签名",
+            error_code="wechat_not_adhoc_signed",
+            next_action="confirm_and_run_prepare_wechat",
+            details={"authorization_prompt_count": 0, "wechat_running": False},
+        )
+        with patch.object(installer, "initialize", side_effect=error) as initialize, \
+             patch.object(installer.Reporter, "result") as result:
+            exit_code = installer.main(
+                ["initialize", "--confirm-resign", "--json"]
+            )
+
+        self.assertEqual(exit_code, 1)
+        self.assertTrue(initialize.call_args.args[0].confirm_resign)
+        payload = result.call_args.args[0]
+        self.assertEqual(payload["retry_command"], "prepare-wechat --confirm-resign")
+        self.assertEqual(payload["authorization_prompt_count"], 0)
+
 
 class MacInitializeTests(unittest.TestCase):
     @staticmethod
@@ -643,7 +662,7 @@ class MacInitializeTests(unittest.TestCase):
 
             self.assertEqual(raised.exception.error_code, "wechat_app_path_not_allowed")
 
-    def test_prepare_wechat_requires_wechat_to_be_closed(self):
+    def test_prepare_wechat_requires_all_bundle_processes_to_be_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             app = self._make_wechat_app(home)
@@ -659,8 +678,11 @@ class MacInitializeTests(unittest.TestCase):
 
             self.assertEqual(raised.exception.error_code, "wechat_must_quit_for_resign")
             self.assertEqual(run.call_count, 1)
+            self.assertEqual(run.call_args.args[0][1], "-f")
+            self.assertIn("WeChat\.app/Contents/", run.call_args.args[0][2])
+            self.assertEqual(raised.exception.details["running_pids"], ["123"])
 
-    def test_prepare_wechat_uses_one_fixed_authorized_codesign_command(self):
+    def test_prepare_wechat_cleans_attributes_and_signs_in_one_authorized_command(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             app = self._make_wechat_app(home)
@@ -668,6 +690,7 @@ class MacInitializeTests(unittest.TestCase):
             preflight = {"config": {}, "detected": {"app_path": str(app)}}
             stopped = CompletedProcess([], 1, "", "")
             official = CompletedProcess([], 0, "", "Authority=Apple Distribution\n")
+            direct_xattr_failed = CompletedProcess([], 1, "", "Operation not permitted")
             authorized = CompletedProcess([], 0, "", "")
             adhoc = CompletedProcess([], 0, "", "Signature=adhoc\n")
             opened = CompletedProcess([], 0, "", "")
@@ -677,7 +700,14 @@ class MacInitializeTests(unittest.TestCase):
                  patch.object(
                      installer.subprocess,
                      "run",
-                     side_effect=[stopped, official, authorized, adhoc, opened],
+                     side_effect=[
+                         stopped,
+                         official,
+                         direct_xattr_failed,
+                         authorized,
+                         adhoc,
+                         opened,
+                     ],
                  ) as run:
                 payload = installer.prepare_wechat(args, installer.Reporter(json_mode=True))
 
@@ -690,16 +720,48 @@ class MacInitializeTests(unittest.TestCase):
             command = authorization_calls[0].args[0][-1]
             self.assertEqual(
                 command,
-                shlex.join(
+                " && ".join(
                     [
-                        "/usr/bin/codesign",
-                        "--force",
-                        "--deep",
-                        "--sign",
-                        "-",
-                        str(app.resolve()),
+                        shlex.join(["/usr/bin/xattr", "-cr", str(app.resolve())]),
+                        shlex.join(
+                            [
+                                "/usr/bin/codesign",
+                                "--force",
+                                "--deep",
+                                "--sign",
+                                "-",
+                                str(app.resolve()),
+                            ]
+                        ),
                     ]
                 ),
+            )
+
+    def test_resign_cleans_attributes_before_direct_codesign(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self._make_wechat_app(Path(tmp))
+            succeeded = CompletedProcess([], 0, "", "")
+
+            with patch.object(installer.subprocess, "run", return_value=succeeded) as run, \
+                 patch.object(installer, "_is_adhoc_signed", return_value=True):
+                prompt_count = installer._resign_wechat_app(app)
+
+            self.assertEqual(prompt_count, 0)
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(
+                run.call_args_list[0].args[0],
+                ["/usr/bin/xattr", "-cr", str(app)],
+            )
+            self.assertEqual(
+                run.call_args_list[1].args[0],
+                [
+                    "/usr/bin/codesign",
+                    "--force",
+                    "--deep",
+                    "--sign",
+                    "-",
+                    str(app),
+                ],
             )
 
     def test_normalize_account_key_output_keeps_only_valid_account(self):
@@ -893,13 +955,16 @@ class MacInitializeTests(unittest.TestCase):
         }
         stopped = CompletedProcess([], 1, "", "")
 
-        with patch.object(installer.subprocess, "run", return_value=stopped) as run:
+        adhoc_signature = CompletedProcess([], 0, "", "Signature=adhoc\n")
+        with patch.object(
+            installer.subprocess, "run", side_effect=[adhoc_signature, stopped]
+        ) as run:
             with self.assertRaises(installer.InstallerError) as raised:
                 installer._preflight_macos_scanner(preflight)
 
         self.assertEqual(raised.exception.error_code, "wechat_not_running")
-        self.assertEqual(run.call_count, 1)
-        self.assertEqual(run.call_args.args[0][0], "/usr/bin/pgrep")
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args_list[1].args[0][0], "/usr/bin/pgrep")
 
     def test_non_adhoc_wechat_stops_before_any_authorization(self):
         preflight = {
@@ -914,14 +979,16 @@ class MacInitializeTests(unittest.TestCase):
         with patch.object(
             installer.subprocess,
             "run",
-            side_effect=[running, official_signature],
+            side_effect=[official_signature, running],
         ) as run:
             with self.assertRaises(installer.InstallerError) as raised:
                 installer._preflight_macos_scanner(preflight)
 
         self.assertEqual(raised.exception.error_code, "wechat_not_adhoc_signed")
         self.assertEqual(run.call_count, 2)
-        self.assertEqual(run.call_args.args[0][0], "/usr/bin/codesign")
+        self.assertEqual(run.call_args_list[0].args[0][0], "/usr/bin/codesign")
+        self.assertEqual(run.call_args_list[1].args[0][0], "/usr/bin/pgrep")
+        self.assertEqual(raised.exception.details["wechat_running"], True)
 
     def test_adhoc_wechat_passes_unprivileged_scanner_preflight(self):
         preflight = {
@@ -934,7 +1001,7 @@ class MacInitializeTests(unittest.TestCase):
         with patch.object(
             installer.subprocess,
             "run",
-            side_effect=[running, adhoc_signature],
+            side_effect=[adhoc_signature, running],
         ) as run:
             installer._preflight_macos_scanner(preflight)
 
@@ -1044,7 +1111,8 @@ class MacInitializeTests(unittest.TestCase):
                     "endpoint": "http://127.0.0.1:8765/mcp",
                 },
             )
-            args = argparse.Namespace(home=str(home))
+            # 旧参数即使为 True，也不能让 initialize 进入重签逻辑。
+            args = argparse.Namespace(home=str(home), confirm_resign=True)
             ready = {"ok": True, "status": "ready", "query_ready": True}
 
             with patch.object(installer.platform, "system", return_value="Darwin"), \
@@ -1062,7 +1130,12 @@ class MacInitializeTests(unittest.TestCase):
             self.assertEqual(init_command, [str(runtime_python), str(runtime / "main.py"), "init"])
             self.assertNotIn("sudo", init_command)
             self.assertEqual(run.call_args.kwargs["env"]["WECHAT_DECRYPT_DATA_DIR"], str(layout.data_dir))
-            service_command.assert_not_called()
+            service_command.assert_called_once_with(
+                runtime,
+                layout,
+                ["restart"],
+                error_context="MCP 服务重启失败",
+            )
             self.assertEqual(payload["authorization_prompt_count"], 1)
             self.assertEqual(payload["next_step"], "register_with_mcporter")
 
