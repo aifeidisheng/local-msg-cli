@@ -436,6 +436,28 @@ def _preflight_macos_initialize(runtime: Path, layout: InstallLayout) -> dict:
                 next_action="check_upstream_for_a_release_that_supports_this_wechat_version",
                 details=details,
             )
+        # A missing bundle is an environment prerequisite, not a policy or
+        # release-integrity failure. Keep this branch machine-actionable so
+        # agents do not suggest restoring a trusted release for a missing app.
+        missing_app = any(
+            "未配置 wechat_app_path" in reason
+            or "微信安装路径不存在" in reason
+            or "未能自动发现微信安装路径" in reason
+            for reason in reasons
+        )
+        policy_failure = any(
+            "allowed_version_ranges" in reason
+            or "版本门禁策略" in reason
+            or "可信摘要" in reason
+            for reason in reasons
+        )
+        if missing_app and not policy_failure:
+            raise InstallerError(
+                "未找到微信应用；请安装微信或打开一次微信后重试。尚未请求管理员授权",
+                error_code="wechat_app_not_found",
+                next_action="install_or_open_wechat_and_retry_inspect",
+                details=details,
+            )
         raise InstallerError(
             "微信版本安全预检未通过；尚未请求管理员授权",
             error_code="version_guard_failed",
@@ -479,7 +501,7 @@ def _resign_wechat_app(app: Path, reporter: Reporter | None = None) -> int:
     # com.apple.provenance 等扩展属性必须在 codesign 前清理，否则即使已取得
     # 管理员授权，codesign 仍可能失败。
     if reporter:
-        reporter.progress("signature", "尝试直接重签 WeChat（无需管理员授权）")
+        reporter.progress("signature", "尝试直接重签 WeChat（必要时请求系统授权）")
     direct_succeeded = True
     for command in repair_commands:
         direct_result = subprocess.run(
@@ -2224,6 +2246,7 @@ def main(argv: list[str] | None = None) -> int:
                 if key in exc.details:
                     payload[key] = exc.details[key]
         user_actions = {
+            "wechat_app_not_found": "install_or_open_wechat",
             "wechat_not_running": "open_wechat",
             "wechat_not_adhoc_signed": "confirm_wechat_resign",
             "wechat_resign_confirmation_required": "confirm_wechat_resign",
@@ -2237,6 +2260,7 @@ def main(argv: list[str] | None = None) -> int:
         if exc.error_code in user_actions:
             payload["requires_user_action"] = user_actions[exc.error_code]
         retry_commands = {
+            "wechat_app_not_found": "inspect",
             "wechat_not_adhoc_signed": "prepare-wechat --confirm-resign",
             "wechat_resign_confirmation_required": "prepare-wechat --confirm-resign",
             "wechat_must_quit_for_resign": "prepare-wechat --confirm-resign",

@@ -120,11 +120,30 @@ fi
 if [[ -n "$python_bin" ]]; then
     python_candidates=("$python_bin")
 else
-    python_candidates=(python3.13 python3.12 python3.11 python3.10 python3)
+    # Prefer the Desktop/agent host interpreter when it publishes one. The
+    # installer still creates an isolated runtime venv; this interpreter is
+    # only the bootstrap tool used to run installer.py.
+    python_candidates=()
+    for host_python in "${WECHAT_DECRYPT_PYTHON:-}" "${CODEX_DESKTOP_PYTHON:-}"; do
+        [[ -n "$host_python" ]] && python_candidates+=("$host_python")
+    done
+    # Desktop applications commonly bundle Python below Contents/Resources.
+    # Search only the two user-controlled Applications roots, avoiding a
+    # repository clone or a system-wide recursive scan.
+    for app_root in /Applications "$HOME/Applications"; do
+        [[ -d "$app_root" ]] || continue
+        for embedded in \
+            "$app_root"/*/Contents/Resources/python/python/bin/python3 \
+            "$app_root"/*/Contents/Resources/python/bin/python3 \
+            "$app_root"/*/Contents/Resources/venv/bin/python3; do
+            [[ -x "$embedded" ]] && python_candidates+=("$embedded")
+        done
+    done
+    python_candidates+=(python3.13 python3.12 python3.11 python3.10 python3)
 fi
 python_bin=""
 for candidate in "${python_candidates[@]}"; do
-    if command -v "$candidate" >/dev/null 2>&1 && \
+    if { [[ -x "$candidate" ]] || command -v "$candidate" >/dev/null 2>&1; } && \
         "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
         >/dev/null 2>&1; then
         python_bin="$candidate"
@@ -132,8 +151,8 @@ for candidate in "${python_candidates[@]}"; do
     fi
 done
 if [[ -z "$python_bin" ]]; then
-    echo "Python 3.10 or newer was not found. Use --python PATH to select one." >&2
-    emit_error_json "python_not_found" "preflight" "Python 3.10 or newer was not found." "install_python_3_10_or_newer_and_retry"
+    echo "Python 3.10 or newer was not found in PATH or supported Desktop application locations." >&2
+    emit_error_json "python_not_found" "preflight" "Python 3.10 or newer was not found in PATH or supported Desktop application locations." "install_python_3_10_or_newer_or_set_wechat_decrypt_python_and_retry"
     exit 1
 fi
 

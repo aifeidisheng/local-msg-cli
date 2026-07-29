@@ -1053,6 +1053,26 @@ class MacInitializeTests(unittest.TestCase):
             self.assertEqual(raised.exception.details["detected_version"], "4.2.0")
             run.assert_not_called()
 
+    def test_missing_wechat_app_is_not_reported_as_version_guard_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            runtime = base / "runtime"
+            runtime.mkdir()
+            layout = installer.default_layout(base / "home")
+            version_result = Mock(
+                ok=False,
+                reasons=["未配置 wechat_app_path，且未能自动发现微信安装路径（标准目录和运行中进程均未找到）"],
+                details={},
+            )
+
+            with patch("config.load_config", return_value={}), \
+                 patch("wechat_version_guard.check_version", return_value=version_result):
+                with self.assertRaises(installer.InstallerError) as raised:
+                    installer._preflight_macos_initialize(runtime, layout)
+
+            self.assertEqual(raised.exception.error_code, "wechat_app_not_found")
+            self.assertEqual(raised.exception.next_action, "install_or_open_wechat_and_retry_inspect")
+
     def test_stale_configured_account_falls_back_to_discovered_candidates(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)

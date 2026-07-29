@@ -2153,7 +2153,7 @@ def _sqlite_schema_readable(path) -> bool:
 
 
 @mcp.tool()
-def data_source_status() -> str:
+def data_source_status() -> dict:
     """验证本机消息数据源是否可查询，不返回联系人、消息、密钥或本机路径。
 
     用于安装后的最小化验收。工具只检查联系人数据库和至少一个消息数据库
@@ -2184,7 +2184,9 @@ def data_source_status() -> str:
         "message_database_ready": message_ready,
         "configured_message_shards": len(MSG_DB_KEYS),
     }
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    # Return a native mapping so FastMCP exposes structuredContent. Keeping the
+    # payload free of paths, keys, and rows preserves the minimal-data probe.
+    return payload
 
 
 @mcp.tool()

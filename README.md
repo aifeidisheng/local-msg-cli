@@ -16,7 +16,15 @@ If you are an AI agent helping a user install/set up/connect this MCP:
      -o /tmp/wechat-decrypt-install.sh && chmod +x /tmp/wechat-decrypt-install.sh
    /tmp/wechat-decrypt-install.sh --initialize
    ```
-   `install.sh` is self-contained and will clone the verified `main` release internally.
+
+Desktop 宿主如果提供 Python 3.10+，应优先把该解释器传给引导器：
+
+```bash
+/tmp/wechat-decrypt-install.sh --python "$CODEX_DESKTOP_PYTHON" --initialize
+```
+
+这只用于启动安装器；正式服务仍运行在安装器创建的独立 `.venv` 中。
+`install.sh` is self-contained and will clone the verified `main` release internally.
 
 违反以上规则将导致安装失败或安全问题。README 中的所有手动命令仅供源码开发者使用。
 
@@ -39,13 +47,13 @@ If you are an AI agent helping a user install/set up/connect this MCP:
 
 ## 环境要求
 
-- Python 3.10+
-- 允许区间内的 WeChat 版本正在运行
+- Python 3.10+ (the Desktop host may pass its bundled interpreter to the bootstrap; the installed service uses its own isolated venv)
+- 允许区间内的 WeChat 版本；密钥提取阶段需要 WeChat 正在运行并已登录
 - macOS 需 Xcode Command Line Tools: `xcode-select --install`
 - Windows 首次提取密钥需使用“以管理员身份运行”的 PowerShell
 - macOS 正式安装始终以普通用户运行管理 CLI，仅在密钥扫描时通过系统授权弹窗提权；Linux 读取进程内存需要 root 或 `CAP_SYS_PTRACE`
 
-正式安装会创建项目自己的 Python 虚拟环境，不依赖宿主 Desktop 客户端的内置 Python。用于启动服务的运行目录、Python 环境和敏感数据目录也都独立于 Git 暂存目录。
+正式安装会创建项目自己的 Python 虚拟环境，不依赖宿主 Desktop 客户端的内置 Python 来运行服务；引导阶段可以复用 Desktop 传入的 Python 解释器，避免因系统 PATH 没有 Python 而失败。用于启动服务的运行目录、Python 环境和敏感数据目录也都独立于 Git 暂存目录。
 
 ## macOS 正式安装
 
@@ -96,7 +104,7 @@ install -> inspect -> prepare-wechat（仅需要时） -> initialize
 
 密钥提取和数据库预解密是敏感步骤。只有 `inspect` 返回 `initialize`，且 Agent 已说明会出现 macOS 系统管理员授权弹窗并取得用户明确确认后，才执行已安装管理 CLI 的 `initialize`。安装器仅在内置 C 扫描器或用户另行明确确认的 WeChat 重签命令中请求管理员权限；管理 CLI、配置、缓存和 LaunchAgent 始终以当前登录用户运行。
 
-`initialize` 会先以普通用户权限完成数据目录、版本门禁、微信进程和 ad-hoc 签名预检；预检失败不会弹出授权窗口。全部预检通过后，单次初始化最多调用一次 `osascript`，该授权只覆盖扫描器本身。不要直接拼接额外的 `osascript` 命令，也不要为修改 `config.json`、`all_keys.json` 或文件所有权再次请求密码；旧流程遗留的单文件所有权问题会由管理 CLI 在普通用户上下文中原子修复。
+`initialize` 会先以普通用户权限完成数据目录、版本门禁、微信进程和 ad-hoc 签名预检；预检失败不会弹出授权窗口。`prepare-wechat` 在用户明确确认后可能请求一次管理员授权，用于清理扩展属性并重签 WeChat.app；全部初始化预检通过后，`initialize` 最多再调用一次 `osascript`，该授权只覆盖扫描器本身。不要直接拼接额外的 `osascript` 命令，也不要为修改 `config.json`、`all_keys.json` 或文件所有权再次请求密码；旧流程遗留的单文件所有权问题会由管理 CLI 在普通用户上下文中原子修复。
 
 安装入口的 stdout 始终只输出一条 JSON。`install_complete: true` 表示运行时已安装，后续任何初始化或服务错误都不应重新下载或重装。按 `next_step` 或 `error_code` 完成恢复动作后，只运行对应的已安装管理命令。
 
@@ -131,6 +139,8 @@ install -> inspect -> prepare-wechat（仅需要时） -> initialize
 所有失败 JSON 同时包含可直接展示的 `user_message`；需要用户动作时还会包含 `requires_user_action`，可重试的管理操作包含 `retry_command`。`error_code` 和 `next_action` 仍是 Agent 判断恢复分支的稳定机器字段。
 
 只有 `enable-service` 返回 `query_ready: true`，才可通过 mcporter install + enable 把 `http://127.0.0.1:8765/mcp` 以 `streamablehttp` 注册到 Desktop。注册后调用不返回用户数据的 MCP 工具 `data_source_status`，且只有它返回 `status: "ready"` 才报告完成。不要用 `list_contacts`、`query_messages` 等用户数据工具验证安装。`waiting_for_wechat` 表示常驻机制正常，但 MCP 尚不可调用，不能提前注册或报告接入完成。
+
+`data_source_status` 返回原生结构化对象（不是嵌套 JSON 字符串），只包含 `status`、数据库可访问性和消息分片数量等非敏感字段。
 
 ## 源码开发安装（非最终用户）
 

@@ -35,13 +35,22 @@ or debug this repository's source code.
 ### Step 1 — Install + Inspect (the ONLY bootstrap entry point)
 
 Run the bootstrap directly. This stage is unprivileged and must not show a
-macOS administrator authorization prompt:
+macOS administrator authorization prompt. Desktop hosts should pass their
+bundled Python explicitly through `--python` (or `WECHAT_DECRYPT_PYTHON`) so
+the user does not lose a retry when system `PATH` has no Python:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aifeidisheng/local-msg-cli/main/install.sh \
   -o /tmp/wechat-decrypt-install.sh && chmod +x /tmp/wechat-decrypt-install.sh
 /tmp/wechat-decrypt-install.sh --initialize
 ```
+
+When the Desktop host exposes Python 3.10+, use the managed invocation
+`install.sh --python <host-python> --initialize`. The installer still creates
+its own isolated runtime; the host interpreter is only used to bootstrap it.
+Without an explicit path, the script checks supported Python bundles under
+`/Applications` and `~/Applications`, then falls back to `python3.13` through
+`python3`.
 
 #### Optional: pre-cache acceleration
 
@@ -106,9 +115,11 @@ inspect -> prepare-wechat (only when requested) -> initialize
 `inspect` is read-only and never authorizes or modifies WeChat. Handle its
 `next_step` sequentially; this avoids unnecessary login → quit → login cycles.
 
-Before that popup, `initialize` performs all unprivileged checks (data path,
-version policy, running process, and ad-hoc signature). A single `initialize`
-attempt invokes `osascript` at most once. If it returns a structured error,
+Before any popup, `inspect` and the `initialize` preflight perform all
+unprivileged checks (data path, version policy, running process, and ad-hoc
+signature). `prepare-wechat` may request one administrator authorization after
+the user explicitly confirms the app modification; a single `initialize`
+attempt invokes `osascript` at most once for the scanner. If it returns a structured error,
 follow only the matching recovery row below; never wrap a repair command in a
 new `osascript` authorization request.
 
@@ -165,6 +176,7 @@ Use ONLY the JSON response fields to decide next steps:
 | `error_code` | Action |
 |---|---|
 | `wechat_not_running` | Ask user to open and sign in to WeChat, then retry `initialize` |
+| `wechat_app_not_found` | Ask the user to install or open WeChat, then retry `inspect`; do not report a version-policy failure |
 | `wechat_not_adhoc_signed` | Keep the two stages separate. Check `details.wechat_running`: if **true** → ask the user to quit WeChat. After the user explicitly confirms re-signing, run installed `prepare-wechat --confirm-resign`. Wait for the user to sign in after WeChat reopens, then retry plain `initialize` |
 | `wechat_must_quit_for_resign` | Ask the user to quit WeChat, then retry the same installed `prepare-wechat --confirm-resign` command |
 | `app_management_permission_required` | The installer opens **Privacy & Security → App Management**. Ask the user to enable `details.responsible_app` (or the app currently running the installation if it could not be identified), then retry only the same installed `prepare-wechat --confirm-resign` command. Do not retry `initialize`, edit TCC, or disable SIP |

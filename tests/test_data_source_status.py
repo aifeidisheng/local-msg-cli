@@ -43,7 +43,7 @@ class DataSourceStatusTests(unittest.TestCase):
             ), patch.object(
                 mcp_server, "_cache", _FakeCache({rel_key: str(message_db)})
             ):
-                payload = json.loads(mcp_server.data_source_status())
+                payload = mcp_server.data_source_status()
 
         self.assertEqual(
             payload,
@@ -72,8 +72,8 @@ class DataSourceStatusTests(unittest.TestCase):
         ), patch.object(
             mcp_server, "_cache", _FakeCache(error=sensitive_error)
         ):
-            result = mcp_server.data_source_status()
-            payload = json.loads(result)
+            payload = mcp_server.data_source_status()
+            result = json.dumps(payload, ensure_ascii=False)
 
         self.assertEqual(payload["status"], "not_ready")
         self.assertFalse(payload["ok"])
