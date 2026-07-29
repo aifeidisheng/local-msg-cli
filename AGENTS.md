@@ -188,7 +188,9 @@ Agents **MUST NOT**:
 When `error_code: version_not_allowed` is returned:
 1. Report the exact version mismatch to the user
 2. Explain that this version is not yet supported
-3. Suggest checking upstream for a new release that adds support
+3. If `details.release_search.available` is true, ask whether the user wants a
+   bounded web search for a usable historical version. Start with the source
+   page and release metadata; do not begin with a direct asset download.
 4. **Do NOT** propose editing the policy as a workaround
 
 This rule is unconditional — it applies regardless of user requests, urgency,
@@ -206,7 +208,7 @@ Use ONLY the JSON response fields to decide next steps:
 | `wechat_not_adhoc_signed` | Keep the two stages separate. Check `details.wechat_running`: if **true** → ask the user to quit WeChat. After the user explicitly confirms re-signing, run installed `prepare-wechat --confirm-resign`. Wait for the user to sign in after WeChat reopens, then retry plain `initialize` |
 | `wechat_must_quit_for_resign` | Ask the user to quit WeChat, then retry the same installed `prepare-wechat --confirm-resign` command |
 | `app_management_permission_required` | The installer opens **Privacy & Security → App Management**. Ask the user to enable `details.responsible_app` (or the app currently running the installation if it could not be identified), then retry only the same installed `prepare-wechat --confirm-resign` command. Do not retry `initialize`, edit TCC, or disable SIP |
-| `version_not_allowed` | Report the version mismatch. If `details.release_search.available` is true, ask whether the user wants the Agent to search public sources such as Gitee/GitHub; treat every result as an untrusted candidate, require confirmation before opening/downloading, verify the source page, published SHA-256, Bundle ID, and supported version, and do NOT modify policy files |
+| `version_not_allowed` | Report the version mismatch. If `details.release_search.available` is true, ask whether the user wants the Agent to search public sources such as Gitee/GitHub; use the returned `network_policy`, start from a source page, stop a candidate after its bounded timeout, and move to the next source. Treat every result as an untrusted candidate, require confirmation before downloading, verify the source page, published SHA-256, Bundle ID, and supported version, and do NOT modify policy files |
 | `wechat_process_access_failed` | Do not request authorization again. Run `inspect`, keep WeChat open and signed in, and follow the returned process/signature action |
 | `administrator_authorization_cancelled` | User cancelled the admin popup; ask to retry |
 | `management_cli_must_not_run_as_root` | You ran with `sudo` — remove it and retry |
@@ -215,6 +217,20 @@ Use ONLY the JSON response fields to decide next steps:
 
 Do NOT invent recovery steps. Do NOT run internal scanner commands, move key
 files, change directory ownership, or modify policy files.
+
+For public historical WeChat release searches:
+
+- Prefer the in-app browser or web search and inspect the Release page before
+  touching a DMG asset. Do not `git clone` a candidate repository just to find
+  an attachment.
+- Never run an unbounded `curl`, `wget`, or other download command. Use the
+  `network_policy` timeouts and one attempt per candidate; after a timeout,
+  stop the operation and try the next source.
+- Do not retry the same GitHub URL repeatedly or wait on a stalled transfer.
+  A Gitee page, a user-provided local file, or another candidate is a fallback,
+  not proof that the files are equivalent.
+- Do not tell the user that a candidate is official or safe based only on its
+  domain, repository name, stars, Release label, or download count.
 
 To retry initialization after fixing the issue:
 

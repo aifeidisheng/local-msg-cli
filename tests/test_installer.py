@@ -1073,6 +1073,15 @@ class MacInitializeTests(unittest.TestCase):
             self.assertIn("github.com", search["candidate_hosts"])
             self.assertIn("verify_download_sha256_when_published", search["verification_requirements"])
             self.assertIn("does not prove official authorization", search["disclaimer"])
+            network = search["network_policy"]
+            self.assertEqual(network["search_transport"], "browser_or_web_search_first")
+            self.assertEqual(network["max_candidates"], 3)
+            self.assertEqual(network["max_attempts_per_candidate"], 1)
+            self.assertEqual(network["asset_probe_timeout_seconds"], 10)
+            self.assertTrue(network["download"]["prefer_browser_download"])
+            self.assertTrue(network["download"]["no_unbounded_terminal_command"])
+            self.assertTrue(network["download"]["do_not_git_clone_candidate_repository"])
+            self.assertEqual(network["on_timeout"], "stop_candidate_and_try_next_source")
             run.assert_not_called()
 
     def test_version_mismatch_error_invites_search_without_treating_source_as_trusted(self):

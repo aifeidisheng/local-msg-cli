@@ -135,7 +135,7 @@ install -> inspect -> prepare-wechat（仅需要时） -> initialize
 
 所有失败 JSON 同时包含可直接展示的 `user_message`；需要用户动作时还会包含 `requires_user_action`，可重试的管理操作包含 `retry_command`。`error_code` 和 `next_action` 仍是 Agent 判断恢复分支的稳定机器字段。
 
-如果 `error_code` 为 `version_not_allowed`，响应中的 `details.release_search` 会告诉 Agent 是否可以主动提议搜索公开来源。Agent 可以搜索官方页面、明确声明有分发权的发布仓库，以及 Gitee、GitHub 等稳定托管平台上的候选页面；但域名或仓库本身不代表官方授权、合法性或安全性。每个结果都必须先展示来源页面并取得用户确认，下载后再核对已公布的 SHA-256、`com.tencent.xinWeChat` Bundle ID 和受支持版本。搜索结果不能自动触发微信替换、重签名或修改 `version-guard.policy.json`。
+如果 `error_code` 为 `version_not_allowed`，响应中的 `details.release_search` 会告诉 Agent 是否可以主动提议搜索公开来源。Agent 应先使用浏览器或网络搜索打开来源页面，再按 `network_policy` 的短超时和候选上限处理附件；不能对 GitHub 或其他 Git 地址执行无超时的 `curl`、`wget` 或 `git clone`。单个来源超时后应立即切换下一个候选，不应继续等待或反复重试。Agent 可以搜索官方页面、明确声明有分发权的发布仓库，以及 Gitee、GitHub 等稳定托管平台上的候选页面；但域名或仓库本身不代表官方授权、合法性或安全性。每个结果都必须先展示来源页面并取得用户确认，下载后再核对已公布的 SHA-256、`com.tencent.xinWeChat` Bundle ID 和受支持版本。搜索结果不能自动触发微信替换、重签名或修改 `version-guard.policy.json`。
 
 只有 `enable-service` 返回 `query_ready: true`，才可通过 mcporter install + enable 把 `http://127.0.0.1:8765/mcp` 以 `streamablehttp` 注册到 Desktop。注册后调用不返回用户数据的 MCP 工具 `data_source_status`，且只有它返回 `status: "ready"` 才报告完成。不要用 `list_contacts`、`query_messages` 等用户数据工具验证安装。`waiting_for_wechat` 表示常驻机制正常，但 MCP 尚不可调用，不能提前注册或报告接入完成。
 

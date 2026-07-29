@@ -1603,6 +1603,34 @@ def _release_search_guidance(cfg: dict, detected: dict) -> dict:
             "A public repository or stable hosting domain does not prove official authorization, "
             "legality, or safety. Search results are candidates only."
         ),
+        "network_policy": {
+            "search_transport": "browser_or_web_search_first",
+            "source_page_required_before_asset": True,
+            "max_candidates": 3,
+            "max_attempts_per_candidate": 1,
+            "source_page_timeout_seconds": 15,
+            "asset_probe_timeout_seconds": 10,
+            "fallback_order": [
+                "official_download_or_archive",
+                "maintainer_declared_gitee_release",
+                "maintainer_declared_github_release",
+                "user_provided_local_or_private_source",
+            ],
+            "download": {
+                "requires_explicit_user_confirmation": True,
+                "prefer_browser_download": True,
+                "connect_timeout_seconds": 10,
+                "max_time_seconds": 120,
+                "max_attempts": 1,
+                "no_unbounded_terminal_command": True,
+                "do_not_git_clone_candidate_repository": True,
+            },
+            "on_timeout": "stop_candidate_and_try_next_source",
+            "mirror_rule": (
+                "A mirror is not equivalent to the original source unless version, file size, "
+                "and published SHA-256 all match."
+            ),
+        },
     }
 
 
