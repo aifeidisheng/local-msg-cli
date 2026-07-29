@@ -38,7 +38,7 @@ Claude 自动调用 `get_recent_sessions`：
 > 帮我看看██群在聊啥
 ```
 
-Claude 调用 `get_chat_history`，然后自动分析总结：
+Claude 调用 `query_messages`，然后自动分析总结：
 
 ```
 ██群今日话题:
@@ -87,8 +87,8 @@ Claude 调用 `search_messages(keyword="claude")`：
 Claude 可以调用：
 
 ```python
-get_chat_history(
-    chat_name="██群",
+query_messages(
+    chat_id="██群",
     start_time="2026-03-01",
     end_time="2026-03-07",
     limit=20,
@@ -99,8 +99,8 @@ get_chat_history(
 下一页：
 
 ```python
-get_chat_history(
-    chat_name="██群",
+query_messages(
+    chat_id="██群",
     start_time="2026-03-01",
     end_time="2026-03-07",
     limit=20,
@@ -154,7 +154,7 @@ search_messages(
 > 帮我找一下姓张的联系人
 ```
 
-Claude 调用 `get_contacts(query="张")`：
+Claude 调用 `list_contacts(query="张")`：
 
 ```
 找到 12 个联系人（搜索: 张）:
@@ -191,7 +191,7 @@ Claude 可以获取大量消息后自动分析活跃度、话题分布、关键�
 > 帮我分析一下██群最近一周的情况
 ```
 
-Claude 会调用 `get_chat_history(chat_name="██群", limit=500)` 获取消息，然后输出。消息很多时，也可以把 `limit` 设得更大，或配合 `offset` 分页读取：
+Claude 会调用 `query_messages(chat_id="██群", start_time="2026-03-01", limit=500)` 获取消息，然后输出。消息很多时，可缩小时间范围，或配合 `offset` 分页读取：
 
 ```
 ## ██群最近一周分析

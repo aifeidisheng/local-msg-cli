@@ -59,6 +59,7 @@ _DEFAULT = {
     "decrypted_dir": "decrypted",
     "decoded_image_dir": "decoded_images",
     "wechat_process": _DEFAULT_PROCESS,
+    "mcp_tool_profile": "core",
     "wechat_app_path": "",
     "installer_path": "",
     "installer_sha256": "",
@@ -76,6 +77,7 @@ _PERSIST_DEFAULT = {
     "decrypted_dir": "decrypted",
     "decoded_image_dir": "decoded_images",
     "wechat_process": _DEFAULT_PROCESS,
+    "mcp_tool_profile": "core",
 }
 
 

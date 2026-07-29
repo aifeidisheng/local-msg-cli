@@ -4,5 +4,6 @@
     "decrypted_dir": "decrypted",
     "decoded_image_dir": "decoded_images",
     "wechat_process": "Weixin.exe",
+    "mcp_tool_profile": "core",
     "wechat_app_path": "C:\\Program Files\\Tencent\\Weixin\\Weixin.exe"
 }

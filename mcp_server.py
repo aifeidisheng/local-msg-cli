@@ -2080,6 +2080,32 @@ def _tool_text(name):
 
 _mcp_tool = mcp.tool
 
+_CORE_MCP_TOOLS = frozenset({
+    "data_source_status",
+    "get_recent_sessions",
+    "query_messages",
+    "search_messages",
+    "list_contacts",
+    "get_contact_info",
+    "get_new_messages",
+})
+
+
+def _normalize_mcp_tool_profile(value) -> str:
+    """Unknown profiles fail closed to the minimal public tool surface."""
+    return "extended" if str(value or "").strip().lower() == "extended" else "core"
+
+
+_MCP_TOOL_PROFILE = _normalize_mcp_tool_profile(
+    os.environ.get("WECHAT_DECRYPT_MCP_TOOL_PROFILE")
+    or _cfg.get("mcp_tool_profile", "core")
+)
+
+
+def _mcp_tool_enabled(tool_name: str, profile: Optional[str] = None) -> bool:
+    selected = _normalize_mcp_tool_profile(profile or _MCP_TOOL_PROFILE)
+    return selected == "extended" or tool_name in _CORE_MCP_TOOLS
+
 
 def _guarded_tool(name_or_fn=None, **decorator_kwargs):
     """注册带版本门禁的工具，同时保留可直接测试调用的 Python 函数。"""
@@ -2093,10 +2119,12 @@ def _guarded_tool(name_or_fn=None, **decorator_kwargs):
             return fn(*args, **kwargs)
 
         registration_kwargs = dict(decorator_kwargs)
+        tool_name = explicit_name or fn.__name__
         if explicit_name is not None:
             registration_kwargs["name"] = explicit_name
         # 直接传函数可避免 FastMCP 2.x 的无参 partial 再次调用已替换的 mcp.tool。
-        _mcp_tool(guarded, **registration_kwargs)
+        if _mcp_tool_enabled(tool_name):
+            _mcp_tool(guarded, **registration_kwargs)
         return guarded
 
     if callable(name_or_fn):

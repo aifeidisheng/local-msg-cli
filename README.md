@@ -32,7 +32,7 @@ If you are an AI agent helping a user install/set up/connect this MCP:
 | MCP Server | `serve` 命令通过 `http://127.0.0.1:8765/mcp` 提供 streamable-http |
 | 联系人/群聊 | `list_contacts`、`get_contact_info` |
 | 消息查询 | `query_messages`、`search_messages`，支持时间范围、关键词和分页 |
-| 辅助解码 | 保留图片、文件、转账、引用、位置等消息详情解码工具 |
+| 可选辅助解码 | `extended` 工具档提供图片、文件、转账、引用、位置等消息详情解码 |
 
 不包含 Web UI、桌面 GUI、朋友圈导出、语音导出/转录等上游工具箱能力。
 
@@ -44,7 +44,7 @@ If you are an AI agent helping a user install/set up/connect this MCP:
 - Windows 首次提取密钥需使用“以管理员身份运行”的 PowerShell
 - macOS 正式安装始终以普通用户运行管理 CLI，仅在密钥扫描时通过系统授权弹窗提权；Linux 读取进程内存需要 root 或 `CAP_SYS_PTRACE`
 
-正式安装会创建项目自己的 Python 虚拟环境，不依赖 Desktop/AEJarvis 内置 Python。用于启动服务的运行目录、Python 环境和敏感数据目录也都独立于 Git 暂存目录。
+正式安装会创建项目自己的 Python 虚拟环境，不依赖宿主 Desktop 客户端的内置 Python。用于启动服务的运行目录、Python 环境和敏感数据目录也都独立于 Git 暂存目录。
 
 ## macOS 正式安装
 
@@ -181,7 +181,7 @@ sudo ./find_all_keys_macos --output "$PWD/all_keys.json"
 .venv/bin/python3 main.py init
 ```
 
-在源码调试模式下，`init` 成功后会自动安装指向当前工作树的常驻服务。正式安装应使用上面的 `./install.sh --initialize`，LaunchAgent 才会指向固定版本运行目录，不会依赖可能被删除的 Git 暂存目录。电脑登录后 launchd 自动加载服务；进程异常退出时会自动恢复。常驻服务不依赖终端窗口、shell 激活状态或 AEJarvis，也不需要 `sudo`。
+在源码调试模式下，`init` 成功后会自动安装指向当前工作树的常驻服务。正式安装应使用上面的 `./install.sh --initialize`，LaunchAgent 才会指向固定版本运行目录，不会依赖可能被删除的 Git 暂存目录。电脑登录后 launchd 自动加载服务；进程异常退出时会自动恢复。常驻服务不依赖终端窗口、shell 激活状态或宿主应用，也不需要 `sudo`。
 
 服务使用单实例锁防止手动启动和 LaunchAgent 同时运行两份 MCP。安装和状态检查会同时核对 LaunchAgent 路径、launchd 管理的 PID 与端口监听 PID；如果旧项目或其他进程占用了目标端口，安装器会拒绝自动终止该进程并报告 PID，避免把“其他服务正在监听”误判为安装成功。`status` 将“等待微信”视为正常状态，并会单独报告旧项目配置、端口冲突和恢复中等状态。
 
@@ -284,6 +284,8 @@ python main.py update --check
 
 ## MCP 工具
 
+默认使用 `core` 工具档，只向 Agent 暴露安装验收、联系人定位和消息查询所需的最小工具集：
+
 | 工具 | 功能 |
 |---|---|
 | `data_source_status()` | 不读取用户数据的安装验收工具，检查联系人库和消息库是否可只读访问 |
@@ -292,15 +294,19 @@ python main.py update --check
 | `search_messages(keyword, chat_name, start_time, end_time, limit, offset)` | 跨聊天或指定聊天搜索关键词 |
 | `get_contact_info(contact_id)` | 获取联系人或群聊的本地元数据 |
 | `get_recent_sessions(limit)` | 查看最近会话摘要 |
-| `get_chat_history(...)` | 兼容旧名称的聊天历史查询 |
-| `get_contacts(...)` | 兼容旧名称的联系人搜索 |
-| `get_chat_images(...)` / `decode_image(...)` | 图片消息检索和解密 |
-| `decode_file_message(...)` | 文件消息解码 |
-| `decode_transfer(...)` / `decode_refer(...)` / `decode_location(...)` | 转账、引用、位置等结构化详情 |
+| `get_new_messages()` | 查看自本 MCP 进程上次调用以来有变化的会话摘要 |
 
 安装接入验收应调用 `data_source_status`，不要通过读取联系人或消息来测试连通性。该工具只返回 `ready/not_ready`、初始化状态、数据库可访问性和消息分片数量，不返回联系人、聊天 ID、消息、密钥或本机路径。
 
 `query_messages` 要求传入明确的 `start_time`，大时间跨度建议分段查询。返回内容来自本机历史消息，不代表实时数据；需要实时状态时重新查询。
+
+源码调试或需要处理图片、文件、转账、引用和位置详情时，可显式启用 `extended` 工具档。该档会额外暴露旧兼容别名、联系人标签和各类辅助解码工具：
+
+```bash
+WECHAT_DECRYPT_MCP_TOOL_PROFILE=extended .venv/bin/python3 main.py serve
+```
+
+也可在本机 `config.json` 中设置 `"mcp_tool_profile": "extended"`。修改后需重启 MCP 服务；未知值会按 `core` 处理，避免意外扩大数据暴露面。
 
 ## 配置
 
@@ -312,7 +318,8 @@ python main.py update --check
   "keys_file": "all_keys.json",
   "decrypted_dir": "decrypted",
   "decoded_image_dir": "decoded_images",
-  "wechat_process": "WeChat"
+  "wechat_process": "WeChat",
+  "mcp_tool_profile": "core"
 }
 ```
 
