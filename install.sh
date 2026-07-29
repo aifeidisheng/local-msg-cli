@@ -16,7 +16,7 @@ result_emitted=false
 
 command_name() {
     if [[ "$do_initialize" == true ]]; then
-        printf '%s' 'install+initialize'
+        printf '%s' 'install+inspect'
     else
         printf '%s' 'install'
     fi
@@ -59,9 +59,8 @@ Options:
   --repository URL           Confirmed primary release repository
   --fallback-repository URL  Confirmed fallback repository (repeatable)
   --python PATH              Python 3.10+ used to create the runtime environment
-  --initialize               Canonical end-user flow: install and immediately initialize
-                             (extracts DB keys via macOS admin prompt, then
-                             pre-decrypts databases so MCP is query-ready)
+  --initialize               Compatibility entry point: install, then run a read-only
+                             inspection and stop at the next user interaction boundary
   -h, --help                 Show this help
 EOF
 }
@@ -251,56 +250,55 @@ if [[ "$do_initialize" != true ]]; then
     exit 0
 fi
 
-# Chain initialize: extract keys + pre-decrypt databases
-echo "[initialize] Running initialization (macOS admin prompt will appear)..." >&2
-if init_output=$("$MANAGEMENT_CLI" --json initialize); then
-    init_exit=0
+# Compatibility behavior: inspect only. Sensitive initialization must be a
+# separate Agent-driven stage after the structured result identifies the next
+# user interaction boundary.
+echo "[inspect] Checking the next installation stage (no authorization prompt)..." >&2
+if inspect_output=$("$MANAGEMENT_CLI" --json inspect); then
+    inspect_exit=0
 else
-    init_exit=$?
+    inspect_exit=$?
 fi
 
-if normalized_init=$(normalize_json_output "$init_output"); then
-    init_output="$normalized_init"
+if normalized_inspect=$(normalize_json_output "$inspect_output"); then
+    inspect_output="$normalized_inspect"
 else
-    init_output='{"ok":false,"command":"initialize","error_code":"initialize_output_invalid","error":"The management CLI returned an invalid result.","next_action":"retry_initialize_and_report_the_structured_error"}'
-    init_exit=1
+    inspect_output='{"ok":false,"command":"inspect","error_code":"inspect_output_invalid","error":"The management CLI returned an invalid result.","next_action":"retry_inspect_and_report_the_structured_error"}'
+    inspect_exit=1
 fi
 
-# Build combined JSON output: merge install and initialize results
+# Build one structured result without crossing a sensitive-operation boundary.
 "$python_bin" -c "
 import json, sys
 
 install_data = json.loads(sys.argv[1])
-init_data = json.loads(sys.argv[2])
+inspect_data = json.loads(sys.argv[2])
 
 combined = {
-    'ok': install_data.get('ok', False) and init_data.get('ok', False),
-    'command': 'install+initialize',
-    'phase': 'complete' if init_data.get('ok', False) else 'initialize',
+    'ok': install_data.get('ok', False) and inspect_data.get('ok', False),
+    'command': 'install+inspect',
+    'phase': 'inspection_complete' if inspect_data.get('ok', False) else 'inspect',
     'install_complete': install_data.get('ok', False),
-    'initialize_complete': init_data.get('ok', False),
+    'initialize_complete': False,
     'install': install_data,
-    'initialize': init_data,
-    'authorization_prompt_count': init_data.get('authorization_prompt_count', 0),
-    'query_ready': init_data.get('query_ready', False),
-    'endpoint': init_data.get('endpoint') or install_data.get('installation', {}).get('endpoint'),
+    'inspect': inspect_data,
+    'authorization_prompt_count': 0,
+    'query_ready': inspect_data.get('query_ready', False),
+    'endpoint': inspect_data.get('endpoint') or install_data.get('installation', {}).get('endpoint'),
 }
-if not init_data.get('ok', False):
+if not inspect_data.get('ok', False):
     for key in ('error_code', 'error', 'user_message', 'requires_user_action',
                 'retry_command', 'next_action', 'details'):
-        if key in init_data:
-            combined[key] = init_data[key]
-if combined['query_ready']:
-    combined['next_step'] = 'register_with_mcporter'
-elif init_data.get('ok'):
-    combined['next_step'] = 'wait_until_query_ready'
-else:
-    combined['next_step'] = init_data.get('next_action', 'review_initialize_error')
+        if key in inspect_data:
+            combined[key] = inspect_data[key]
+combined['next_step'] = inspect_data.get(
+    'next_step', inspect_data.get('next_action', 'review_inspect_error')
+)
 
 print(json.dumps(combined, ensure_ascii=False))
-" "$install_output" "$init_output"
+" "$install_output" "$inspect_output"
 result_emitted=true
 
-# Exit with the worst of the two exit codes
-[[ $init_exit -ne 0 ]] && exit $init_exit
+# Exit with the worst of the two exit codes.
+[[ $inspect_exit -ne 0 ]] && exit $inspect_exit
 exit 0

@@ -31,6 +31,7 @@ from runtime_guard import INSTALLED_RUNTIME_MARKER
 
 APP_DIR_NAME = "WeChatDecryptLight"
 MANIFEST_SCHEMA_VERSION = 2
+ACTIVATION_SCHEMA_VERSION = 1
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 REQUIRED_SOURCE_FILES = {
@@ -72,6 +73,7 @@ class InstallLayout:
     current: Path
     data_dir: Path
     state_dir: Path
+    activation_state: Path
     manifest: Path
     bin_dir: Path
     cli: Path
@@ -112,6 +114,7 @@ def default_layout(home: Path | None = None) -> InstallLayout:
         current=root / "runtime" / "current",
         data_dir=root / "data",
         state_dir=root / "state",
+        activation_state=root / "state" / "activation.json",
         manifest=root / "install.json",
         bin_dir=root / "bin",
         cli=root / "bin" / "wechat-decrypt-light",
@@ -857,8 +860,8 @@ def _extract_macos_keys(
             code = "wechat_not_running"
             action = "start_and_sign_in_to_wechat_then_retry_initialize"
         elif "task_for_pid failed" in normalized:
-            code = "task_for_pid_failed"
-            action = "retry_initialize_and_approve_the_macos_administrator_prompt"
+            code = "wechat_process_access_failed"
+            action = "inspect_wechat_process_and_signature_before_retry"
         elif "user canceled" in normalized or "(-128)" in normalized:
             code = "administrator_authorization_cancelled"
             action = "retry_initialize_and_approve_the_macos_administrator_prompt"
@@ -1163,6 +1166,15 @@ def _read_manifest(layout: InstallLayout) -> dict:
         return {}
 
 
+def _read_activation_state(layout: InstallLayout) -> dict:
+    try:
+        with layout.activation_state.open(encoding="utf-8") as state_file:
+            data = json.load(state_file)
+        return data if isinstance(data, dict) else {}
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return {}
+
+
 def _atomic_write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -1180,6 +1192,16 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
             temporary.unlink()
         except FileNotFoundError:
             pass
+
+
+def _update_activation_state(layout: InstallLayout, **changes: object) -> dict:
+    """Persist resumable stage markers without recording account or message data."""
+    state = _read_activation_state(layout)
+    state.update(changes)
+    state["schema_version"] = ACTIVATION_SCHEMA_VERSION
+    state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _atomic_write_json(layout.activation_state, state)
+    return state
 
 
 def _atomic_symlink(target: Path, link: Path) -> None:
@@ -1316,33 +1338,8 @@ def install(args: argparse.Namespace, reporter: Reporter) -> dict:
     reporter.progress("data", "准备独立数据目录并迁移已有本机数据")
     migrated = migrate_existing_data(source, layout.data_dir)
     old_manifest = _read_manifest(layout)
+    old_activation = _read_activation_state(layout)
     installation_id = old_manifest.get("installation_id") or str(uuid.uuid4())
-    old_current = layout.current.resolve() if layout.current.exists() else None
-    _atomic_symlink(final_runtime, layout.current)
-    _write_management_cli(layout)
-
-    try:
-        reporter.progress("service", "安装并验证用户级 LaunchAgent")
-        _service_command(
-            final_runtime,
-            layout,
-            ["install", "--host", args.host, "--port", str(args.port)],
-            error_context="LaunchAgent 安装或启动验证失败",
-        )
-    except Exception:
-        if old_current is not None:
-            _atomic_symlink(old_current, layout.current)
-        else:
-            try:
-                layout.current.unlink()
-            except FileNotFoundError:
-                pass
-            try:
-                layout.cli.unlink()
-            except FileNotFoundError:
-                pass
-        raise
-
     manifest = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "installation_id": installation_id,
@@ -1359,15 +1356,48 @@ def install(args: argparse.Namespace, reporter: Reporter) -> dict:
         "installed_at": datetime.now(timezone.utc).isoformat(),
         "management_cli": str(layout.cli),
     }
-    _atomic_write_json(layout.manifest, manifest)
-    status_payload = service_status(layout, final_runtime)
+    old_current = layout.current.resolve() if layout.current.exists() else None
+    try:
+        _atomic_symlink(final_runtime, layout.current)
+        _write_management_cli(layout)
+        _atomic_write_json(layout.manifest, manifest)
+        activation_changes: dict[str, object] = {
+            "runtime_installed": True,
+            "commit": version,
+        }
+        if old_activation.get("commit") != version:
+            activation_changes.update(service_enabled=False, query_ready=False)
+        activation = _update_activation_state(layout, **activation_changes)
+    except Exception:
+        if old_current is not None:
+            _atomic_symlink(old_current, layout.current)
+        else:
+            try:
+                layout.current.unlink()
+            except FileNotFoundError:
+                pass
+            try:
+                layout.cli.unlink()
+            except FileNotFoundError:
+                pass
+        if old_manifest:
+            _atomic_write_json(layout.manifest, old_manifest)
+        else:
+            try:
+                layout.manifest.unlink()
+            except FileNotFoundError:
+                pass
+        raise
+
     return {
-        "ok": bool(status_payload.get("ok")),
+        "ok": True,
         "command": "install",
+        "phase": "runtime_installed",
+        "runtime_installed": True,
+        "service_enabled": bool(activation.get("service_enabled", False)),
         "installation": manifest,
-        "service": status_payload,
         "migrated": migrated,
-        "next_step": "run_init_with_user_confirmation",
+        "next_step": "inspect",
     }
 
 
@@ -1395,6 +1425,85 @@ def service_status(layout: InstallLayout, runtime: Path) -> dict:
         return json.loads(result.stdout.strip().splitlines()[-1])
     except (IndexError, json.JSONDecodeError) as exc:
         raise InstallerError("LaunchAgent 返回了无法解析的状态") from exc
+
+
+def _safe_service_status(layout: InstallLayout, runtime: Path) -> dict:
+    try:
+        return service_status(layout, runtime)
+    except (InstallerError, OSError) as exc:
+        return {
+            "ok": False,
+            "status": "unavailable",
+            "error_code": "service_status_unavailable",
+            "error": str(exc),
+        }
+
+
+def inspect(args: argparse.Namespace, reporter: Reporter) -> dict:
+    """Read installed state and stop at the next interaction boundary."""
+    layout = default_layout(Path(args.home).expanduser() if args.home else None)
+    manifest = _read_manifest(layout)
+    runtime = _installed_runtime(layout, manifest)
+    activation = _read_activation_state(layout)
+    reporter.progress("inspect", "只读检查安装阶段、微信环境和常驻服务")
+    service_payload = _safe_service_status(layout, runtime)
+    query_ready = bool(service_payload.get("query_ready"))
+    initialized = bool(activation.get("initialized") or service_payload.get("initialized"))
+    if "launchd_loaded" in service_payload:
+        service_enabled = bool(service_payload.get("launchd_loaded"))
+    else:
+        service_enabled = bool(activation.get("service_enabled"))
+
+    base = {
+        "ok": True,
+        "command": "inspect",
+        "installation_id": manifest.get("installation_id"),
+        "endpoint": manifest.get("endpoint"),
+        "runtime_installed": True,
+        "initialized": initialized,
+        "service_enabled": service_enabled,
+        "query_ready": query_ready,
+        "service": service_payload,
+    }
+    if query_ready:
+        return {**base, "next_step": "register_with_mcporter"}
+    if initialized:
+        return {**base, "next_step": "enable_service"}
+    if platform.system().lower() != "darwin":
+        return {**base, "next_step": "initialize"}
+
+    try:
+        preflight = _preflight_macos_initialize(runtime, layout)
+        candidates = list(preflight.get("account_candidates") or [])
+        configured = preflight.get("db_dir")
+        if configured is not None and configured not in candidates:
+            candidates.insert(0, configured)
+        keys_file = layout.data_dir / "all_keys.json"
+        keys_reusable = any(_valid_key_file(keys_file, candidate) for candidate in candidates)
+        if keys_reusable:
+            return {**base, "keys_reusable": True, "next_step": "initialize"}
+        _preflight_macos_scanner(preflight)
+        return {**base, "keys_reusable": False, "next_step": "initialize"}
+    except InstallerError as exc:
+        boundaries = {
+            "wechat_not_adhoc_signed": "prepare_wechat",
+            "wechat_not_running": "sign_in_to_wechat",
+            "wechat_app_not_found": "open_wechat",
+            "wechat_database_not_found": "sign_in_to_wechat",
+        }
+        if exc.error_code not in boundaries:
+            raise
+        return {
+            **base,
+            "ready_for_initialize": False,
+            "preflight_error": {
+                "error_code": exc.error_code,
+                "user_message": str(exc),
+                "next_action": exc.next_action,
+                "details": exc.details,
+            },
+            "next_step": boundaries[exc.error_code],
+        }
 
 
 def status(args: argparse.Namespace, reporter: Reporter) -> dict:
@@ -1667,34 +1776,69 @@ def upgrade(args: argparse.Namespace, reporter: Reporter) -> dict:
         "upgraded": True,
         "from_commit": installed_commit,
         "to_commit": installation.get("commit"),
+        "runtime_installed": bool(install_payload.get("runtime_installed")),
+        "service_enabled": bool(install_payload.get("service_enabled")),
         "installation": installation,
-        "service": install_payload.get("service"),
+        "next_step": install_payload.get("next_step") or "inspect",
     }
 
 
 def repair(args: argparse.Namespace, reporter: Reporter) -> dict:
+    return enable_service(args, reporter, command="repair")
+
+
+def enable_service(
+    args: argparse.Namespace,
+    reporter: Reporter,
+    *,
+    command: str = "enable-service",
+) -> dict:
     layout = default_layout(Path(args.home).expanduser() if args.home else None)
     manifest = _read_manifest(layout)
     runtime = _installed_runtime(layout, manifest)
+    activation = _read_activation_state(layout)
+    existing_service = _safe_service_status(layout, runtime)
+    initialized = bool(activation.get("initialized") or existing_service.get("initialized"))
+    if not initialized:
+        raise InstallerError(
+            "本地数据尚未初始化，暂不启用常驻服务",
+            error_code="initialization_required",
+            next_action="run_initialize_before_enabling_service",
+        )
     host = str(manifest.get("host") or DEFAULT_HOST)
     port = int(manifest.get("port") or DEFAULT_PORT)
-    reporter.progress("repair", "重新生成 LaunchAgent 并执行完整启动验证")
+    reporter.progress("service", "安装或修复用户级 LaunchAgent，并验证本机端口")
     _service_command(
         runtime,
         layout,
         ["install", "--host", host, "--port", str(port)],
-        error_context="LaunchAgent 修复失败",
+        error_context="LaunchAgent 启用失败；初始化结果已保留，可只重试 enable-service",
+    )
+    deadline = time.monotonic() + 20
+    service_payload = service_status(layout, runtime)
+    while not service_payload.get("query_ready") and time.monotonic() < deadline:
+        time.sleep(1)
+        service_payload = service_status(layout, runtime)
+    query_ready = bool(service_payload.get("query_ready"))
+    _update_activation_state(
+        layout,
+        service_enabled=True,
+        query_ready=query_ready,
     )
     return {
-        "ok": True,
-        "command": "repair",
+        "ok": query_ready,
+        "command": command,
         "installation_id": manifest.get("installation_id"),
-        "service": service_status(layout, runtime),
+        "initialized": True,
+        "service_enabled": True,
+        "query_ready": query_ready,
+        "service": service_payload,
+        "next_step": "register_with_mcporter" if query_ready else "retry_enable_service",
     }
 
 
 def initialize(args: argparse.Namespace, reporter: Reporter) -> dict:
-    """在用户单独确认敏感操作后执行初始化，并重新验证常驻服务。"""
+    """Extract keys and prepare local data without coupling service activation."""
     _require_non_root_management()
     layout = default_layout(Path(args.home).expanduser() if args.home else None)
     manifest = _read_manifest(layout)
@@ -1721,46 +1865,20 @@ def initialize(args: argparse.Namespace, reporter: Reporter) -> dict:
         env=env,
         error_context="本机消息数据初始化失败",
     )
-    service_payload = service_status(layout, runtime)
-    transport_ready = bool(
-        service_payload.get("transport_ready")
-        or service_payload.get("query_ready")
-        or service_payload.get("status") == "ready"
+    _update_activation_state(
+        layout,
+        initialized=True,
+        service_enabled=False,
+        query_ready=False,
     )
-    if not transport_ready:
-        reporter.progress("service", "初始化完成，启动现有 LaunchAgent")
-        _service_command(
-            runtime,
-            layout,
-            ["start"],
-            error_context="初始化完成，但 LaunchAgent 启动失败",
-        )
-    elif authorization_prompt_count > 0 or not service_payload.get("query_ready"):
-        # 本次提取了新密钥（authorization_prompt_count > 0）或服务状态显示未就绪时，
-        # 均需重启服务。service_status 基于文件系统判断 query_ready，但已运行的
-        # MCP 进程在启动时加载密钥到内存，不会自动感知新写入的 all_keys.json。
-        reporter.progress("service", "重启 MCP 服务以加载新解密数据")
-        _service_command(
-            runtime,
-            layout,
-            ["restart"],
-            error_context="MCP 服务重启失败",
-        )
-    # 等待服务完全就绪（端口绑定需要数秒），最多轮询 20 秒
-    deadline = time.monotonic() + 20
-    service_payload = service_status(layout, runtime)
-    while not service_payload.get("query_ready") and time.monotonic() < deadline:
-        time.sleep(1)
-        service_payload = service_status(layout, runtime)
-    initialized = bool(service_payload.get("initialized"))
-    query_ready = bool(service_payload.get("query_ready"))
     return {
-        "ok": initialized,
+        "ok": True,
         "command": "initialize",
         "installation_id": manifest.get("installation_id"),
         "endpoint": manifest.get("endpoint"),
-        "query_ready": query_ready,
-        "service": service_payload,
+        "initialized": True,
+        "service_enabled": False,
+        "query_ready": False,
         "authorization_prompt_count": authorization_prompt_count,
         "repaired_legacy_files": repaired_files,
         "account": (
@@ -1769,7 +1887,7 @@ def initialize(args: argparse.Namespace, reporter: Reporter) -> dict:
             else None
         ),
         "account_changed": bool(preflight.get("account_changed")) if platform.system().lower() == "darwin" else False,
-        "next_step": "register_with_mcporter" if query_ready else "wait_until_query_ready",
+        "next_step": "enable_service",
     }
 
 
@@ -1821,6 +1939,7 @@ def prepare_wechat(args: argparse.Namespace, reporter: Reporter) -> dict:
             },
         )
     if _is_adhoc_signed(app):
+        _update_activation_state(layout, wechat_prepared=True)
         return {
             "ok": True,
             "command": "prepare-wechat",
@@ -1830,6 +1949,7 @@ def prepare_wechat(args: argparse.Namespace, reporter: Reporter) -> dict:
         }
 
     authorization_prompt_count = _resign_wechat_app(app, reporter)
+    _update_activation_state(layout, wechat_prepared=True)
     subprocess.run(
         ["/usr/bin/open", str(app)],
         check=False,
@@ -1887,6 +2007,7 @@ def uninstall(args: argparse.Namespace, reporter: Reporter) -> dict:
     runtime = _installed_runtime(layout, manifest)
     reporter.progress("uninstall", "停止并移除用户级 LaunchAgent")
     _service_command(runtime, layout, ["uninstall"], error_context="LaunchAgent 卸载失败")
+    _update_activation_state(layout, service_enabled=False, query_ready=False)
     removed_runtime = False
     if args.remove_runtime:
         reporter.progress("uninstall", "删除已安装运行时，保留敏感数据目录")
@@ -1912,7 +2033,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--home", default=None, help=argparse.SUPPRESS)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    install_parser = subparsers.add_parser("install", help="部署独立运行时并安装 LaunchAgent")
+    install_parser = subparsers.add_parser("install", help="部署独立运行时")
     install_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
     install_parser.add_argument("--source", default=str(Path(__file__).resolve().parent))
     install_parser.add_argument(
@@ -1949,12 +2070,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     status_parser = subparsers.add_parser("status", help="读取安装和服务状态")
     status_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
+    inspect_parser = subparsers.add_parser("inspect", help="只读检查并返回下一安装阶段")
+    inspect_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
     update_parser = subparsers.add_parser("check-update", help="检查 main 发布通道是否有新版本")
     update_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
     upgrade_parser = subparsers.add_parser("upgrade", help="经用户确认后升级到 main 最新版本")
     upgrade_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
     repair_parser = subparsers.add_parser("repair", help="按安装清单修复 LaunchAgent")
     repair_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
+    enable_service_parser = subparsers.add_parser(
+        "enable-service", help="初始化完成后安装并验证 LaunchAgent"
+    )
+    enable_service_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
     initialize_parser = subparsers.add_parser("initialize", help="经用户确认后提取密钥并预解密本机数据库")
     initialize_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
     # 兼容可能仍传入旧参数的 Agent；该参数不再授权 initialize 修改 WeChat。
@@ -1985,10 +2112,12 @@ def main(argv: list[str] | None = None) -> int:
         _require_non_root_management()
         handlers = {
             "install": install,
+            "inspect": inspect,
             "status": status,
             "check-update": check_update,
             "upgrade": upgrade,
             "repair": repair,
+            "enable-service": enable_service,
             "initialize": initialize,
             "prepare-wechat": prepare_wechat,
             "accounts": accounts,
@@ -2020,7 +2149,7 @@ def main(argv: list[str] | None = None) -> int:
             "wechat_resign_confirmation_required": "confirm_wechat_resign",
             "wechat_must_quit_for_resign": "quit_wechat",
             "administrator_authorization_cancelled": "approve_administrator_prompt",
-            "task_for_pid_failed": "approve_administrator_prompt",
+            "wechat_process_access_failed": "keep_wechat_open_and_signed_in",
             "version_not_allowed": "check_for_supported_release",
             "wechat_account_not_found": "select_wechat_account",
         }
@@ -2030,11 +2159,14 @@ def main(argv: list[str] | None = None) -> int:
             "wechat_not_adhoc_signed": "prepare-wechat --confirm-resign",
             "wechat_resign_confirmation_required": "prepare-wechat --confirm-resign",
             "wechat_must_quit_for_resign": "prepare-wechat --confirm-resign",
+            "wechat_process_access_failed": "inspect",
             "wechat_account_not_found": "accounts",
         }
         if exc.error_code in retry_commands:
             payload["retry_command"] = retry_commands[exc.error_code]
-        elif args.command in {"initialize", "prepare-wechat", "select-account"}:
+        elif args.command in {
+            "initialize", "prepare-wechat", "select-account", "enable-service", "repair"
+        }:
             payload["retry_command"] = args.command
         reporter.result(payload)
         return 1

@@ -285,7 +285,7 @@ class InstallerFlowTests(unittest.TestCase):
                 ],
             )
 
-    def test_install_uses_versioned_runtime_and_writes_manifest_after_service_validation(self):
+    def test_install_deploys_runtime_without_touching_launchagent(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             source = base / "source"
@@ -303,12 +303,6 @@ class InstallerFlowTests(unittest.TestCase):
                 python.parent.mkdir(parents=True)
                 python.write_text("", encoding="utf-8")
 
-            ready = {
-                "ok": True,
-                "status": "ready",
-                "launchd_pid": 123,
-                "port_pids": [123],
-            }
             with patch.object(installer.platform, "system", return_value="Darwin"), \
                  patch.object(
                      installer,
@@ -323,8 +317,8 @@ class InstallerFlowTests(unittest.TestCase):
                  patch.object(installer, "copy_runtime", side_effect=fake_copy), \
                  patch.object(installer, "_create_runtime_environment", side_effect=fake_environment), \
                  patch.object(installer, "_build_macos_scanner"), \
-                 patch.object(installer, "_service_command", return_value=Mock(returncode=0)), \
-                 patch.object(installer, "service_status", return_value=ready):
+                 patch.object(installer, "_service_command") as service_command, \
+                 patch.object(installer, "service_status") as service_status:
                 payload = installer.install(args, installer.Reporter(json_mode=True))
 
             layout = installer.default_layout(home)
@@ -347,9 +341,15 @@ class InstallerFlowTests(unittest.TestCase):
             self.assertEqual(manifest["data_dir"], str(layout.data_dir))
             self.assertTrue(os.access(layout.cli, os.X_OK))
             self.assertIn("runtime/current/installer.py", layout.cli.read_text(encoding="utf-8"))
-            self.assertEqual(payload["next_step"], "run_init_with_user_confirmation")
+            service_command.assert_not_called()
+            service_status.assert_not_called()
+            self.assertEqual(payload["phase"], "runtime_installed")
+            self.assertFalse(payload["service_enabled"])
+            self.assertEqual(payload["next_step"], "inspect")
+            activation = json.loads(layout.activation_state.read_text(encoding="utf-8"))
+            self.assertTrue(activation["runtime_installed"])
 
-    def test_install_rolls_back_current_pointer_when_service_install_fails(self):
+    def test_install_is_not_affected_by_service_install_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             source = base / "source"
@@ -383,12 +383,13 @@ class InstallerFlowTests(unittest.TestCase):
                  patch.object(installer, "copy_runtime", side_effect=fake_copy), \
                  patch.object(installer, "_create_runtime_environment", side_effect=fake_environment), \
                  patch.object(installer, "_build_macos_scanner"), \
-                 patch.object(installer, "_service_command", side_effect=installer.InstallerError("failed")):
-                with self.assertRaises(installer.InstallerError):
-                    installer.install(args, installer.Reporter(json_mode=True))
+                 patch.object(installer, "_service_command", side_effect=installer.InstallerError("failed")) as service_command:
+                payload = installer.install(args, installer.Reporter(json_mode=True))
 
-            self.assertEqual(layout.current.resolve(), old_runtime.resolve())
-            self.assertFalse(layout.manifest.exists())
+            service_command.assert_not_called()
+            self.assertTrue(payload["ok"])
+            self.assertNotEqual(layout.current.resolve(), old_runtime.resolve())
+            self.assertTrue(layout.manifest.exists())
 
 
 class JsonCliTests(unittest.TestCase):
@@ -505,7 +506,9 @@ class JsonCliTests(unittest.TestCase):
                     {
                         "ok": True,
                         "installation": {"commit": "b" * 40, "branch": "main"},
-                        "service": {"ok": True, "status": "ready"},
+                        "runtime_installed": True,
+                        "service_enabled": False,
+                        "next_step": "inspect",
                     }
                 ),
                 stderr="",
@@ -528,6 +531,9 @@ class JsonCliTests(unittest.TestCase):
             self.assertTrue(payload["upgraded"])
             self.assertEqual(payload["from_commit"], "a" * 40)
             self.assertEqual(payload["to_commit"], "b" * 40)
+            self.assertTrue(payload["runtime_installed"])
+            self.assertFalse(payload["service_enabled"])
+            self.assertEqual(payload["next_step"], "inspect")
             clone.assert_called_once()
             command = run.call_args.args[0]
             self.assertIn("--expected-commit", command)
@@ -584,6 +590,21 @@ class JsonCliTests(unittest.TestCase):
         self.assertEqual(payload["requires_user_action"], "open_wechat")
         self.assertEqual(payload["retry_command"], "initialize")
 
+    def test_process_access_failure_retries_read_only_inspection(self):
+        error = installer.InstallerError(
+            "微信进程访问失败",
+            error_code="wechat_process_access_failed",
+            next_action="inspect_wechat_process_and_signature_before_retry",
+        )
+        with patch.object(installer, "initialize", side_effect=error), \
+             patch.object(installer.Reporter, "result") as result:
+            exit_code = installer.main(["initialize", "--json"])
+
+        self.assertEqual(exit_code, 1)
+        payload = result.call_args.args[0]
+        self.assertEqual(payload["requires_user_action"], "keep_wechat_open_and_signed_in")
+        self.assertEqual(payload["retry_command"], "inspect")
+
     def test_legacy_initialize_resign_flag_routes_to_separate_prepare_stage(self):
         error = installer.InstallerError(
             "微信尚未完成 ad-hoc 重签名",
@@ -620,8 +641,38 @@ class MacInitializeTests(unittest.TestCase):
             with self.assertRaises(installer.InstallerError) as raised:
                 installer.prepare_wechat(args, installer.Reporter(json_mode=True))
 
-        self.assertEqual(raised.exception.error_code, "wechat_resign_confirmation_required")
-        run.assert_not_called()
+            self.assertEqual(raised.exception.error_code, "wechat_resign_confirmation_required")
+            run.assert_not_called()
+
+    def test_inspect_stops_at_prepare_boundary_without_authorization(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            layout = installer.default_layout(home)
+            runtime = layout.runtime_dir / ("a" * 40)
+            runtime.mkdir(parents=True)
+            installer._atomic_write_json(
+                layout.manifest,
+                {"runtime_dir": str(runtime), "endpoint": "http://127.0.0.1:8765/mcp"},
+            )
+            error = installer.InstallerError(
+                "微信尚未完成 ad-hoc 重签名；未弹出管理员授权窗口",
+                error_code="wechat_not_adhoc_signed",
+                next_action="confirm_and_run_prepare_wechat",
+                details={"authorization_prompt_count": 0, "wechat_running": False},
+            )
+            args = argparse.Namespace(home=str(home))
+
+            with patch.object(installer.platform, "system", return_value="Darwin"), \
+                 patch.object(installer, "_safe_service_status", return_value={"status": "stopped"}), \
+                 patch.object(installer, "_preflight_macos_initialize", return_value={"db_dir": None}), \
+                 patch.object(installer, "_preflight_macos_scanner", side_effect=error), \
+                 patch.object(installer, "_extract_macos_keys") as extract:
+                payload = installer.inspect(args, installer.Reporter(json_mode=True))
+
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["next_step"], "prepare_wechat")
+            self.assertEqual(payload["preflight_error"]["error_code"], "wechat_not_adhoc_signed")
+            extract.assert_not_called()
 
     def test_prepare_wechat_rejects_non_wechat_bundle(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1113,15 +1164,13 @@ class MacInitializeTests(unittest.TestCase):
             )
             # 旧参数即使为 True，也不能让 initialize 进入重签逻辑。
             args = argparse.Namespace(home=str(home), confirm_resign=True)
-            ready = {"ok": True, "status": "ready", "query_ready": True}
-
             with patch.object(installer.platform, "system", return_value="Darwin"), \
                  patch.object(installer.os, "geteuid", return_value=501), \
                  patch.object(installer, "_preflight_macos_initialize", return_value={"db_dir": None}) as preflight, \
                  patch.object(installer, "_extract_macos_keys", return_value=True) as extract, \
                  patch.object(installer, "_run", return_value=CompletedProcess([], 0, "", "")) as run, \
                  patch.object(installer, "_service_command") as service_command, \
-                 patch.object(installer, "service_status", return_value=ready):
+                 patch.object(installer, "service_status") as service_status:
                 payload = installer.initialize(args, installer.Reporter(json_mode=True))
 
             preflight.assert_called_once_with(runtime, layout)
@@ -1130,16 +1179,16 @@ class MacInitializeTests(unittest.TestCase):
             self.assertEqual(init_command, [str(runtime_python), str(runtime / "main.py"), "init"])
             self.assertNotIn("sudo", init_command)
             self.assertEqual(run.call_args.kwargs["env"]["WECHAT_DECRYPT_DATA_DIR"], str(layout.data_dir))
-            service_command.assert_called_once_with(
-                runtime,
-                layout,
-                ["restart"],
-                error_context="MCP 服务重启失败",
-            )
+            service_command.assert_not_called()
+            service_status.assert_not_called()
             self.assertEqual(payload["authorization_prompt_count"], 1)
-            self.assertEqual(payload["next_step"], "register_with_mcporter")
+            self.assertTrue(payload["initialized"])
+            self.assertFalse(payload["query_ready"])
+            self.assertEqual(payload["next_step"], "enable_service")
+            activation = json.loads(layout.activation_state.read_text(encoding="utf-8"))
+            self.assertTrue(activation["initialized"])
 
-    def test_initialize_starts_existing_service_without_reinstalling_it(self):
+    def test_enable_service_is_a_separate_retryable_stage(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             layout = installer.default_layout(home)
@@ -1156,29 +1205,79 @@ class MacInitializeTests(unittest.TestCase):
                     "endpoint": "http://127.0.0.1:8765/mcp",
                 },
             )
+            installer._update_activation_state(layout, runtime_installed=True, initialized=True)
             args = argparse.Namespace(home=str(home))
-            stopped = {"ok": False, "status": "stopped", "transport_ready": False}
             ready = {"ok": True, "status": "ready", "transport_ready": True, "initialized": True, "query_ready": True}
 
-            with patch.object(installer.platform, "system", return_value="Darwin"), \
-                 patch.object(installer.os, "geteuid", return_value=501), \
-                 patch.object(installer, "_preflight_macos_initialize", return_value={"db_dir": None}), \
-                 patch.object(installer, "_extract_macos_keys", return_value=False), \
-                 patch.object(installer, "_run", return_value=CompletedProcess([], 0, "", "")), \
-                 patch.object(installer, "_service_command") as service_command, \
-                 patch.object(installer, "service_status", side_effect=[stopped, ready]):
-                payload = installer.initialize(args, installer.Reporter(json_mode=True))
+            with patch.object(installer, "_service_command") as service_command, \
+                 patch.object(installer, "service_status", return_value=ready):
+                payload = installer.enable_service(args, installer.Reporter(json_mode=True))
 
             service_command.assert_called_once_with(
                 runtime,
                 layout,
-                ["start"],
-                error_context="初始化完成，但 LaunchAgent 启动失败",
+                ["install", "--host", "127.0.0.1", "--port", "8765"],
+                error_context="LaunchAgent 启用失败；初始化结果已保留，可只重试 enable-service",
             )
             self.assertTrue(payload["query_ready"])
-            self.assertEqual(payload["authorization_prompt_count"], 0)
+            self.assertEqual(payload["next_step"], "register_with_mcporter")
 
-    def test_scanner_task_for_pid_failure_returns_stable_authorization_action(self):
+    def test_enable_service_failure_preserves_initialized_stage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            layout = installer.default_layout(home)
+            runtime = layout.runtime_dir / ("a" * 40)
+            runtime.mkdir(parents=True)
+            installer._atomic_write_json(
+                layout.manifest,
+                {
+                    "runtime_dir": str(runtime),
+                    "host": "127.0.0.1",
+                    "port": 8765,
+                },
+            )
+            installer._update_activation_state(layout, runtime_installed=True, initialized=True)
+            args = argparse.Namespace(home=str(home))
+            stopped = {"ok": False, "status": "stopped", "initialized": True}
+
+            with patch.object(installer, "service_status", return_value=stopped), \
+                 patch.object(
+                     installer,
+                     "_service_command",
+                     side_effect=installer.InstallerError("launchd failed"),
+                 ):
+                with self.assertRaises(installer.InstallerError):
+                    installer.enable_service(args, installer.Reporter(json_mode=True))
+
+            activation = installer._read_activation_state(layout)
+            self.assertTrue(activation["initialized"])
+            self.assertFalse(activation.get("service_enabled", False))
+
+    def test_enable_service_accepts_initialized_legacy_install_without_stage_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            layout = installer.default_layout(home)
+            runtime = layout.runtime_dir / ("a" * 40)
+            runtime.mkdir(parents=True)
+            installer._atomic_write_json(
+                layout.manifest,
+                {
+                    "runtime_dir": str(runtime),
+                    "host": "127.0.0.1",
+                    "port": 8765,
+                },
+            )
+            args = argparse.Namespace(home=str(home))
+            ready = {"ok": True, "status": "ready", "initialized": True, "query_ready": True}
+
+            with patch.object(installer, "service_status", return_value=ready), \
+                 patch.object(installer, "_service_command"):
+                payload = installer.enable_service(args, installer.Reporter(json_mode=True))
+
+            self.assertTrue(payload["ok"])
+            self.assertTrue(installer._read_activation_state(layout)["service_enabled"])
+
+    def test_scanner_task_for_pid_failure_routes_to_process_inspection(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             runtime = base / "runtime"
@@ -1196,10 +1295,10 @@ class MacInitializeTests(unittest.TestCase):
                         runtime, layout, installer.Reporter(json_mode=True), {}
                     )
 
-            self.assertEqual(raised.exception.error_code, "task_for_pid_failed")
+            self.assertEqual(raised.exception.error_code, "wechat_process_access_failed")
             self.assertEqual(
                 raised.exception.next_action,
-                "retry_initialize_and_approve_the_macos_administrator_prompt",
+                "inspect_wechat_process_and_signature_before_retry",
             )
 
     def test_cancelled_macos_authorization_has_a_retryable_error_code(self):

@@ -311,6 +311,7 @@ class ServiceInstallTests(unittest.TestCase):
             old_content = paths["plist"].read_bytes()
             previous_job = service.LaunchJobInfo(loaded=True, state="running", pid=123)
             failed = Mock(returncode=5, stdout="", stderr="bootstrap failed")
+            legacy_failed = Mock(returncode=5, stdout="", stderr="legacy load failed")
             restored = Mock(returncode=0, stdout="", stderr="")
 
             with patch.object(service, "_require_macos"), \
@@ -318,7 +319,11 @@ class ServiceInstallTests(unittest.TestCase):
                  patch.object(service, "_job_info", return_value=previous_job), \
                  patch.object(service, "_port_owner_pids", return_value=set()), \
                  patch.object(service, "_bootout_loaded_service", return_value=Mock(returncode=0)), \
-                 patch.object(service, "_run_launchctl", side_effect=[failed, restored]):
+                 patch.object(
+                     service,
+                     "_run_launchctl",
+                     side_effect=[failed, legacy_failed, restored],
+                 ):
                 result = service.install_service()
 
             self.assertEqual(result, 5)

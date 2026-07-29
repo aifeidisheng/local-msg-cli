@@ -32,10 +32,10 @@ or debug this repository's source code.
 
 ## End-user installation (macOS)
 
-### Step 1 — Install + Initialize (the ONLY entry point)
+### Step 1 — Install + Inspect (the ONLY bootstrap entry point)
 
-Ask the user for **explicit confirmation** (a macOS admin authorization
-prompt will appear), then run:
+Run the bootstrap directly. This stage is unprivileged and must not show a
+macOS administrator authorization prompt:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aifeidisheng/local-msg-cli/main/install.sh \
@@ -77,19 +77,17 @@ relative form also works:
 ./install.sh --initialize
 ```
 
-This single command does everything:
+This compatibility entry point deliberately stops at the next interaction
+boundary. It:
 1. Clones the verified `main` release
 2. Creates an isolated venv and installs dependencies
 3. Compiles and signs the macOS key scanner
-4. Installs a LaunchAgent (auto-start on login)
-5. Extracts DB keys via macOS system authorization (admin popup)
-6. Pre-decrypts databases so MCP becomes `query_ready`
+4. Deploys the fixed runtime and stable management CLI
+5. Runs the read-only `inspect` command
 
 The command outputs a single JSON line to stdout. Check:
-- `ok: true` and `query_ready: true` → proceed to Step 2
-- `ok: false`, `install_complete: true`, and `phase: "initialize"` → the
-  release is already installed; follow Error Recovery and retry only the
-  installed management CLI instead of rerunning the full installer
+- `ok: true` → follow only its `next_step`
+- `install_complete: true` → never rerun the bootstrap for a later-stage error
 - `ok: false` → see Error Recovery below
 
 **Important UX rule**: Do NOT output manual commands for the user to run
@@ -97,11 +95,16 @@ in a terminal. Execute everything directly. User interaction is limited to
 confirming sensitive actions, quitting/signing in to WeChat when requested,
 and clicking "OK" on the macOS admin authorization popup.
 
-**Do NOT pre-require WeChat to be running/logged-in before executing
-`initialize`.** The command detects the actual state (version, signature,
-running status) and returns the appropriate structured error. Handle errors
-sequentially as they arise — this avoids unnecessary login → quit → login
-cycles when re-signing is needed.
+After bootstrap, use the installed management CLI. Do not ask the user to type
+commands. Advance one explicit stage at a time:
+
+```text
+inspect -> prepare-wechat (only when requested) -> initialize
+        -> enable-service -> mcporter install + enable -> data_source_status
+```
+
+`inspect` is read-only and never authorizes or modifies WeChat. Handle its
+`next_step` sequentially; this avoids unnecessary login → quit → login cycles.
 
 Before that popup, `initialize` performs all unprivileged checks (data path,
 version policy, running process, and ad-hoc signature). A single `initialize`
@@ -109,8 +112,8 @@ attempt invokes `osascript` at most once. If it returns a structured error,
 follow only the matching recovery row below; never wrap a repair command in a
 new `osascript` authorization request.
 
-If `--initialize` is omitted, install.sh only does steps 1-4 and outputs
-`next_step: "run_init_with_user_confirmation"`.
+If `--initialize` is omitted, `install.sh` deploys the runtime and outputs
+`next_step: "inspect"` without running the inspection.
 
 ### Prohibited actions (hard blocklist)
 
@@ -159,11 +162,11 @@ Use ONLY the JSON response fields to decide next steps:
 
 | `error_code` | Action |
 |---|---|
-| `wechat_not_running` | Ask user to open WeChat and retry `initialize` |
+| `wechat_not_running` | Ask user to open and sign in to WeChat, then retry `initialize` |
 | `wechat_not_adhoc_signed` | Keep the two stages separate. Check `details.wechat_running`: if **true** → ask the user to quit WeChat. After the user explicitly confirms re-signing, run installed `prepare-wechat --confirm-resign`. Wait for the user to sign in after WeChat reopens, then retry plain `initialize` |
 | `wechat_must_quit_for_resign` | Ask the user to quit WeChat, then retry the same installed `prepare-wechat --confirm-resign` command |
 | `version_not_allowed` | Report the version mismatch; do NOT modify policy files |
-| `task_for_pid_failed` | The system auth prompt was denied; ask user to retry and approve |
+| `wechat_process_access_failed` | Do not request authorization again. Run `inspect`, keep WeChat open and signed in, and follow the returned process/signature action |
 | `administrator_authorization_cancelled` | User cancelled the admin popup; ask to retry |
 | `management_cli_must_not_run_as_root` | You ran with `sudo` — remove it and retry |
 | `wechat_account_not_found` | Run installed `accounts`, select one returned `account_id` with installed `select-account`, then retry `initialize` |
@@ -200,18 +203,29 @@ commands. Do not edit `config.json` or move `all_keys.json` manually. Normal
 accounts and correct stale auto-selected configuration before these commands
 are needed.
 
-### Step 2 — Register Desktop MCP
+### Step 2 — Enable the Local MCP
 
-Only when Step 1 JSON shows `query_ready: true`:
+After `initialize` returns `next_step: "enable_service"`, execute the installed
+`enable-service` command. A failure here does not invalidate initialization;
+retry only `enable-service`:
+
+```bash
+"$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light" \
+  --json enable-service
+```
+
+### Step 3 — Register Desktop MCP
+
+Only when `enable-service` returns `query_ready: true`:
 
 Register `http://127.0.0.1:8765/mcp` as a `streamablehttp` MCP in the
 Desktop connector (via mcporter install + enable).
 
-### Step 3 — Validate (no user data)
+### Step 4 — Validate (no user data)
 
-Call the MCP tool `data_source_status`. Only report success when it returns
-`status: "ready"`. Do NOT call `list_contacts`, `query_messages`, or any
-tool that returns user data merely to verify installation.
+Call the registered MCP tool `data_source_status`. Only report success when it
+returns `status: "ready"`. Do not call `list_contacts`, `query_messages`, or
+any tool that returns user data merely to verify installation.
 
 ---
 

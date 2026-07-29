@@ -23,6 +23,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <signal.h>
 #include <unistd.h>
 #include <dirent.h>
 #include <ftw.h>
@@ -308,8 +310,10 @@ int main(int argc, char *argv[]) {
     mach_port_t task;
     kern_return_t kr = task_for_pid(mach_task_self(), pid, &task);
     if (kr != KERN_SUCCESS) {
-        fprintf(stderr, "task_for_pid failed: %d\n", kr);
-        fprintf(stderr, "Make sure: (1) running as root, (2) WeChat is ad-hoc signed\n");
+        int process_alive = (kill(pid, 0) == 0 || errno == EPERM);
+        fprintf(stderr, "task_for_pid failed: %d (euid=%d pid=%d alive=%d)\n",
+                kr, geteuid(), pid, process_alive ? 1 : 0);
+        fprintf(stderr, "Re-inspect the WeChat process and ad-hoc signature before retrying.\n");
         return 1;
     }
     printf("Got task port: %u\n", task);

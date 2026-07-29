@@ -68,7 +68,7 @@ class InstallEntrypointTests(unittest.TestCase):
         self.assertNotIn("\n./install.sh\n", macos_install)
         self.assertIn(canonical, usage)
 
-    def test_initialize_failure_still_returns_combined_json(self):
+    def test_inspect_failure_still_returns_combined_json(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             repository = base / "release"
@@ -107,7 +107,7 @@ class InstallEntrypointTests(unittest.TestCase):
                 "\"error\":\"WeChat is not running\","
                 "\"user_message\":\"请打开并登录微信\","
                 "\"requires_user_action\":\"open_wechat\","
-                "\"retry_command\":\"initialize\","
+                "\"retry_command\":\"inspect\","
                 "\"authorization_prompt_count\":0,"
                 "\"next_action\":\"start_wechat_and_retry_initialize\"}'\n"
                 "exit 1\n",
@@ -147,16 +147,16 @@ class InstallEntrypointTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertTrue(payload["install_complete"])
         self.assertFalse(payload["initialize_complete"])
-        self.assertEqual(payload["phase"], "initialize")
+        self.assertEqual(payload["phase"], "inspect")
         self.assertEqual(payload["error_code"], "wechat_not_running")
         self.assertEqual(payload["next_action"], "start_wechat_and_retry_initialize")
         self.assertEqual(payload["authorization_prompt_count"], 0)
         self.assertEqual(payload["user_message"], "请打开并登录微信")
         self.assertEqual(payload["requires_user_action"], "open_wechat")
-        self.assertEqual(payload["retry_command"], "initialize")
-        self.assertEqual(payload["initialize"]["error_code"], "wechat_not_running")
+        self.assertEqual(payload["retry_command"], "inspect")
+        self.assertEqual(payload["inspect"]["error_code"], "wechat_not_running")
 
-    def test_initialize_invalid_stdout_returns_structured_phase_error(self):
+    def test_inspect_invalid_stdout_returns_structured_phase_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             repository = base / "release"
@@ -223,8 +223,8 @@ class InstallEntrypointTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertTrue(payload["install_complete"])
         self.assertFalse(payload["initialize_complete"])
-        self.assertEqual(payload["phase"], "initialize")
-        self.assertEqual(payload["error_code"], "initialize_output_invalid")
+        self.assertEqual(payload["phase"], "inspect")
+        self.assertEqual(payload["error_code"], "inspect_output_invalid")
 
 
 if __name__ == "__main__":

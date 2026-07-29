@@ -7,7 +7,8 @@
 If you are an AI agent helping a user install/set up/connect this MCP:
 
 1. **Read `AGENTS.md` NOW** — it is the authoritative installation guide
-2. **The ONLY entry point is `install.sh --initialize`** — one command does everything
+2. **The ONLY bootstrap entry point is `install.sh --initialize`** — it installs,
+   inspects, and stops at the next user interaction boundary
 3. **Do NOT** follow any manual steps in this README (pip install, venv, compile, main.py, etc.)
 4. **Do NOT** `git clone` this repo just to obtain `install.sh` — download it directly via `curl`:
    ```bash
@@ -72,38 +73,62 @@ If you are an AI agent helping a user install/set up/connect this MCP:
 
 Git 网络操作会重试一次，并在持续低于 1 KiB/s 达 15 秒时快速失败。升级失败会返回 `git_source_unreachable` 或 `all_git_sources_unreachable`，不会要求用户手动重复拼接 clone 命令。Python 依赖安装也会自动重试；如团队已确认 PyPI 镜像，可在安装前通过标准 `PIP_INDEX_URL` 提供，不会被安装器硬编码覆盖。
 
-安装器会完成以下工作：
+引导安装阶段会完成以下工作：
 
 - 复核 `origin`、`main` 发布通道、完整 commit 和干净工作树。
 - 部署到 `~/Library/Application Support/WeChatDecryptLight/runtime/<commit>/`。
 - 创建该版本独立的 `.venv`，安装项目固定版本的直接依赖并编译本地扫描器。
 - 将配置、密钥和解密缓存保存在独立 `data/` 目录，升级时不覆盖已有数据。
-- 安装用户级 LaunchAgent，并核对 launchd PID 与监听端口 PID。
 - 生成稳定管理入口 `~/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light`。
 - 记录安装 commit，支持检查和升级到 `main` 的最新提交。
 - 记录主发布源、备用发布源和本次实际使用源；更新时自动切换不可达的发布源。
 
-密钥提取和数据库预解密是安装器中的敏感步骤。Agent 必须先说明会出现 macOS 系统管理员授权弹窗并取得用户明确确认，然后直接执行上面的 `./install.sh --initialize`。安装器仅在内置 C 扫描器或用户另行明确确认的 WeChat 重签命令中请求管理员权限；管理 CLI、配置、缓存和 LaunchAgent 始终以当前登录用户运行。
+`./install.sh --initialize` 兼容旧 Agent 的入口名称，但不再把提权初始化和服务安装串成一次长事务。它只部署运行时并执行只读 `inspect`，不会弹出管理员授权窗口；Agent 根据 JSON 的 `next_step` 继续。用户无需在终端输入命令，交互仅限于确认敏感操作、退出或登录 WeChat，以及批准 macOS 系统弹窗。
+
+正式安装按以下可恢复阶段推进：
+
+```text
+install -> inspect -> prepare-wechat（仅需要时） -> initialize
+        -> enable-service -> mcporter install + enable -> data_source_status
+```
+
+`state/activation.json` 只保存运行时、初始化和服务阶段标记，不记录账号路径、密钥或消息数据。任一阶段失败时只重试该阶段：服务启用失败不会撤销初始化，初始化失败也不会重新下载运行时。
+
+密钥提取和数据库预解密是敏感步骤。只有 `inspect` 返回 `initialize`，且 Agent 已说明会出现 macOS 系统管理员授权弹窗并取得用户明确确认后，才执行已安装管理 CLI 的 `initialize`。安装器仅在内置 C 扫描器或用户另行明确确认的 WeChat 重签命令中请求管理员权限；管理 CLI、配置、缓存和 LaunchAgent 始终以当前登录用户运行。
 
 `initialize` 会先以普通用户权限完成数据目录、版本门禁、微信进程和 ad-hoc 签名预检；预检失败不会弹出授权窗口。全部预检通过后，单次初始化最多调用一次 `osascript`，该授权只覆盖扫描器本身。不要直接拼接额外的 `osascript` 命令，也不要为修改 `config.json`、`all_keys.json` 或文件所有权再次请求密码；旧流程遗留的单文件所有权问题会由管理 CLI 在普通用户上下文中原子修复。
 
-安装入口的 stdout 始终只输出一条 JSON。失败结果中的 `phase` 标识失败阶段；当 `install_complete: true`、`initialize_complete: false` 且 `phase: "initialize"` 时，表示运行时和 LaunchAgent 已安装成功，不应重新下载或重装。按 `error_code` 完成恢复动作后，只重试下面的已安装管理入口即可。
+安装入口的 stdout 始终只输出一条 JSON。`install_complete: true` 表示运行时已安装，后续任何初始化或服务错误都不应重新下载或重装。按 `next_step` 或 `error_code` 完成恢复动作后，只运行对应的已安装管理命令。
 
-仅当初始化已经执行过但返回结构化错误，并且用户按 `error_code` 对应动作处理完问题后，才使用已安装的管理 CLI 重试初始化：
+只读检查下一阶段：
+
+```bash
+"$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light" --json inspect
+```
+
+仅当 `inspect` 指向 `initialize` 且用户确认系统授权后，才使用已安装的管理 CLI 初始化；结构化错误恢复后也只重试这一步：
 
 ```bash
 "$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light" --json initialize
 ```
 
-不要在上述命令前添加 `sudo`。如果错误使用 `sudo`，管理 CLI 会拒绝运行并返回 `management_cli_must_not_run_as_root`。在系统弹窗中授权即可；扫描器会把 `all_keys.json` 直接写入独立 `data/` 目录，不需要打开终端执行额外扫描命令、移动密钥文件、修改目录所有者或重新加载 LaunchAgent。
+不要在上述命令前添加 `sudo`。如果错误使用 `sudo`，管理 CLI 会拒绝运行并返回 `management_cli_must_not_run_as_root`。在系统弹窗中授权即可；扫描器会把 `all_keys.json` 直接写入独立 `data/` 目录，不需要执行额外扫描命令、移动密钥文件或修改目录所有者。
 
 如果返回 `wechat_not_adhoc_signed`，必须保持重签名与密钥提取的两阶段边界：Agent 应先请用户退出 WeChat 并明确确认允许修改应用签名，然后直接执行已安装管理入口的 `prepare-wechat --confirm-resign`。该命令只允许处理版本门禁实际检测到、bundle id 正确的 WeChat.app，只授权固定的扩展属性清理和 `codesign` 操作，完成后复核签名并重新打开 WeChat；不要让用户在终端手工运行 `sudo codesign`，也不要向 `initialize` 传入 `--confirm-resign`。等待用户完成登录后，再重新执行普通 `initialize`；这样密钥提取不会与同一次 WeChat 退出/重启产生竞态。
 
 多账号场景下，`initialize` 会在同一次密钥扫描中校验所有检测到的数据目录，并把唯一匹配当前 WeChat 进程的账号写入单一 `data/config.json`；已有密钥也会先在所有候选账号上本地验证，可在不弹授权窗口的情况下纠正旧配置。只有自动匹配仍无法恢复时，才使用已安装管理入口的 `accounts` 和 `select-account --account <account_id>`，不要手工编辑 config 或移动密钥文件。
 
+`task_for_pid` 失败会返回 `wechat_process_access_failed`。这说明管理员授权可能已经完成，但目标进程或签名状态不稳定；不要让用户重复批准弹窗，应回到 `inspect`，保持 WeChat 已登录并按返回的进程/签名动作恢复。
+
+初始化成功后执行 `enable-service`。该阶段负责安装 LaunchAgent、核对 launchd PID 与监听端口，并等待 `query_ready`；失败时初始化状态仍被保留，只重试 `enable-service`：
+
+```bash
+"$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light" --json enable-service
+```
+
 所有失败 JSON 同时包含可直接展示的 `user_message`；需要用户动作时还会包含 `requires_user_action`，可重试的管理操作包含 `retry_command`。`error_code` 和 `next_action` 仍是 Agent 判断恢复分支的稳定机器字段。
 
-只有返回的 `service.status` 为 `ready`，才可以把 `http://127.0.0.1:8765/mcp` 注册到 mcporter。`waiting_for_wechat` 表示常驻机制正常，但 MCP 尚不可调用，不能提前报告接入完成。
+只有 `enable-service` 返回 `query_ready: true`，才可通过 mcporter install + enable 把 `http://127.0.0.1:8765/mcp` 以 `streamablehttp` 注册到 Desktop。注册后调用不返回用户数据的 MCP 工具 `data_source_status`，且只有它返回 `status: "ready"` 才报告完成。不要用 `list_contacts`、`query_messages` 等用户数据工具验证安装。`waiting_for_wechat` 表示常驻机制正常，但 MCP 尚不可调用，不能提前注册或报告接入完成。
 
 ## 源码开发安装（非最终用户）
 
@@ -181,7 +206,7 @@ sudo ./find_all_keys_macos --output "$PWD/all_keys.json"
 .venv/bin/python3 main.py init
 ```
 
-在源码调试模式下，`init` 成功后会自动安装指向当前工作树的常驻服务。正式安装应使用上面的 `./install.sh --initialize`，LaunchAgent 才会指向固定版本运行目录，不会依赖可能被删除的 Git 暂存目录。电脑登录后 launchd 自动加载服务；进程异常退出时会自动恢复。常驻服务不依赖终端窗口、shell 激活状态或宿主应用，也不需要 `sudo`。
+在源码调试模式下，`init` 成功后会自动安装指向当前工作树的常驻服务。正式安装应先使用上面的 `./install.sh --initialize`，初始化成功后再由已安装管理 CLI 的 `enable-service` 安装指向固定版本运行目录的 LaunchAgent。电脑登录后 launchd 自动加载服务；进程异常退出时会自动恢复。常驻服务不依赖终端窗口、shell 激活状态或宿主应用，也不需要 `sudo`。
 
 服务使用单实例锁防止手动启动和 LaunchAgent 同时运行两份 MCP。安装和状态检查会同时核对 LaunchAgent 路径、launchd 管理的 PID 与端口监听 PID；如果旧项目或其他进程占用了目标端口，安装器会拒绝自动终止该进程并报告 PID，避免把“其他服务正在监听”误判为安装成功。`status` 将“等待微信”视为正常状态，并会单独报告旧项目配置、端口冲突和恢复中等状态。
 
