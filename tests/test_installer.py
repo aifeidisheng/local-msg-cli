@@ -1043,7 +1043,21 @@ class MacInitializeTests(unittest.TestCase):
                 },
             )
 
-            with patch("config.load_config", return_value={"db_dir": str(db_dir)}), \
+            with patch(
+                "config.load_config",
+                return_value={
+                    "db_dir": str(db_dir),
+                    "version_guard": {
+                        "allowed_version_ranges": [
+                            {
+                                "platform": "darwin",
+                                "min_version": "4.1.5",
+                                "max_version": "4.1.8",
+                            }
+                        ]
+                    },
+                },
+            ), \
                  patch("wechat_version_guard.check_version", return_value=version_result), \
                  patch.object(installer.subprocess, "run") as run:
                 with self.assertRaises(installer.InstallerError) as raised:
@@ -1051,7 +1065,38 @@ class MacInitializeTests(unittest.TestCase):
 
             self.assertEqual(raised.exception.error_code, "version_not_allowed")
             self.assertEqual(raised.exception.details["detected_version"], "4.2.0")
+            search = raised.exception.details["release_search"]
+            self.assertTrue(search["available"])
+            self.assertTrue(search["requires_user_confirmation"])
+            self.assertIn("4.1.5-4.1.8", search["supported_versions"])
+            self.assertIn("gitee.com", search["candidate_hosts"])
+            self.assertIn("github.com", search["candidate_hosts"])
+            self.assertIn("verify_download_sha256_when_published", search["verification_requirements"])
+            self.assertIn("does not prove official authorization", search["disclaimer"])
             run.assert_not_called()
+
+    def test_version_mismatch_error_invites_search_without_treating_source_as_trusted(self):
+        error = installer.InstallerError(
+            "版本不匹配",
+            error_code="version_not_allowed",
+            next_action="search_public_sources_for_supported_release",
+            details={
+                "release_search": {
+                    "available": True,
+                    "requires_user_confirmation": True,
+                    "candidate_hosts": ["gitee.com", "github.com"],
+                }
+            },
+        )
+        with patch.object(installer, "initialize", side_effect=error), \
+             patch.object(installer.Reporter, "result") as result:
+            exit_code = installer.main(["initialize", "--json"])
+
+        self.assertEqual(exit_code, 1)
+        payload = result.call_args.args[0]
+        self.assertEqual(payload["requires_user_action"], "search_public_sources_for_supported_release")
+        self.assertEqual(payload["next_action"], "search_public_sources_for_supported_release")
+        self.assertTrue(payload["details"]["release_search"]["requires_user_confirmation"])
 
     def test_missing_wechat_app_is_not_reported_as_version_guard_failure(self):
         with tempfile.TemporaryDirectory() as tmp:

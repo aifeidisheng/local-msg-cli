@@ -430,10 +430,15 @@ def _preflight_macos_initialize(runtime: Path, layout: InstallLayout) -> dict:
             "detected_app_path": detected.get("app_path"),
         }
         if any("不在允许区间" in reason for reason in reasons):
+            details["release_search"] = _release_search_guidance(
+                cfg,
+                detected,
+            )
             raise InstallerError(
-                f"当前微信版本 {detected.get('short_version') or '未知'} 不在支持范围内；尚未请求管理员授权",
+                f"当前微信版本 {detected.get('short_version') or '未知'} 不在本项目已验证的安全范围内；尚未请求管理员授权。"
+                "可以让 Agent 搜索公开来源，但搜索结果不代表官方授权或安全保证。",
                 error_code="version_not_allowed",
-                next_action="check_upstream_for_a_release_that_supports_this_wechat_version",
+                next_action="search_public_sources_for_supported_release",
                 details=details,
             )
         # A missing bundle is an environment prerequisite, not a policy or
@@ -1539,6 +1544,68 @@ def _safe_service_status(layout: InstallLayout, runtime: Path) -> dict:
         }
 
 
+def _release_search_guidance(cfg: dict, detected: dict) -> dict:
+    """Describe a bounded Agent search without endorsing a download source."""
+    guard = cfg.get("version_guard") or {}
+    supported_versions: list[str] = []
+    for item in guard.get("allowed_version_ranges") or []:
+        if str(item.get("platform") or "").lower() not in {"", "darwin", "macos"}:
+            continue
+        exact = item.get("version") or item.get("short_version")
+        minimum = item.get("min_version") or item.get("start_version")
+        maximum = item.get("max_version") or item.get("end_version")
+        if exact:
+            supported_versions.append(str(exact))
+        elif minimum and maximum and str(minimum) == str(maximum):
+            supported_versions.append(str(minimum))
+        elif minimum and maximum:
+            supported_versions.append(f"{minimum}-{maximum}")
+        elif minimum:
+            supported_versions.append(f">={minimum}")
+        elif maximum:
+            supported_versions.append(f"<={maximum}")
+
+    for item in guard.get("allowed_versions") or []:
+        if str(item.get("platform") or "").lower() not in {"", "darwin", "macos"}:
+            continue
+        exact = item.get("version") or item.get("short_version")
+        if exact:
+            supported_versions.append(str(exact))
+
+    supported_versions = list(dict.fromkeys(supported_versions))
+    target = ", ".join(supported_versions) or "the project-verified macOS version"
+    detected_version = str(detected.get("short_version") or "unknown")
+    return {
+        "available": True,
+        "requires_user_confirmation": True,
+        "detected_version": detected_version,
+        "supported_versions": supported_versions,
+        "search_queries": [
+            f'WeChat macOS {target} DMG SHA-256',
+            f'site:gitee.com WeChat macOS {target} DMG',
+            f'site:github.com WeChat macOS {target} DMG',
+        ],
+        "preferred_source_types": [
+            "official_download_or_archive",
+            "maintainer_declared_release_repository",
+            "user_provided_local_or_private_source",
+        ],
+        "candidate_hosts": ["weixin.qq.com", "wechat.com", "gitee.com", "github.com"],
+        "verification_requirements": [
+            "show_the_source_page_before_download",
+            "do_not_call_a_candidate_official_without_explicit_evidence",
+            "verify_download_sha256_when_published",
+            "verify_macos_bundle_id_com.tencent.xinWeChat",
+            "verify_macos_short_version_matches_a_supported_version",
+            "do_not_replace_or_re_sign_wechat_without_a_separate_user_confirmation",
+        ],
+        "disclaimer": (
+            "A public repository or stable hosting domain does not prove official authorization, "
+            "legality, or safety. Search results are candidates only."
+        ),
+    }
+
+
 def inspect(args: argparse.Namespace, reporter: Reporter) -> dict:
     """Read installed state and stop at the next interaction boundary."""
     layout = default_layout(Path(args.home).expanduser() if args.home else None)
@@ -2255,7 +2322,7 @@ def main(argv: list[str] | None = None) -> int:
             "app_management_permission_required": "enable_app_management",
             "administrator_authorization_cancelled": "approve_administrator_prompt",
             "wechat_process_access_failed": "keep_wechat_open_and_signed_in",
-            "version_not_allowed": "check_for_supported_release",
+            "version_not_allowed": "search_public_sources_for_supported_release",
             "wechat_account_not_found": "select_wechat_account",
         }
         if exc.error_code in user_actions:

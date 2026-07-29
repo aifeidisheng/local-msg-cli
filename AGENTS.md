@@ -206,7 +206,7 @@ Use ONLY the JSON response fields to decide next steps:
 | `wechat_not_adhoc_signed` | Keep the two stages separate. Check `details.wechat_running`: if **true** → ask the user to quit WeChat. After the user explicitly confirms re-signing, run installed `prepare-wechat --confirm-resign`. Wait for the user to sign in after WeChat reopens, then retry plain `initialize` |
 | `wechat_must_quit_for_resign` | Ask the user to quit WeChat, then retry the same installed `prepare-wechat --confirm-resign` command |
 | `app_management_permission_required` | The installer opens **Privacy & Security → App Management**. Ask the user to enable `details.responsible_app` (or the app currently running the installation if it could not be identified), then retry only the same installed `prepare-wechat --confirm-resign` command. Do not retry `initialize`, edit TCC, or disable SIP |
-| `version_not_allowed` | Report the version mismatch; do NOT modify policy files |
+| `version_not_allowed` | Report the version mismatch. If `details.release_search.available` is true, ask whether the user wants the Agent to search public sources such as Gitee/GitHub; treat every result as an untrusted candidate, require confirmation before opening/downloading, verify the source page, published SHA-256, Bundle ID, and supported version, and do NOT modify policy files |
 | `wechat_process_access_failed` | Do not request authorization again. Run `inspect`, keep WeChat open and signed in, and follow the returned process/signature action |
 | `administrator_authorization_cancelled` | User cancelled the admin popup; ask to retry |
 | `management_cli_must_not_run_as_root` | You ran with `sudo` — remove it and retry |

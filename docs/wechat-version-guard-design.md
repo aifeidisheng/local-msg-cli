@@ -78,6 +78,25 @@
 - `build_version`: 当前仅作为 `doctor` 输出里的诊断信息保留，不作为主门禁条件。
 - `require_update_disabled`: 自动升级状态强校验，默认应为 `false`。macOS 微信 3.x 可通过旧 Sparkle plist 辅助判断；微信 4.x 的界面开关已迁移到微信自己的设置系统，旧 plist 无法反映真实状态，因此启用此项会 fail-closed。其他平台暂未实现。该字段不能替代实际版本门禁。
 
+## 版本不匹配时的搜索引导
+
+当检测到的微信版本不在允许范围内，管理 CLI 返回 `version_not_allowed`，并在
+`details.release_search` 中提供面向 Agent 的搜索提示。该提示只描述搜索目标和
+校验边界，不包含项目维护者托管的微信安装包，也不把任何搜索结果标记为官方来源。
+
+Agent 可以在用户明确同意后搜索官方页面、明确声明有分发权的发布仓库，以及
+Gitee、GitHub 等公开托管平台。Gitee 或 GitHub 只是候选发现渠道；稳定域名、项目
+仓库、Release 页面或下载量都不能证明微信安装包获得授权，也不能证明文件安全。
+
+对候选安装包，Agent 至少应：
+
+1. 展示来源页面、发布者声明、版本和平台信息，再请求用户确认下载。
+2. 优先使用发布者公布的 SHA-256；没有可核对摘要时，将候选标为未验证。
+3. 下载后核对 DMG 内应用的 `CFBundleIdentifier=com.tencent.xinWeChat` 和版本号。
+4. 不自动替换 `/Applications/WeChat.app`，不自动重签名，不绕过 Gatekeeper 或系统权限。
+5. 校验失败时停止，不把候选版本加入安全策略；只有项目发布新的受信任版本后，
+   版本门禁才会正式支持新版本。
+
 ## 版本读取策略
 
 macOS：
