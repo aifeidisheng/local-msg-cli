@@ -129,6 +129,8 @@ Do NOT perform any of the following during end-user installation:
 - Any direct `osascript ... with administrator privileges` command
 - Any direct `sudo codesign ... WeChat.app` command; use the installed
   `prepare-wechat` management command after explicit user confirmation
+- Any attempt to edit the TCC database, disable SIP, or automate the App
+  Management toggle; macOS requires the user to grant this permission
 - `chown` / privileged writes for `config.json` or `all_keys.json`
 - Cloning the repo manually and running components separately
 
@@ -165,6 +167,7 @@ Use ONLY the JSON response fields to decide next steps:
 | `wechat_not_running` | Ask user to open and sign in to WeChat, then retry `initialize` |
 | `wechat_not_adhoc_signed` | Keep the two stages separate. Check `details.wechat_running`: if **true** → ask the user to quit WeChat. After the user explicitly confirms re-signing, run installed `prepare-wechat --confirm-resign`. Wait for the user to sign in after WeChat reopens, then retry plain `initialize` |
 | `wechat_must_quit_for_resign` | Ask the user to quit WeChat, then retry the same installed `prepare-wechat --confirm-resign` command |
+| `app_management_permission_required` | The installer opens **Privacy & Security → App Management**. Ask the user to enable `details.responsible_app` (or the app currently running the installation if it could not be identified), then retry only the same installed `prepare-wechat --confirm-resign` command. Do not retry `initialize`, edit TCC, or disable SIP |
 | `version_not_allowed` | Report the version mismatch; do NOT modify policy files |
 | `wechat_process_access_failed` | Do not request authorization again. Run `inspect`, keep WeChat open and signed in, and follow the returned process/signature action |
 | `administrator_authorization_cancelled` | User cancelled the admin popup; ask to retry |
@@ -196,6 +199,16 @@ Do not pass `--confirm-resign` to `initialize`. After `prepare-wechat` returns
 success, wait for the user to finish signing in, then retry the plain
 `initialize` command shown above. This boundary prevents re-signing and key
 extraction from racing the same WeChat shutdown/restart.
+
+On newer macOS releases, modifying another app bundle also requires **App
+Management** permission for the GUI app responsible for the installation. This
+is separate from the administrator password prompt. If macOS denies the fixed
+re-sign command with `Operation not permitted`, `prepare-wechat` returns
+`app_management_permission_required` and opens the correct System Settings
+pane. Ask the user to enable the app named by `details.responsible_app` (for
+example ChatGPT, Terminal, or the IDE/agent host), then retry only
+`prepare-wechat --confirm-resign`. Never assume the responsible app is Terminal,
+and never attempt to change this TCC permission programmatically.
 
 For account recovery, use the installed `accounts` and `select-account`
 commands. Do not edit `config.json` or move `all_keys.json` manually. Normal

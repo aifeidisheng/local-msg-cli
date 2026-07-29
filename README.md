@@ -116,6 +116,8 @@ install -> inspect -> prepare-wechat（仅需要时） -> initialize
 
 如果返回 `wechat_not_adhoc_signed`，必须保持重签名与密钥提取的两阶段边界：Agent 应先请用户退出 WeChat 并明确确认允许修改应用签名，然后直接执行已安装管理入口的 `prepare-wechat --confirm-resign`。该命令只允许处理版本门禁实际检测到、bundle id 正确的 WeChat.app，只授权固定的扩展属性清理和 `codesign` 操作，完成后复核签名并重新打开 WeChat；不要让用户在终端手工运行 `sudo codesign`，也不要向 `initialize` 传入 `--confirm-resign`。等待用户完成登录后，再重新执行普通 `initialize`；这样密钥提取不会与同一次 WeChat 退出/重启产生竞态。
 
+较新的 macOS 还会要求发起安装的宿主应用取得“隐私与安全性 → App 管理”权限，这与管理员密码弹窗是两项独立授权。若最终的重签命令被系统以 `Operation not permitted` 拒绝，`prepare-wechat` 会返回 `app_management_permission_required`，自动打开对应的系统设置页面，并在 `details.responsible_app` 中给出应开启的应用名称（可能是 ChatGPT、终端或当前 IDE/Agent 宿主，不能写死为终端）。用户开启后只重试 `prepare-wechat --confirm-resign`；不要转而执行 `initialize`，也不要修改 TCC 数据库、关闭 SIP 或尝试自动操作该开关。
+
 多账号场景下，`initialize` 会在同一次密钥扫描中校验所有检测到的数据目录，并把唯一匹配当前 WeChat 进程的账号写入单一 `data/config.json`；已有密钥也会先在所有候选账号上本地验证，可在不弹授权窗口的情况下纠正旧配置。只有自动匹配仍无法恢复时，才使用已安装管理入口的 `accounts` 和 `select-account --account <account_id>`，不要手工编辑 config 或移动密钥文件。
 
 `task_for_pid` 失败会返回 `wechat_process_access_failed`。这说明管理员授权可能已经完成，但目标进程或签名状态不稳定；不要让用户重复批准弹窗，应回到 `inspect`，保持 WeChat 已登录并按返回的进程/签名动作恢复。

@@ -46,6 +46,9 @@ REQUIRED_SOURCE_FILES = {
 }
 MIGRATED_FILES = ("config.json", "all_keys.json")
 MIGRATED_DIRS = ("decrypted", "decoded_images", "wechat_files", "mcp_cache")
+APP_MANAGEMENT_SETTINGS_URL = (
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_AppBundles"
+)
 
 
 class InstallerError(RuntimeError):
@@ -511,6 +514,22 @@ def _resign_wechat_app(app: Path, reporter: Reporter | None = None) -> int:
     if result.returncode != 0:
         normalized = result.stderr.lower()
         cancelled = "user canceled" in normalized or "(-128)" in normalized
+        app_management_denied = _is_app_management_denial(result.stderr)
+        if app_management_denied and not cancelled:
+            responsible_app = _responsible_app_name()
+            settings_opened = _open_app_management_settings()
+            app_hint = f"（{responsible_app}）" if responsible_app else ""
+            raise InstallerError(
+                f"macOS 阻止当前安装应用{app_hint}修改 WeChat.app；请在“系统设置 → 隐私与安全性 → App 管理”中允许该应用后重试",
+                error_code="app_management_permission_required",
+                next_action="enable_app_management_and_retry_prepare_wechat",
+                details={
+                    "authorization_prompt_count": 1,
+                    "responsible_app": responsible_app,
+                    "settings_opened": settings_opened,
+                    "settings_pane": "Privacy_AppBundles",
+                },
+            )
         raise InstallerError(
             "用户取消了管理员授权" if cancelled else "WeChat 安全重签失败",
             error_code="administrator_authorization_cancelled" if cancelled else "wechat_resign_failed",
@@ -529,6 +548,64 @@ def _resign_wechat_app(app: Path, reporter: Reporter | None = None) -> int:
             details={"authorization_prompt_count": 1},
         )
     return 1
+
+
+def _is_app_management_denial(stderr: str | None) -> bool:
+    """Recognize the TCC denial emitted when a host may not modify another app."""
+    normalized = (stderr or "").casefold()
+    return "operation not permitted" in normalized or bool(
+        re.search(r"\beperm\b", normalized)
+    )
+
+
+def _responsible_app_name() -> str | None:
+    """Return the nearest GUI app in this process's ancestry, without exposing it."""
+    pid = os.getppid()
+    visited: set[int] = set()
+    for _ in range(12):
+        if pid <= 1 or pid in visited:
+            break
+        visited.add(pid)
+        process = subprocess.run(
+            ["/bin/ps", "-ww", "-p", str(pid), "-o", "ppid=", "-o", "command="],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        if process.returncode != 0 or not process.stdout.strip():
+            break
+        match = re.match(r"\s*(\d+)\s+(.*)", process.stdout, flags=re.DOTALL)
+        if not match:
+            break
+        parent_pid = int(match.group(1))
+        command = match.group(2).strip()
+        app_match = re.search(r"(/.*?\.app)/Contents/", command)
+        if app_match:
+            app_bundle = Path(app_match.group(1))
+            try:
+                with (app_bundle / "Contents" / "Info.plist").open("rb") as info_file:
+                    info = plistlib.load(info_file)
+                display_name = info.get("CFBundleDisplayName") or info.get("CFBundleName")
+                if isinstance(display_name, str) and display_name.strip():
+                    return display_name.strip()
+            except (OSError, plistlib.InvalidFileException, ValueError):
+                pass
+            return app_bundle.stem
+        pid = parent_pid
+    return None
+
+
+def _open_app_management_settings() -> bool:
+    """Open the user-controlled TCC pane; never attempt to change its state."""
+    result = subprocess.run(
+        ["/usr/bin/open", APP_MANAGEMENT_SETTINGS_URL],
+        check=False,
+        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.returncode == 0
 
 
 def _preflight_macos_scanner(preflight: dict) -> None:
@@ -2143,11 +2220,15 @@ def main(argv: list[str] | None = None) -> int:
                 payload["authorization_prompt_count"] = exc.details[
                     "authorization_prompt_count"
                 ]
+            for key in ("responsible_app", "settings_opened", "settings_pane"):
+                if key in exc.details:
+                    payload[key] = exc.details[key]
         user_actions = {
             "wechat_not_running": "open_wechat",
             "wechat_not_adhoc_signed": "confirm_wechat_resign",
             "wechat_resign_confirmation_required": "confirm_wechat_resign",
             "wechat_must_quit_for_resign": "quit_wechat",
+            "app_management_permission_required": "enable_app_management",
             "administrator_authorization_cancelled": "approve_administrator_prompt",
             "wechat_process_access_failed": "keep_wechat_open_and_signed_in",
             "version_not_allowed": "check_for_supported_release",
@@ -2159,6 +2240,7 @@ def main(argv: list[str] | None = None) -> int:
             "wechat_not_adhoc_signed": "prepare-wechat --confirm-resign",
             "wechat_resign_confirmation_required": "prepare-wechat --confirm-resign",
             "wechat_must_quit_for_resign": "prepare-wechat --confirm-resign",
+            "app_management_permission_required": "prepare-wechat --confirm-resign",
             "wechat_process_access_failed": "inspect",
             "wechat_account_not_found": "accounts",
         }

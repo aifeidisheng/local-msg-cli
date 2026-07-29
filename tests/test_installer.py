@@ -605,6 +605,29 @@ class JsonCliTests(unittest.TestCase):
         self.assertEqual(payload["requires_user_action"], "keep_wechat_open_and_signed_in")
         self.assertEqual(payload["retry_command"], "inspect")
 
+    def test_app_management_failure_retries_only_prepare_stage(self):
+        error = installer.InstallerError(
+            "请允许 ChatGPT 管理其他应用",
+            error_code="app_management_permission_required",
+            next_action="enable_app_management_and_retry_prepare_wechat",
+            details={
+                "authorization_prompt_count": 1,
+                "responsible_app": "ChatGPT",
+                "settings_opened": True,
+            },
+        )
+        with patch.object(installer, "prepare_wechat", side_effect=error), \
+             patch.object(installer.Reporter, "result") as result:
+            exit_code = installer.main(["prepare-wechat", "--confirm-resign", "--json"])
+
+        self.assertEqual(exit_code, 1)
+        payload = result.call_args.args[0]
+        self.assertEqual(payload["requires_user_action"], "enable_app_management")
+        self.assertEqual(payload["retry_command"], "prepare-wechat --confirm-resign")
+        self.assertEqual(payload["responsible_app"], "ChatGPT")
+        self.assertTrue(payload["settings_opened"])
+        self.assertEqual(payload["authorization_prompt_count"], 1)
+
     def test_legacy_initialize_resign_flag_routes_to_separate_prepare_stage(self):
         error = installer.InstallerError(
             "微信尚未完成 ad-hoc 重签名",
@@ -814,6 +837,64 @@ class MacInitializeTests(unittest.TestCase):
                     str(app),
                 ],
             )
+
+    def test_resign_classifies_app_management_denial_and_opens_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self._make_wechat_app(Path(tmp))
+            denied = CompletedProcess([], 1, "", "xattr: Operation not permitted")
+
+            with patch.object(installer.subprocess, "run", return_value=denied) as run, \
+                 patch.object(installer, "_responsible_app_name", return_value="ChatGPT"), \
+                 patch.object(installer, "_open_app_management_settings", return_value=True) as open_settings:
+                with self.assertRaises(installer.InstallerError) as raised:
+                    installer._resign_wechat_app(app)
+
+            self.assertEqual(raised.exception.error_code, "app_management_permission_required")
+            self.assertEqual(
+                raised.exception.next_action,
+                "enable_app_management_and_retry_prepare_wechat",
+            )
+            self.assertEqual(raised.exception.details["responsible_app"], "ChatGPT")
+            self.assertTrue(raised.exception.details["settings_opened"])
+            self.assertEqual(raised.exception.details["authorization_prompt_count"], 1)
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args_list[1].args[0][0], "/usr/bin/osascript")
+            open_settings.assert_called_once_with()
+
+    def test_resign_does_not_misclassify_other_codesign_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self._make_wechat_app(Path(tmp))
+            failed = CompletedProcess([], 1, "", "bundle format is ambiguous")
+
+            with patch.object(installer.subprocess, "run", return_value=failed), \
+                 patch.object(installer, "_open_app_management_settings") as open_settings:
+                with self.assertRaises(installer.InstallerError) as raised:
+                    installer._resign_wechat_app(app)
+
+            self.assertEqual(raised.exception.error_code, "wechat_resign_failed")
+            open_settings.assert_not_called()
+
+    def test_responsible_app_name_uses_nearest_gui_ancestor(self):
+        process = CompletedProcess(
+            [],
+            0,
+            "1 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT\n",
+            "",
+        )
+        with patch.object(installer.os, "getppid", return_value=690), \
+             patch.object(installer.subprocess, "run", return_value=process):
+            self.assertEqual(installer._responsible_app_name(), "ChatGPT")
+
+    def test_open_app_management_settings_uses_privacy_deep_link(self):
+        succeeded = CompletedProcess([], 0, "", "")
+        with patch.object(installer.subprocess, "run", return_value=succeeded) as run:
+            self.assertTrue(installer._open_app_management_settings())
+
+        self.assertEqual(
+            run.call_args.args[0],
+            ["/usr/bin/open", installer.APP_MANAGEMENT_SETTINGS_URL],
+        )
+        self.assertTrue(installer.APP_MANAGEMENT_SETTINGS_URL.endswith("Privacy_AppBundles"))
 
     def test_normalize_account_key_output_keeps_only_valid_account(self):
         with tempfile.TemporaryDirectory() as tmp:
