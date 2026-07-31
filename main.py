@@ -312,6 +312,27 @@ def _maybe_install_macos_service():
         print("    可稍后执行: .venv/bin/python3 service.py install")
 
 
+def _maybe_install_windows_service():
+    """Install the current user's Windows logon task after initialization."""
+    if platform.system().lower() != "windows":
+        return
+    if os.environ.get("WECHAT_DECRYPT_SKIP_SERVICE_INSTALL") == "1":
+        print("[*] 已跳过 Windows 常驻任务安装 (WECHAT_DECRYPT_SKIP_SERVICE_INSTALL=1)")
+        return
+
+    try:
+        from windows_service import install_service
+
+        result = install_service()
+        if result == 0:
+            print("[+] Windows 常驻任务已安装：登录后会自动启动 MCP Server")
+        else:
+            print("[!] Windows 常驻任务安装失败，可稍后执行: python windows_service.py install")
+    except Exception as exc:
+        print(f"[!] Windows 常驻任务安装失败: {exc}")
+        print("    可稍后执行: python windows_service.py install")
+
+
 def _call_with_argv(func, argv):
     """调用子命令 main() 时临时隔离 sys.argv，避免 argparse 读到外层命令。"""
     old_argv = sys.argv[:]
@@ -469,6 +490,7 @@ def main():
         if stats["failed"] or (stats["total"] > 0 and stats["success"] == 0):
             sys.exit(2)
         _maybe_install_macos_service()
+        _maybe_install_windows_service()
 
     elif cmd == "decrypt":
         print("[*] 开始解密全部数据库...")

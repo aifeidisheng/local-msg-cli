@@ -49,6 +49,24 @@ class MacServiceInstallHookTests(unittest.TestCase):
         install_service.assert_called_once_with()
 
 
+class WindowsServiceInstallHookTests(unittest.TestCase):
+    def test_windows_service_install_hook_is_opt_out(self):
+        with patch("main.platform.system", return_value="Windows"), \
+             patch.dict("os.environ", {"WECHAT_DECRYPT_SKIP_SERVICE_INSTALL": "1"}, clear=False), \
+             patch("windows_service.install_service") as install_service:
+            main._maybe_install_windows_service()
+
+        install_service.assert_not_called()
+
+    def test_windows_service_install_hook_calls_task_installer(self):
+        with patch("main.platform.system", return_value="Windows"), \
+             patch.dict("os.environ", {}, clear=True), \
+             patch("windows_service.install_service", return_value=0) as install_service:
+            main._maybe_install_windows_service()
+
+        install_service.assert_called_once_with()
+
+
 class MainServeLockTests(unittest.TestCase):
     def test_operational_command_checks_runtime_mode_before_loading_config(self):
         with patch.object(sys, "argv", ["main.py", "serve"]), \

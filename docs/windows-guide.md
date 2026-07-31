@@ -122,6 +122,12 @@ python main.py init
 2. 确认 `Weixin.exe` 正在运行。
 3. 缺少有效 `all_keys.json` 时，扫描微信进程内存并匹配当前 `db_dir` 下数据库的 salt。
 4. 预解密 MCP 查询需要的数据库缓存。
+5. 为当前 Windows 用户安装并启动登录自启的 MCP 计划任务。
+
+密钥提取需要管理员权限，但常驻 MCP 任务使用当前用户的最低权限运行，
+不会以管理员或 `LocalSystem` 身份常驻。任务会在用户登录后自动启动，
+异常退出后由 Windows 任务计划程序尝试恢复，且不会因为切换到电池供电
+或达到默认任务时限而停止。
 
 如果希望把全部数据库解密到 `decrypted` 目录，可执行：
 
@@ -131,11 +137,40 @@ python main.py decrypt
 
 不要共享或提交 `all_keys.json`。它包含明文数据库密钥，拿到该文件即可解密对应账号的本地数据。
 
-## 7. 启动 MCP Server
+## 7. 验证和管理 MCP 常驻任务
 
 ```powershell
-python main.py serve --port 8765
+python windows_service.py status --json
 ```
+
+正常状态为 `status: "ready"`、`task_configuration_current: true` 且
+`transport_ready: true`。状态检查不仅确认 `127.0.0.1:8765` 已监听，还会核对
+任务中的 Python、项目路径以及监听进程的命令行，避免把其他占用 8765 端口的
+进程误判为 MCP 服务。
+
+常用管理命令均不需要管理员权限：
+
+```powershell
+# 重新创建任务并立即启动
+python windows_service.py install
+
+# 启动、停止或重启（stop 保留下次登录自启）
+python windows_service.py start
+python windows_service.py stop
+python windows_service.py restart
+
+# 删除登录自启任务，保留项目、密钥和缓存
+python windows_service.py uninstall
+```
+
+日志默认位于：
+
+```text
+%LOCALAPPDATA%\WeChatDecryptLight\logs\
+```
+
+如果需要源码调试，可以先停止计划任务，再在前台手动执行
+`python main.py serve --port 8765`。日常使用不需要保持 PowerShell 窗口打开。
 
 Desktop MCP 配置：
 
@@ -156,7 +191,9 @@ Desktop MCP 配置：
 | 检查版本门禁 | `python main.py doctor` | 通常不需要 |
 | 首次提取密钥并初始化缓存 | `python main.py init` | 是 |
 | 解密全部数据库 | `python main.py decrypt` | 缺少有效 key 时需要 |
-| 启动 MCP Server | `python main.py serve --port 8765` | 否 |
+| 查看 MCP 常驻状态 | `python windows_service.py status --json` | 否 |
+| 重启 MCP 常驻任务 | `python windows_service.py restart` | 否 |
+| 前台调试 MCP Server | `python main.py serve --port 8765` | 否 |
 | 批量导出聊天 | `python export_all_chats.py` | 否 |
 | 批量解密图片 | `python main.py decode-images` | 否 |
 
@@ -194,5 +231,7 @@ py -3 --version
 
 - 确认地址是 `http://127.0.0.1:8765/mcp`，不是旧的 `/sse`。
 - Runtime 必须选择 Desktop。
-- 确认启动服务的 PowerShell 窗口仍在运行。
+- 执行 `python windows_service.py status --json`，确认状态是 `ready`。
+- `stale_configuration` 表示任务仍指向旧项目或不同端口，重新执行 `install`。
+- `port_conflict` 表示端口已被非当前 MCP 服务进程占用；管理脚本不会自动结束该进程。
 - 如果端口被占用，服务端和 Desktop 配置同时改用另一个端口。

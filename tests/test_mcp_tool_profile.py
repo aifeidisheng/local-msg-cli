@@ -1,9 +1,41 @@
 import unittest
+from unittest.mock import patch
 
 import mcp_server
 
 
 class McpToolProfileTests(unittest.TestCase):
+    def test_register_tool_supports_direct_call_api(self):
+        registered = []
+
+        def direct(name_or_fn=None, **kwargs):
+            registered.append((name_or_fn, kwargs))
+
+        def tool():
+            return None
+
+        with patch.object(mcp_server, "_mcp_tool", direct):
+            mcp_server._register_mcp_tool(tool, {"name": "sample"})
+
+        self.assertEqual(registered, [(tool, {"name": "sample"})])
+
+    def test_register_tool_supports_decorator_factory_api(self):
+        registered = []
+
+        def decorator_factory(*, name=None):
+            def decorator(fn):
+                registered.append((fn, name))
+                return fn
+            return decorator
+
+        def tool():
+            return None
+
+        with patch.object(mcp_server, "_mcp_tool", decorator_factory):
+            mcp_server._register_mcp_tool(tool, {"name": "sample"})
+
+        self.assertEqual(registered, [(tool, "sample")])
+
     def test_core_profile_only_enables_analysis_surface(self):
         expected = {
             "data_source_status",

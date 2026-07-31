@@ -191,11 +191,11 @@ python main.py doctor
 # 5. 提取密钥并预解密 MCP 查询缓存
 python main.py init
 
-# 6. 启动 MCP Server
-python main.py serve --port 8765
+# 6. 初始化成功后会安装当前用户的登录自启任务，检查状态
+python windows_service.py status --json
 ```
 
-Windows 不需要重签名微信。首次执行 `init` 或 `decrypt` 时会读取 `Weixin.exe` 进程内存，因此必须使用管理员 PowerShell；已有有效 `all_keys.json` 后的离线解密通常不再需要管理员权限。完整配置示例、数据目录定位和故障排查见 [Windows 使用指南](docs/windows-guide.md)。
+Windows 不需要重签名微信。首次执行 `init` 或 `decrypt` 时会读取 `Weixin.exe` 进程内存，因此必须使用管理员 PowerShell；已有有效 `all_keys.json` 后的离线解密通常不再需要管理员权限。`init` 成功后会安装当前用户、最低权限的 Windows 登录计划任务，日常 MCP 服务不需要管理员权限或保持 PowerShell 窗口打开。可使用 `python windows_service.py status --json` 检查任务、端口及监听进程归属。完整配置示例、数据目录定位和故障排查见 [Windows 使用指南](docs/windows-guide.md)。
 
 ## macOS 源码调试
 

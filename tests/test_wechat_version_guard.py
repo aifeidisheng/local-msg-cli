@@ -1,7 +1,9 @@
 import os
+import base64
 import plistlib
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import wechat_version_guard as guard
@@ -24,6 +26,46 @@ def _make_macos_app(root, short_version="4.0.18", build_version="23110"):
 
 
 class WechatVersionGuardTests(unittest.TestCase):
+    def test_windows_product_version_is_normalized_without_interpolating_path(self):
+        app_path = r"C:\\Users\\测试\\O'Brien App\\Weixin.exe"
+        completed = SimpleNamespace(
+            returncode=0,
+            stdout=base64.b64encode(
+                '{"ProductVersion":"4.1.9.57","FileVersion":"4.1.9.57"}'.encode()
+            ).decode(),
+            stderr="",
+        )
+
+        with patch.object(guard.subprocess, "run", return_value=completed) as run:
+            result = guard._read_windows_app(app_path)
+
+        command = run.call_args.args[0]
+        self.assertNotIn(app_path, command[-1])
+        self.assertEqual(run.call_args.kwargs["env"]["WECHAT_DECRYPT_APP_PATH"], app_path)
+        self.assertEqual(run.call_args.kwargs["encoding"], guard.locale.getpreferredencoding(False))
+        self.assertEqual(result["short_version"], "4.1.9")
+        self.assertEqual(result["product_version"], "4.1.9.57")
+        self.assertEqual(result["build_version"], "4.1.9.57")
+
+    def test_windows_process_pid_is_passed_through_environment(self):
+        completed = SimpleNamespace(
+            returncode=0,
+            stdout=base64.b64encode(
+                r"C:\Program Files\Tencent\Weixin\Weixin.exe".encode()
+            ).decode(),
+            stderr="",
+        )
+
+        with patch.object(guard.platform, "system", return_value="Windows"), \
+             patch.object(guard.subprocess, "run", return_value=completed) as run, \
+             patch.object(guard, "_expand_path", side_effect=lambda value: value):
+            result = guard._process_path_for_pid(4321)
+
+        command = run.call_args.args[0]
+        self.assertNotIn("4321", command[-1])
+        self.assertEqual(run.call_args.kwargs["env"]["WECHAT_DECRYPT_PID"], "4321")
+        self.assertEqual(result, r"C:\Program Files\Tencent\Weixin\Weixin.exe")
+
     def test_default_policy_uses_pinned_trust_anchor(self):
         policy_path = os.path.join(os.path.dirname(guard.__file__), "version-guard.policy.json")
 

@@ -5,6 +5,7 @@ Exposes local chat contacts and message history through FastMCP streamable-http.
 """
 
 import functools
+import inspect
 import io
 import os, sys, json, time, sqlite3, tempfile, struct, hashlib, atexit, re, threading, subprocess
 import glob
@@ -2122,14 +2123,44 @@ def _guarded_tool(name_or_fn=None, **decorator_kwargs):
         tool_name = explicit_name or fn.__name__
         if explicit_name is not None:
             registration_kwargs["name"] = explicit_name
-        # 直接传函数可避免 FastMCP 2.x 的无参 partial 再次调用已替换的 mcp.tool。
         if _mcp_tool_enabled(tool_name):
-            _mcp_tool(guarded, **registration_kwargs)
+            _register_mcp_tool(guarded, registration_kwargs)
         return guarded
 
     if callable(name_or_fn):
         return wrap(name_or_fn)
     return wrap
+
+
+def _register_mcp_tool(fn, registration_kwargs):
+    """Register against direct-call and decorator-factory FastMCP APIs."""
+    try:
+        parameters = list(inspect.signature(_mcp_tool).parameters.values())
+    except (TypeError, ValueError):
+        _mcp_tool(fn, **registration_kwargs)
+        return
+
+    first_positional = next(
+        (
+            parameter
+            for parameter in parameters
+            if parameter.kind
+            in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.VAR_POSITIONAL,
+            )
+        ),
+        None,
+    )
+    accepts_function = first_positional is not None and (
+        first_positional.kind == inspect.Parameter.VAR_POSITIONAL
+        or first_positional.name in {"fn", "func", "function", "name_or_fn"}
+    )
+    if accepts_function:
+        _mcp_tool(fn, **registration_kwargs)
+    else:
+        _mcp_tool(**registration_kwargs)(fn)
 
 
 mcp.tool = _guarded_tool

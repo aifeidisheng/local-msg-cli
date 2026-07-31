@@ -6,8 +6,10 @@ missing app path, or out-of-range version blocks business actions.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+import locale
 import os
 import platform
 import plistlib
@@ -260,24 +262,42 @@ def _macos_update_setting_supported(detected: Dict[str, Any]) -> bool:
     return bool(version and version[0] < 4)
 
 
+def _decode_powershell_base64(payload: str) -> str:
+    try:
+        return base64.b64decode(payload.strip(), validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise RuntimeError("PowerShell returned invalid encoded output") from exc
+
+
 def _read_windows_app(app_path: str) -> Dict[str, Any]:
+    env = os.environ.copy()
+    env["WECHAT_DECRYPT_APP_PATH"] = app_path
     script = (
-        "$v=(Get-Item -LiteralPath $args[0]).VersionInfo; "
-        "@{ProductVersion=$v.ProductVersion;FileVersion=$v.FileVersion} | ConvertTo-Json -Compress"
+        "$v=(Get-Item -LiteralPath $env:WECHAT_DECRYPT_APP_PATH).VersionInfo; "
+        "$json=@{ProductVersion=$v.ProductVersion;FileVersion=$v.FileVersion} | "
+        "ConvertTo-Json -Compress; "
+        "[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))"
     )
     proc = subprocess.run(
-        ["powershell", "-NoProfile", "-Command", script, app_path],
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output=True,
         text=True,
+        encoding=locale.getpreferredencoding(False),
+        errors="replace",
+        env=env,
         timeout=8,
     )
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or "无法读取 Windows 可执行文件版本")
-    data = json.loads(proc.stdout or "{}")
+    data = json.loads(_decode_powershell_base64(proc.stdout or ""))
+    product_version = str(data.get("ProductVersion", "")).strip()
+    match = re.match(r"^(\d+\.\d+\.\d+)(?:\.\d+)?(?:\D.*)?$", product_version)
+    short_version = match.group(1) if match else product_version
     return {
         "platform": "windows",
         "app_path": app_path,
-        "short_version": str(data.get("ProductVersion", "")),
+        "short_version": short_version,
+        "product_version": product_version,
         "build_version": str(data.get("FileVersion", "")),
     }
 
@@ -355,17 +375,25 @@ def _process_path_for_pid(pid: int) -> str:
         except OSError as exc:
             raise RuntimeError(f"无法读取微信进程 PID={pid} 的可执行文件路径: {exc}") from exc
     if current == "windows":
+        env = os.environ.copy()
+        env["WECHAT_DECRYPT_PID"] = str(pid)
         script = (
-            "$p=Get-CimInstance Win32_Process -Filter \"ProcessId=$($args[0])\"; "
-            "if ($null -ne $p) { $p.ExecutablePath }"
+            "$p=Get-CimInstance Win32_Process -Filter "
+            "\"ProcessId=$([int]$env:WECHAT_DECRYPT_PID)\"; "
+            "if ($null -ne $p) { "
+            "[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($p.ExecutablePath)) }"
         )
         proc = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", script, str(pid)],
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True,
             text=True,
+            encoding=locale.getpreferredencoding(False),
+            errors="replace",
+            env=env,
             timeout=8,
         )
-        path = (proc.stdout or "").strip()
+        encoded_path = (proc.stdout or "").strip()
+        path = _decode_powershell_base64(encoded_path) if encoded_path else ""
         if proc.returncode != 0 or not path:
             raise RuntimeError(
                 (proc.stderr or "").strip()
