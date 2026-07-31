@@ -45,7 +45,7 @@ def service_paths(root: Path | None = None) -> dict[str, Path]:
     return {
         "root": root,
         "python": python,
-        "task_python": pythonw if pythonw.is_file() else python,
+        "task_python": pythonw,
         "main": root / "main.py",
         "service": root / "windows_service.py",
         "log_dir": state_root / "logs",
@@ -57,6 +57,11 @@ def service_paths(root: Path | None = None) -> dict[str, Path]:
 def _require_windows() -> None:
     if platform.system().lower() != "windows":
         raise RuntimeError("Windows task management is only supported on Windows")
+
+
+def _no_window_creation_flags() -> int:
+    """Return the Windows flag that suppresses a child console window."""
+    return int(getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
 
 
 def _current_user() -> str:
@@ -426,6 +431,7 @@ def run_service(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> int:
             env=env,
             stdout=stdout,
             stderr=stderr,
+            creationflags=_no_window_creation_flags(),
         )
 
 

@@ -51,6 +51,16 @@ class WindowsServiceTests(unittest.TestCase):
 
         self.assertEqual(paths["log_dir"], Path(local) / "WeChatDecryptLight" / "logs")
 
+    def test_service_paths_require_pythonw_for_scheduled_task(self):
+        with tempfile.TemporaryDirectory() as root:
+            resolved_root = Path(root).resolve()
+            paths = windows_service.service_paths(resolved_root)
+
+        self.assertEqual(
+            paths["task_python"],
+            resolved_root / ".venv" / "Scripts" / "pythonw.exe",
+        )
+
     def test_task_match_parses_utf16_xml_with_non_ascii_paths(self):
         paths = self._paths(Path(r"C:\Users\测试用户\local-msg-cli"))
         xml = windows_service._task_xml(
@@ -140,6 +150,37 @@ class WindowsServiceTests(unittest.TestCase):
 
         self.assertEqual(result, 1)
         schtasks.assert_not_called()
+
+    def test_install_fails_when_pythonw_is_missing(self):
+        paths = self._paths(Path(r"C:\Users\Test User\local-msg-cli"))
+
+        def is_file(path):
+            return path != paths["task_python"]
+
+        with patch.object(windows_service, "_require_windows"), \
+             patch.object(windows_service, "service_paths", return_value=paths), \
+             patch.object(Path, "is_file", autospec=True, side_effect=is_file), \
+             patch.object(windows_service, "_run_schtasks") as schtasks:
+            result = windows_service.install_service()
+
+        self.assertEqual(result, 1)
+        schtasks.assert_not_called()
+
+    def test_run_service_suppresses_child_console_window(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            paths = self._paths(Path(temp_dir))
+            with patch.object(windows_service, "_require_windows"), \
+                 patch.object(windows_service, "service_paths", return_value=paths), \
+                 patch.object(windows_service.subprocess, "call", return_value=0) as call:
+                result = windows_service.run_service()
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            call.call_args.kwargs["creationflags"],
+            windows_service._no_window_creation_flags(),
+        )
+        self.assertNotEqual(call.call_args.kwargs["creationflags"], 0)
+        self.assertEqual(call.call_args.args[0][0], str(paths["python"]))
 
 
 if __name__ == "__main__":
