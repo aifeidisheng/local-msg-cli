@@ -1069,6 +1069,8 @@ class MacInitializeTests(unittest.TestCase):
             self.assertTrue(search["available"])
             self.assertTrue(search["requires_user_confirmation"])
             self.assertIn("4.1.5-4.1.8", search["supported_versions"])
+            self.assertIn("dldir1.qq.com", search["candidate_hosts"])
+            self.assertIn("dldir1v6.qq.com", search["candidate_hosts"])
             self.assertIn("gitee.com", search["candidate_hosts"])
             self.assertIn("github.com", search["candidate_hosts"])
             self.assertIn("verify_download_sha256_when_published", search["verification_requirements"])
@@ -1078,6 +1080,18 @@ class MacInitializeTests(unittest.TestCase):
             self.assertEqual(network["max_candidates"], 3)
             self.assertEqual(network["max_attempts_per_candidate"], 1)
             self.assertEqual(network["asset_probe_timeout_seconds"], 10)
+            publisher = network["original_publisher_download"]
+            self.assertTrue(publisher["prefer_when_release_metadata_matches"])
+            self.assertEqual(
+                publisher["required_metadata"],
+                ["version", "file_size", "published_digest"],
+            )
+            self.assertTrue(publisher["fallback_only_when_unavailable_or_mismatched"])
+            self.assertTrue(publisher["never_construct_or_guess_a_version_url"])
+            self.assertEqual(
+                network["fallback_order"][0],
+                "verified_original_publisher_download",
+            )
             self.assertTrue(network["download"]["prefer_browser_download"])
             self.assertTrue(network["download"]["no_unbounded_terminal_command"])
             self.assertTrue(network["download"]["do_not_git_clone_candidate_repository"])

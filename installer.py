@@ -353,24 +353,24 @@ def _empty_key_result(summary: dict[str, int]) -> tuple[str, str, str]:
         return (
             "wechat_database_not_found",
             "confirm_wechat_data_access_and_retry_initialize",
-            "扫描器未发现加密数据库；请确认当前用户的数据目录可读，并确认微信已完成登录。",
+            "没有找到可用的微信数据。请确认微信已登录并能正常查看消息，然后重试。",
         )
     if summary.get("unique_key_count") == 0:
         return (
             "wechat_key_not_found",
             "keep_wechat_open_and_logged_in_then_retry_initialize",
-            "扫描器发现了数据库，但没有在微信进程中找到有效密钥；请保持微信登录后重试。",
+            "暂时无法读取微信数据。请保持微信打开并已登录，然后重试。",
         )
     if summary.get("matched_key_count") == 0:
         return (
             "wechat_key_database_mismatch",
             "confirm_the_running_wechat_account_matches_the_detected_data_directory",
-            "扫描器找到密钥，但没有密钥与本机数据库 salt 匹配；请确认当前微信账号与数据目录一致。",
+            "当前登录的微信账号与本机数据不一致。请确认账号后重试。",
         )
     return (
         "key_output_invalid",
         "retry_initialize_and_report_the_structured_diagnostics",
-        "扫描器已找到匹配密钥，但输出文件无效；请重试初始化。",
+        "本机消息数据准备失败，请重试。",
     )
 
 
@@ -434,9 +434,11 @@ def _preflight_macos_initialize(runtime: Path, layout: InstallLayout) -> dict:
                 cfg,
                 detected,
             )
+            supported = "、".join(details["release_search"].get("supported_versions") or [])
+            support_hint = f"，当前支持 {supported}" if supported else ""
             raise InstallerError(
-                f"当前微信版本 {detected.get('short_version') or '未知'} 不在本项目已验证的安全范围内；尚未请求管理员授权。"
-                "可以让 Agent 搜索公开来源，但搜索结果不代表官方授权或安全保证。",
+                f"当前微信版本 {detected.get('short_version') or '未知'} 暂不支持{support_hint}。"
+                "可以为你查找可用的历史版本，但下载和替换前仍需要你确认。",
                 error_code="version_not_allowed",
                 next_action="search_public_sources_for_supported_release",
                 details=details,
@@ -459,13 +461,13 @@ def _preflight_macos_initialize(runtime: Path, layout: InstallLayout) -> dict:
         if missing_app and not policy_failure:
             details["requires_login"] = False
             raise InstallerError(
-                "未找到微信应用；请确认微信已安装（无需登录），然后重试检查。尚未请求管理员授权",
+                "没有找到个人版微信。请先确认已安装，无需登录。",
                 error_code="wechat_app_not_found",
                 next_action="ensure_wechat_installed_and_retry_inspect",
                 details=details,
             )
         raise InstallerError(
-            "微信版本安全预检未通过；尚未请求管理员授权",
+            "当前微信未通过安全检查，安装已暂停。",
             error_code="version_guard_failed",
             next_action="restore_the_trusted_release_and_retry_initialize",
             details=details,
@@ -507,7 +509,7 @@ def _resign_wechat_app(app: Path, reporter: Reporter | None = None) -> int:
     # com.apple.provenance 等扩展属性必须在 codesign 前清理，否则即使已取得
     # 管理员授权，codesign 仍可能失败。
     if reporter:
-        reporter.progress("signature", "尝试直接重签 WeChat（必要时请求系统授权）")
+        reporter.progress("prepare", "正在准备微信，请稍候")
     direct_succeeded = True
     for command in repair_commands:
         direct_result = subprocess.run(
@@ -525,7 +527,7 @@ def _resign_wechat_app(app: Path, reporter: Reporter | None = None) -> int:
 
     # 受保护的 app bundle 在同一次管理员授权中保持先清理、后签名的顺序。
     if reporter:
-        reporter.progress("signature", "通过 macOS 系统授权安全重签 WeChat")
+        reporter.progress("authorization", "请在系统提示中确认，完成后将自动继续")
     authorized_command = " && ".join(
         shlex.join(command) for command in repair_commands
     )
@@ -658,8 +660,13 @@ def _preflight_macos_scanner(preflight: dict) -> None:
         )
         wechat_running = probe.returncode == 0 and bool(probe.stdout.strip())
 
+        user_message = (
+            "继续前需要准备微信。请先完全退出微信；这一步会修改微信应用，确认后可能出现系统授权。"
+            if wechat_running
+            else "继续前需要准备微信。这一步会修改微信应用，确认后可能出现系统授权。"
+        )
         raise InstallerError(
-            "微信尚未完成 ad-hoc 重签名；未弹出管理员授权窗口",
+            user_message,
             error_code="wechat_not_adhoc_signed",
             next_action=(
                 "quit_wechat_confirm_and_run_prepare_wechat"
@@ -685,7 +692,7 @@ def _preflight_macos_scanner(preflight: dict) -> None:
     )
     if running.returncode != 0 or not running.stdout.strip():
         raise InstallerError(
-            "微信尚未运行；未弹出管理员授权窗口",
+            "请打开并登录个人版微信，完成后再继续。",
             error_code="wechat_not_running",
             next_action="start_wechat_and_retry_initialize",
             details={"authorization_prompt_count": 0},
@@ -913,7 +920,7 @@ def _extract_macos_keys(
         account_dirs=accounts if len(accounts) > 1 else None,
     )
 
-    reporter.progress("keys", "通过 macOS 系统授权读取 WeChat 进程并提取数据库密钥")
+    reporter.progress("authorization", "正在读取本机微信数据，请按系统提示确认")
     scanner_args = [
         str(scanner),
         "--output",
@@ -1390,7 +1397,7 @@ def install(args: argparse.Namespace, reporter: Reporter) -> dict:
 
     source = Path(args.source).expanduser().resolve()
     layout = default_layout(Path(args.home).expanduser() if args.home else None)
-    reporter.progress("verify", f"校验 Git 来源和 {args.branch} 发布通道")
+    reporter.progress("prepare", "正在检查安装文件")
     repositories = list(dict.fromkeys([args.repository, *getattr(args, "fallback_repositories", [])]))
     source_info = verify_source(
         source,
@@ -1409,10 +1416,10 @@ def install(args: argparse.Namespace, reporter: Reporter) -> dict:
         if staging.exists():
             raise InstallerError(f"安装暂存目录已存在：{staging}")
         try:
-            reporter.progress("copy", "复制经过 Git 跟踪的运行文件")
+            reporter.progress("install", "正在复制安装文件")
             copy_runtime(source, staging)
             _mark_installed_runtime(staging)
-            reporter.progress("runtime", "创建 Python 环境 + 编译扫描器（并行）")
+            reporter.progress("install", "正在安装所需组件，首次安装可能需要一些时间")
             # pip install and C compilation are independent — run in parallel
             # to save 2-5s (compile overlaps with the slower pip step).
             build_error: BaseException | None = None
@@ -1438,9 +1445,9 @@ def install(args: argparse.Namespace, reporter: Reporter) -> dict:
         if not (final_runtime / ".venv" / "bin" / "python3").is_file():
             raise InstallerError("已存在的固定版本运行时不完整，拒绝直接复用")
         _mark_installed_runtime(final_runtime)
-        reporter.progress("runtime", "固定提交的运行时已存在，复用现有安装")
+        reporter.progress("install", "已找到现有安装，正在继续")
 
-    reporter.progress("data", "准备独立数据目录并迁移已有本机数据")
+    reporter.progress("data", "正在保留并整理已有数据")
     migrated = migrate_existing_data(source, layout.data_dir)
     old_manifest = _read_manifest(layout)
     old_activation = _read_activation_state(layout)
@@ -1582,6 +1589,7 @@ def _release_search_guidance(cfg: dict, detected: dict) -> dict:
         "supported_versions": supported_versions,
         "search_queries": [
             f'WeChat macOS {target} DMG SHA-256',
+            f'site:dldir1.qq.com WeChat macOS {target} DMG',
             f'site:gitee.com WeChat macOS {target} DMG',
             f'site:github.com WeChat macOS {target} DMG',
         ],
@@ -1590,7 +1598,14 @@ def _release_search_guidance(cfg: dict, detected: dict) -> dict:
             "maintainer_declared_release_repository",
             "user_provided_local_or_private_source",
         ],
-        "candidate_hosts": ["weixin.qq.com", "wechat.com", "gitee.com", "github.com"],
+        "candidate_hosts": [
+            "weixin.qq.com",
+            "wechat.com",
+            "dldir1.qq.com",
+            "dldir1v6.qq.com",
+            "gitee.com",
+            "github.com",
+        ],
         "verification_requirements": [
             "show_the_source_page_before_download",
             "do_not_call_a_candidate_official_without_explicit_evidence",
@@ -1610,8 +1625,15 @@ def _release_search_guidance(cfg: dict, detected: dict) -> dict:
             "max_attempts_per_candidate": 1,
             "source_page_timeout_seconds": 15,
             "asset_probe_timeout_seconds": 10,
+            "original_publisher_download": {
+                "preferred_hosts": ["dldir1.qq.com", "dldir1v6.qq.com"],
+                "prefer_when_release_metadata_matches": True,
+                "required_metadata": ["version", "file_size", "published_digest"],
+                "fallback_only_when_unavailable_or_mismatched": True,
+                "never_construct_or_guess_a_version_url": True,
+            },
             "fallback_order": [
-                "official_download_or_archive",
+                "verified_original_publisher_download",
                 "maintainer_declared_gitee_release",
                 "maintainer_declared_github_release",
                 "user_provided_local_or_private_source",
@@ -1640,7 +1662,7 @@ def inspect(args: argparse.Namespace, reporter: Reporter) -> dict:
     manifest = _read_manifest(layout)
     runtime = _installed_runtime(layout, manifest)
     activation = _read_activation_state(layout)
-    reporter.progress("inspect", "只读检查安装阶段、微信环境和常驻服务")
+    reporter.progress("check", "正在检查下一步")
     service_payload = _safe_service_status(layout, runtime)
     query_ready = bool(service_payload.get("query_ready"))
     initialized = bool(activation.get("initialized") or service_payload.get("initialized"))
@@ -1705,7 +1727,7 @@ def status(args: argparse.Namespace, reporter: Reporter) -> dict:
     layout = default_layout(Path(args.home).expanduser() if args.home else None)
     manifest = _read_manifest(layout)
     runtime = _installed_runtime(layout, manifest)
-    reporter.progress("status", "核对安装清单、LaunchAgent、PID 和监听端口")
+    reporter.progress("check", "正在检查运行状态")
     service_payload = service_status(layout, runtime)
     return {
         "ok": bool(service_payload.get("ok")),
@@ -1854,7 +1876,7 @@ def check_update(args: argparse.Namespace, reporter: Reporter) -> dict:
     installed_commit = str(manifest.get("commit") or manifest.get("version") or "").lower()
     if not re.fullmatch(r"[0-9a-f]{40}", installed_commit):
         raise InstallerError("安装清单缺少有效的 Git commit，请重新安装当前版本")
-    reporter.progress("update", f"查询远端 {branch} 发布通道")
+    reporter.progress("update", "正在检查更新")
     repository, remote_commit = _select_release_source(repositories, branch)
     return {
         "ok": True,
@@ -1911,7 +1933,7 @@ def upgrade(args: argparse.Namespace, reporter: Reporter) -> dict:
     if not re.fullmatch(r"[0-9a-f]{40}", installed_commit):
         raise InstallerError("安装清单缺少有效的 Git commit，请重新安装当前版本")
 
-    reporter.progress("update", f"检查远端 {branch} 发布通道")
+    reporter.progress("update", "正在检查更新")
     repository, remote_commit = _select_release_source(repositories, branch)
     if remote_commit == installed_commit:
         return {
@@ -1924,7 +1946,7 @@ def upgrade(args: argparse.Namespace, reporter: Reporter) -> dict:
 
     with tempfile.TemporaryDirectory(prefix="wechat-decrypt-light-upgrade-") as temporary:
         source = Path(temporary) / "source"
-        reporter.progress("download", f"拉取 {branch} 最新发布版本")
+        reporter.progress("download", "正在下载更新")
         _clone_branch(repository, branch, source)
         source_info = verify_source(
             source,
@@ -1932,7 +1954,7 @@ def upgrade(args: argparse.Namespace, reporter: Reporter) -> dict:
             branch=branch,
             expected_commit=remote_commit,
         )
-        reporter.progress("install", f"升级到提交 {source_info['commit'][:12]}")
+        reporter.progress("install", "正在安装更新")
         result = _run(
             [
                 sys.executable,
@@ -2002,7 +2024,7 @@ def enable_service(
         )
     host = str(manifest.get("host") or DEFAULT_HOST)
     port = int(manifest.get("port") or DEFAULT_PORT)
-    reporter.progress("service", "安装或修复用户级 LaunchAgent，并验证本机端口")
+    reporter.progress("service", "正在启动本地服务")
     _service_command(
         runtime,
         layout,
@@ -2045,7 +2067,7 @@ def initialize(args: argparse.Namespace, reporter: Reporter) -> dict:
     if repaired_files:
         reporter.progress(
             "ownership",
-            "已在普通用户上下文中修复旧版数据文件所有权",
+            "已修复旧版安装遗留问题",
         )
     authorization_prompt_count = 0
     if platform.system().lower() == "darwin":
@@ -2053,7 +2075,7 @@ def initialize(args: argparse.Namespace, reporter: Reporter) -> dict:
         authorization_prompt_count = int(
             _extract_macos_keys(runtime, layout, reporter, preflight)
         )
-    reporter.progress("initialize", "执行密钥提取和本地数据库预解密")
+    reporter.progress("initialize", "正在准备本地消息数据")
     _run(
         [str(runtime_python), str(runtime / "main.py"), "init"],
         cwd=runtime,
@@ -2095,7 +2117,7 @@ def prepare_wechat(args: argparse.Namespace, reporter: Reporter) -> dict:
         )
     if not args.confirm_resign:
         raise InstallerError(
-            "重新签名会修改 WeChat.app，需要用户明确确认",
+            "准备微信会修改微信应用，需要用户明确确认",
             error_code="wechat_resign_confirmation_required",
             next_action="ask_user_to_confirm_wechat_resign",
             details={"authorization_prompt_count": 0},
@@ -2125,7 +2147,7 @@ def prepare_wechat(args: argparse.Namespace, reporter: Reporter) -> dict:
     )
     if running.returncode == 0 and running.stdout.strip():
         raise InstallerError(
-            "WeChat 或其辅助进程仍在运行；请等待其完全退出后再继续安全重签",
+            "微信仍在运行。请等待微信完全退出后再继续。",
             error_code="wechat_must_quit_for_resign",
             next_action="quit_wechat_and_retry_prepare_wechat",
             details={
@@ -2200,12 +2222,12 @@ def uninstall(args: argparse.Namespace, reporter: Reporter) -> dict:
     layout = default_layout(Path(args.home).expanduser() if args.home else None)
     manifest = _read_manifest(layout)
     runtime = _installed_runtime(layout, manifest)
-    reporter.progress("uninstall", "停止并移除用户级 LaunchAgent")
+    reporter.progress("uninstall", "正在停止本地服务")
     _service_command(runtime, layout, ["uninstall"], error_context="LaunchAgent 卸载失败")
     _update_activation_state(layout, service_enabled=False, query_ready=False)
     removed_runtime = False
     if args.remove_runtime:
-        reporter.progress("uninstall", "删除已安装运行时，保留敏感数据目录")
+        reporter.progress("uninstall", "正在移除程序，保留本机数据")
         shutil.rmtree(layout.runtime_dir)
         try:
             layout.manifest.unlink()

@@ -64,6 +64,17 @@ Desktop 宿主如果提供 Python 3.10+，应优先把该解释器传给引导�
 
 ## macOS 正式安装
 
+### 普通用户会经历什么
+
+安装由 Agent 自动完成，用户不需要打开终端或输入命令。正常情况下只会经历以下几步：
+
+1. 等待安装文件下载并完成检查。
+2. 按提示退出微信，让安装程序完成准备。
+3. 重新打开并登录微信；出现系统确认时按提示完成。
+4. 等待“安装完成”提示，即可开始使用。
+
+如果当前微信版本暂不支持，安装会先暂停并说明支持的版本；未经用户确认，不会下载历史版本或替换微信。安装中的路径、命令和内部检查结果默认不展示，只有排查错误时才需要查看。
+
 正式版本统一从独立仓库受保护的 `main` 分支安装。日常开发在功能分支进行，只有测试通过并允许发布的提交才能通过 PR 进入 `main`。安装器会自动记录 `main` 当前的完整 commit；远端 `main` 后续更新不会静默改变已经安装的运行版本。
 
 > **最终用户和对话 Agent 必须使用 `install.sh`。** 除非明确进行源码开发，不要在克隆目录创建 `.venv`，不要运行 `setup.sh`、`setup.py`、`main.py init` 或手动编译/执行密钥扫描器。
@@ -89,6 +100,8 @@ Desktop 宿主如果提供 Python 3.10+，应优先把该解释器传给引导�
 - 记录实际发布源和安装 commit，升级时继续使用该发布源。
 
 `./install.sh --initialize` 兼容旧 Agent 的入口名称，但不再把提权初始化和服务安装串成一次长事务。它只部署运行时并执行只读 `inspect`，不会弹出管理员授权窗口；Agent 根据 JSON 的 `next_step` 继续。用户无需在终端输入命令，交互仅限于确认敏感操作、退出或登录 WeChat，以及批准 macOS 系统弹窗。
+
+安装器的 JSON、路径和内部组件名称用于 Agent 判断下一步，不是面向普通用户的安装说明。正常安装时，Agent 只需用“正在安装”“请退出微信”“请打开并登录微信”“请按系统提示确认”“安装完成”等简短状态与用户沟通；除非用户主动询问技术细节或排查特定错误，不展示完整 JSON、内部命令、进程号、端口、运行目录、依赖工具、提交信息和服务实现。
 
 正式安装按以下可恢复阶段推进：
 
@@ -135,7 +148,7 @@ install -> inspect -> prepare-wechat（仅需要时） -> initialize
 
 所有失败 JSON 同时包含可直接展示的 `user_message`；需要用户动作时还会包含 `requires_user_action`，可重试的管理操作包含 `retry_command`。`error_code` 和 `next_action` 仍是 Agent 判断恢复分支的稳定机器字段。
 
-如果 `error_code` 为 `version_not_allowed`，响应中的 `details.release_search` 会告诉 Agent 是否可以主动提议搜索公开来源。Agent 应先使用浏览器或网络搜索打开来源页面，再按 `network_policy` 的短超时和候选上限处理附件；不能对 GitHub 或其他 Git 地址执行无超时的 `curl`、`wget` 或 `git clone`。单个来源超时后应立即切换下一个候选，不应继续等待或反复重试。Agent 可以搜索官方页面、明确声明有分发权的发布仓库，以及 Gitee、GitHub 等稳定托管平台上的候选页面；但域名或仓库本身不代表官方授权、合法性或安全性。每个结果都必须先展示来源页面并取得用户确认，下载后再核对已公布的 SHA-256、`com.tencent.xinWeChat` Bundle ID 和受支持版本。搜索结果不能自动触发微信替换、重签名或修改 `version-guard.policy.json`。
+如果 `error_code` 为 `version_not_allowed`，响应中的 `details.release_search` 会告诉 Agent 是否可以主动提议搜索公开来源。Agent 应先使用浏览器或网络搜索打开来源页面，再按 `network_policy` 的短超时和候选上限处理附件；不能对 GitHub 或其他 Git 地址执行无超时的 `curl`、`wget` 或 `git clone`。单个来源超时后应立即切换下一个候选，不应继续等待或反复重试。Agent 可以搜索官方页面、明确声明有分发权的发布仓库，以及 Gitee、GitHub 等稳定托管平台上的候选页面；但域名或仓库本身不代表官方授权、合法性或安全性。如果发布信息记录了腾讯原始下载地址，并且版本、文件大小和已公布摘要与候选一致，则默认优先从腾讯下载；不得根据版本号猜测腾讯地址，腾讯地址不可用或信息不一致时才回退到归档附件。每个结果都必须先展示来源页面并取得用户确认，下载后再核对已公布的 SHA-256、`com.tencent.xinWeChat` Bundle ID 和受支持版本。搜索结果不能自动触发微信替换、重签名或修改 `version-guard.policy.json`。
 
 只有 `enable-service` 返回 `query_ready: true`，才可通过 mcporter install + enable 把 `http://127.0.0.1:8765/mcp` 以 `streamablehttp` 注册到 Desktop。注册后调用不返回用户数据的 MCP 工具 `data_source_status`，且只有它返回 `status: "ready"` 才报告完成。不要用 `list_contacts`、`query_messages` 等用户数据工具验证安装。`waiting_for_wechat` 表示常驻机制正常，但 MCP 尚不可调用，不能提前注册或报告接入完成。
 

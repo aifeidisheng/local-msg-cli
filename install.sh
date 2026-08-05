@@ -198,17 +198,17 @@ if [[ -z "${https_proxy:-}" && -z "${HTTPS_PROXY:-}" ]]; then
     if [[ -n "$sys_proxy" ]]; then
         export https_proxy="$sys_proxy"
         export http_proxy="$sys_proxy"
-        echo "[proxy] 检测到系统 HTTPS 代理: $sys_proxy" >&2
+        echo "[准备] 已使用本机网络设置" >&2
     fi
 fi
 
+echo "[准备] 正在下载安装文件..." >&2
 for repository in "${repositories[@]}"; do
     for attempt in 1 2 3; do
         candidate="$(mktemp -d "${TMPDIR:-/tmp}/wechat-decrypt-light.XXXXXX")"
         temporary_sources+=("$candidate")
-        echo "[source] Cloning confirmed main release from $repository (attempt $attempt/3)" >&2
         if /usr/bin/git -c http.lowSpeedLimit=1024 -c http.lowSpeedTime=15 \
-            clone --depth 1 --branch "$RELEASE_BRANCH" --single-branch \
+            clone --quiet --depth 1 --no-tags --branch "$RELEASE_BRANCH" --single-branch \
             "$repository" "$candidate"; then
             install_source="$candidate"
             source_repository="$repository"
@@ -219,13 +219,8 @@ for repository in "${repositories[@]}"; do
 done
 
 if [[ -z "$install_source" ]]; then
-    echo "All confirmed release repositories are unreachable." >&2
-    if [[ -z "${https_proxy:-}" ]]; then
-        echo "提示: 如使用 Clash/V2Ray 等代理工具，请设置:" >&2
-        echo "  export https_proxy=http://127.0.0.1:<端口>" >&2
-        echo "  export http_proxy=http://127.0.0.1:<端口>" >&2
-    fi
-    emit_error_json "all_git_sources_unreachable" "download" "All confirmed release repositories are unreachable." "retry_network_or_add_an_official_fallback_repository"
+    echo "[网络] 暂时无法下载安装文件" >&2
+    emit_error_json "all_git_sources_unreachable" "download" "暂时无法下载安装文件，请检查网络后重试。" "retry_network_or_add_an_official_fallback_repository"
     exit 1
 fi
 
@@ -241,7 +236,7 @@ for repository in "${repositories[@]:1}"; do
     install_args+=(--fallback-repository "$repository")
 done
 
-echo "[install] Deploying verified commit from $source_repository" >&2
+echo "[安装] 正在完成安装，首次使用可能需要一些时间..." >&2
 if install_output=$("$python_bin" "$install_source/installer.py" "${install_args[@]}"); then
     install_exit=0
 else
@@ -275,7 +270,7 @@ fi
 # Compatibility behavior: inspect only. Sensitive initialization must be a
 # separate Agent-driven stage after the structured result identifies the next
 # user interaction boundary.
-echo "[inspect] Checking the next installation stage (no authorization prompt)..." >&2
+echo "[检查] 正在确认下一步..." >&2
 if inspect_output=$("$MANAGEMENT_CLI" --json inspect); then
     inspect_exit=0
 else

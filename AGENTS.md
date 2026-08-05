@@ -116,6 +116,36 @@ in a terminal. Execute everything directly. User interaction is limited to
 confirming sensitive actions, quitting/signing in to WeChat when requested,
 and clicking "OK" on the macOS admin authorization popup.
 
+### User-facing communication (plain-language mode)
+
+The installer JSON and stderr are an Agent control protocol, not an
+installation transcript for the end user. Read them silently and use their
+structured fields to continue. During a normal installation, keep the visible
+conversation to a short status line at each real interaction boundary:
+
+- Start: `正在安装，请稍候。首次安装通常需要几分钟。`
+- Passive wait: `仍在安装中，无需操作。`
+- WeChat missing: `没有找到个人版微信。请先确认已安装，无需登录。`
+- WeChat must quit: `下一步需要准备微信。请先完全退出微信。`
+- Sign-in needed: `微信已准备好。请打开并登录，完成后告诉我。`
+- System authorization: `接下来会出现一次系统确认，请按提示完成。`
+- Success: `安装完成，本地消息数据源已可以使用。`
+
+Do not narrate routine implementation details. In particular, do not expose or
+explain Git clones, commits, branches, Python/venv/pip/uv, package counts,
+compilers, scanners, hashes, bundle IDs, ad-hoc signing, LaunchAgents, PIDs,
+ports, runtime/data/log paths, MCP transport types, raw commands, or complete
+JSON unless the user asks for technical details or a specific error requires
+them. Do not enumerate the MCP tool list during installation. Translate these
+concepts into the user action or outcome they imply, while preserving exact
+version numbers and security consequences when consent or recovery depends on
+them.
+
+Do not produce a running installation diary. Report elapsed time only when it
+helps explain an unusual delay. On completion, report the outcome in one or two
+sentences; keep diagnostics available for troubleshooting rather than showing
+them by default.
+
 After bootstrap, use the installed management CLI. Do not ask the user to type
 commands. Advance one explicit stage at a time:
 
@@ -231,6 +261,16 @@ For public historical WeChat release searches:
   not proof that the files are equivalent.
 - Do not tell the user that a candidate is official or safe based only on its
   domain, repository name, stars, Release label, or download count.
+- To avoid wasting a large download, inspect the source page and release
+  metadata first for the original publisher URL, published size, and digest.
+  When the metadata contains a Tencent original download URL on
+  `dldir1.qq.com` or `dldir1v6.qq.com`, make that the default download choice
+  after its version, file size, and published digest match the selected
+  candidate. Do not construct or guess a Tencent URL from the version number.
+  Probe the recorded URL within the returned timeout; fall back to the archive
+  asset only when the Tencent URL is unavailable or mismatched. Never start two
+  full downloads of the same candidate. Reuse a fully downloaded and verified
+  local candidate instead of downloading it again.
 
 To retry initialization after fixing the issue:
 

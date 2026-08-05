@@ -77,6 +77,43 @@ class InstallEntrypointTests(unittest.TestCase):
         self.assertNotIn("Git 网络操作会重试", macos_install)
         self.assertIn("install.sh --initialize", usage)
 
+    def test_end_user_docs_require_plain_language_status_updates(self):
+        agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("User-facing communication (plain-language mode)", agents)
+        self.assertIn("Do not produce a running installation diary", agents)
+        self.assertIn("### 普通用户会经历什么", readme)
+        self.assertIn("用户不需要打开终端或输入命令", readme)
+        self.assertIn("不展示完整 JSON", readme)
+
+    def test_bootstrap_uses_quiet_plain_language_progress(self):
+        script = (ROOT / "install.sh").read_text(encoding="utf-8")
+
+        self.assertIn("clone --quiet --depth 1 --no-tags", script)
+        self.assertIn("[准备] 正在下载安装文件", script)
+        self.assertIn("[安装] 正在完成安装", script)
+        self.assertIn("[检查] 正在确认下一步", script)
+        self.assertNotIn("Cloning confirmed main release", script)
+        self.assertNotIn("Deploying verified commit", script)
+        self.assertNotIn('echo "  export https_proxy', script)
+
+    def test_development_setup_never_regenerates_version_policy(self):
+        script = (ROOT / "setup.sh").read_text(encoding="utf-8")
+
+        self.assertIn("版本策略文件已就绪（不可在本地修改）", script)
+        self.assertNotIn("生成 version-guard.policy.json 模板", script)
+        self.assertNotIn("编辑 version-guard.policy.json", script)
+
+    def test_installer_progress_avoids_internal_implementation_terms(self):
+        source = (ROOT / "installer.py").read_text(encoding="utf-8")
+        progress_lines = "\n".join(
+            line for line in source.splitlines() if "reporter.progress" in line
+        )
+
+        for internal_term in ("Git", "commit", "Python", "LaunchAgent", "PID", "端口", "扫描器", "预解密"):
+            self.assertNotIn(internal_term, progress_lines)
+
     def test_inspect_failure_still_returns_combined_json(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

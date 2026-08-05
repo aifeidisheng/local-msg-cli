@@ -127,20 +127,10 @@ else
 fi
 
 if [ ! -f version-guard.policy.json ]; then
-    echo "[config] 生成 version-guard.policy.json 模板..."
-    cat > version-guard.policy.json << 'POLICY_EOF'
-{
-    "version_guard": {
-        "enabled": false,
-        "block_on_unknown_version": true,
-        "require_update_disabled": false,
-        "allowed_version_ranges": []
-    }
-}
-POLICY_EOF
-else
-    echo "[config] version-guard.policy.json 已存在（跳过）"
+    echo "[错误] 缺少受完整性保护的版本策略文件，请恢复可信源码后重试。" >&2
+    exit 1
 fi
+echo "[config] 版本策略文件已就绪（不可在本地修改）"
 
 # ── 完成 ──────────────────────────────────────────────────────
 printf 'source-development\n' > "$SCRIPT_DIR/.wechat-decrypt-development"
@@ -149,7 +139,6 @@ echo "========================================================"
 echo "  配置完成！下一步："
 echo ""
 echo "  1. 编辑 config.json 确认 db_dir 路径"
-echo "     如需启用版本门禁，编辑 version-guard.policy.json"
 echo "  2. 预解密 MCP 查询缓存："
 echo "     $VENV_PY main.py init"
 echo "     macOS 上 init 成功后会自动安装登录自启服务"
