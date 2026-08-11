@@ -216,6 +216,17 @@ Windows 不需要重签名微信。首次执行 `init` 或 `decrypt` 时会读�
 
 > **仅限源码开发者。** Agent 为最终用户安装时禁止执行以下步骤，请使用 `./install.sh --initialize`。
 
+Apple Silicon 上已实现针对腾讯 macOS 微信 `4.1.12.29`（build `269341`）
+的 raw-key 捕获后端：它从 `wechat.dylib` 的唯一 arm64 指令特征定位密钥
+调用，只有通过 SQLCipher 第一页 HMAC 验证的 32 字节候选才会写入
+`all_keys.json`。该路径需要 `prepare-wechat` 保留原 entitlement 并增加
+`com.apple.security.get-task-allow`；未知 build、Intel Mac、特征为零或特征不唯一
+时都会直接停止。
+
+注意：这是待真机验收的源码支持路径，不代表当前受信发布已放行
+`4.1.12`。最终用户仍以完整性保护的 `version-guard.policy.json` 和对应
+发布版内置摘要为准，不得修改或绕过版本门禁。
+
 ```bash
 # 1. 退出微信并重签名
 killall WeChat

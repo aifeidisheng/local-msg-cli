@@ -10,6 +10,7 @@ from subprocess import CompletedProcess
 from unittest.mock import Mock, patch
 
 import installer
+import macos_raw_key_capture as raw_capture
 
 
 class RepositoryVerificationTests(unittest.TestCase):
@@ -1227,6 +1228,227 @@ class MacInitializeTests(unittest.TestCase):
 
         self.assertEqual(run.call_count, 2)
         self.assertNotIn("/usr/bin/osascript", [call.args[0][0] for call in run.call_args_list])
+
+    def test_4112_requires_get_task_allow_before_process_capture(self):
+        preflight = {
+            "config": {"wechat_process": "WeChat"},
+            "detected": {
+                "app_path": "/Applications/WeChat.app",
+                "short_version": "4.1.12.29",
+                "build_version": "269341",
+            },
+        }
+        running = CompletedProcess([], 0, "123\n", "")
+        with patch.object(installer.platform, "machine", return_value="arm64"), \
+             patch.object(installer, "_is_adhoc_signed", return_value=True), \
+             patch.object(installer, "_has_get_task_allow", return_value=False), \
+             patch.object(installer.subprocess, "run", return_value=running) as run:
+            with self.assertRaises(installer.InstallerError) as raised:
+                installer._preflight_macos_scanner(preflight)
+
+        self.assertEqual(raised.exception.error_code, "wechat_not_adhoc_signed")
+        self.assertTrue(raised.exception.details["wechat_running"])
+        self.assertEqual(run.call_count, 1)
+
+    def test_4112_unknown_build_fails_closed_before_preflight_or_attach(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = installer.default_layout(Path(tmp))
+            preflight = {
+                "db_dir": None,
+                "account_candidates": [],
+                "detected": {
+                    "app_path": "/Applications/WeChat.app",
+                    "short_version": "4.1.12",
+                    "build_version": "269342",
+                },
+            }
+            with patch.object(installer, "_preflight_macos_scanner") as scanner:
+                with self.assertRaises(installer.InstallerError) as raised:
+                    installer._extract_macos_keys(
+                        Path(tmp), layout, installer.Reporter(json_mode=True), preflight
+                    )
+
+        self.assertEqual(raised.exception.error_code, "wechat_raw_key_build_unsupported")
+        scanner.assert_not_called()
+
+    def test_4112_routes_to_verified_capture_without_admin_scanner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            layout = installer.default_layout(root)
+            account = root / "account" / "db_storage"
+            account.mkdir(parents=True)
+            dylib = root / "wechat.dylib"
+            dylib.write_bytes(b"fixture")
+            preflight = {
+                "db_dir": account,
+                "account_candidates": [account],
+                "detected": {
+                    "app_path": "/Applications/WeChat.app",
+                    "short_version": "4.1.12.29",
+                    "build_version": "269341",
+                },
+            }
+
+            def prepared(check):
+                check["wechat_pid"] = 321
+
+            def captured(**kwargs):
+                Path(kwargs["output_path"]).write_text(
+                    json.dumps(
+                        {
+                            "contact/contact.db": {"enc_key": "a" * 64},
+                            "message/message_0.db": {"enc_key": "b" * 64},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return raw_capture.CaptureResult(
+                    ready=True,
+                    candidate_count=2,
+                    matched_paths=frozenset(
+                        {"contact/contact.db", "message/message_0.db"}
+                    ),
+                    complete_account_index=0,
+                )
+
+            with patch.object(installer.platform, "machine", return_value="arm64"), \
+                 patch.object(installer, "_preflight_macos_scanner", side_effect=prepared), \
+                 patch.object(raw_capture, "wechat_dylib_path", return_value=dylib), \
+                 patch.object(raw_capture, "locate_key_hook", return_value=0x1234), \
+                 patch.object(raw_capture, "capture_verified_keys", side_effect=captured) as capture, \
+                 patch.object(installer, "_raw_key_file_complete", return_value=True):
+                prompted = installer._extract_macos_keys(
+                    root, layout, installer.Reporter(json_mode=True), preflight
+                )
+
+            self.assertFalse(prompted)
+            capture.assert_called_once()
+            self.assertEqual(capture.call_args.kwargs["pid"], 321)
+            self.assertEqual(capture.call_args.kwargs["hook_offset"], 0x1234)
+            payload = json.loads(
+                (layout.data_dir / "all_keys.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(payload["_db_dir"], str(account))
+
+    def test_4112_multi_account_output_selects_completed_namespace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            layout = installer.default_layout(root)
+            first = root / "first" / "db_storage"
+            second = root / "second" / "db_storage"
+            first.mkdir(parents=True)
+            second.mkdir(parents=True)
+            output = layout.data_dir / "all_keys.json"
+            layout.data_dir.mkdir(parents=True)
+            output.write_text(
+                json.dumps(
+                    {
+                        "__account_000__/contact/contact.db": {"enc_key": "a" * 64},
+                        "__account_001__/contact/contact.db": {"enc_key": "b" * 64},
+                        "__account_001__/message/message_0.db": {"enc_key": "c" * 64},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(installer, "_raw_key_file_complete", return_value=True):
+                selected = installer._normalize_raw_account_key_output(
+                    output, [first, second], 1
+                )
+
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(selected, second)
+            self.assertEqual(payload["_db_dir"], str(second))
+            self.assertIn("contact/contact.db", payload)
+            self.assertIn("message/message_0.db", payload)
+            self.assertFalse(any(name.startswith("__account_") for name in payload))
+
+    def test_4112_capture_failure_does_not_expose_candidate_material(self):
+        secret = "ab" * 32
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            layout = installer.default_layout(root)
+            account = root / "account" / "db_storage"
+            account.mkdir(parents=True)
+            preflight = {
+                "db_dir": account,
+                "account_candidates": [account],
+                "detected": {
+                    "app_path": "/Applications/WeChat.app",
+                    "short_version": "4.1.12.29",
+                    "build_version": "269341",
+                },
+            }
+
+            def prepared(check):
+                check["wechat_pid"] = 321
+
+            with patch.object(installer.platform, "machine", return_value="arm64"), \
+                 patch.object(installer, "_preflight_macos_scanner", side_effect=prepared), \
+                 patch.object(raw_capture, "wechat_dylib_path", return_value=root / "wechat.dylib"), \
+                 patch.object(raw_capture, "locate_key_hook", return_value=0x1234), \
+                 patch.object(
+                     raw_capture,
+                     "capture_verified_keys",
+                     side_effect=raw_capture.RawKeyCaptureError(secret),
+                 ):
+                with self.assertRaises(installer.InstallerError) as raised:
+                    installer._extract_macos_keys(
+                        root, layout, installer.Reporter(json_mode=True), preflight
+                    )
+
+            self.assertEqual(raised.exception.error_code, "wechat_raw_key_capture_failed")
+            self.assertNotIn(secret, str(raised.exception))
+            self.assertNotIn(secret, json.dumps(raised.exception.details))
+            self.assertFalse((layout.data_dir / "all_keys.json").exists())
+
+    def test_4112_resign_preserves_entitlements_and_removes_temp_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self._make_wechat_app(Path(tmp))
+            detected = {"short_version": "4.1.12.29", "build_version": "269341"}
+            succeeded = CompletedProcess([], 0, "", "")
+            entitlements_path = None
+            written = None
+
+            def run(command, **_kwargs):
+                nonlocal entitlements_path, written
+                if command[0] == "/usr/bin/codesign":
+                    entitlements_path = Path(command[command.index("--entitlements") + 1])
+                    with entitlements_path.open("rb") as source:
+                        written = plistlib.load(source)
+                return succeeded
+
+            with patch.object(
+                installer, "_read_entitlements", return_value={"com.apple.security.network.client": True}
+            ), patch.object(installer, "_is_wechat_prepared", return_value=True), patch.object(
+                installer.subprocess, "run", side_effect=run
+            ) as subprocess_run:
+                prompt_count = installer._resign_wechat_app(app, detected=detected)
+
+            self.assertEqual(prompt_count, 0)
+            self.assertTrue(written["com.apple.security.network.client"])
+            self.assertTrue(written["com.apple.security.get-task-allow"])
+            codesign = subprocess_run.call_args_list[1].args[0]
+            self.assertNotIn("--deep", codesign)
+            self.assertIsNotNone(entitlements_path)
+            self.assertFalse(entitlements_path.exists())
+
+    def test_4112_resign_failure_also_removes_temp_entitlements(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self._make_wechat_app(Path(tmp))
+            detected = {"short_version": "4.1.12.29", "build_version": "269341"}
+            descriptor, name = tempfile.mkstemp(suffix=".plist")
+            os.close(descriptor)
+            entitlements_path = Path(name)
+            failed = CompletedProcess([], 1, "", "bundle format is ambiguous")
+
+            with patch.object(
+                installer, "_write_debug_entitlements", return_value=entitlements_path
+            ), patch.object(installer.subprocess, "run", return_value=failed):
+                with self.assertRaises(installer.InstallerError):
+                    installer._resign_wechat_app(app, detected=detected)
+
+            self.assertFalse(entitlements_path.exists())
 
     def test_scanner_summary_does_not_include_key_material(self):
         summary = installer._parse_scanner_summary(

@@ -37,6 +37,7 @@ DEFAULT_PORT = 8765
 REQUIRED_SOURCE_FILES = {
     "config.py",
     "installer.py",
+    "macos_raw_key_capture.py",
     "main.py",
     "mcp_server.py",
     "requirements.txt",
@@ -495,89 +496,195 @@ def _preflight_macos_initialize(runtime: Path, layout: InstallLayout) -> dict:
     }
 
 
-def _resign_wechat_app(app: Path, reporter: Reporter | None = None) -> int:
+def _uses_raw_key_capture(detected: dict | None) -> bool:
+    if not isinstance(detected, dict):
+        return False
+    from macos_raw_key_capture import supports_build
+
+    return supports_build(
+        detected.get("short_version"),
+        detected.get("build_version"),
+    )
+
+
+def _is_wechat_4112(detected: dict | None) -> bool:
+    if not isinstance(detected, dict):
+        return False
+    short_version = str(detected.get("short_version") or "")
+    return short_version == "4.1.12" or short_version.startswith("4.1.12.")
+
+
+def _require_raw_capture_architecture(detected: dict | None) -> None:
+    if not _uses_raw_key_capture(detected):
+        return
+    if platform.machine().lower() in {"arm64", "aarch64"}:
+        return
+    raise InstallerError(
+        "微信 4.1.12 密钥提取目前仅支持 Apple Silicon Mac。",
+        error_code="wechat_raw_key_arch_unsupported",
+        next_action="use_an_apple_silicon_mac_or_wait_for_a_supported_extractor",
+        details={"authorization_prompt_count": 0},
+    )
+
+
+def _read_entitlements(app: str | Path) -> dict:
+    """Read current app entitlements without treating codesign diagnostics as data."""
+    result = subprocess.run(
+        ["/usr/bin/codesign", "-d", "--entitlements", ":-", str(app)],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    for payload in (result.stdout, result.stderr):
+        if not payload:
+            continue
+        start = payload.find(b"<?xml")
+        if start < 0:
+            start = payload.find(b"bplist")
+        if start < 0:
+            continue
+        serialized = payload[start:]
+        if serialized.startswith(b"<?xml"):
+            end = serialized.find(b"</plist>")
+            if end >= 0:
+                serialized = serialized[: end + len(b"</plist>")]
+        try:
+            data = plistlib.loads(serialized)
+        except (ValueError, plistlib.InvalidFileException):
+            continue
+        if isinstance(data, dict):
+            return data
+    return {}
+
+
+def _has_get_task_allow(app: str | Path) -> bool:
+    return _read_entitlements(app).get("com.apple.security.get-task-allow") is True
+
+
+def _write_debug_entitlements(app: Path) -> Path:
+    entitlements = _read_entitlements(app)
+    entitlements["com.apple.security.get-task-allow"] = True
+    descriptor, name = tempfile.mkstemp(prefix="wechat-entitlements-", suffix=".plist")
+    path = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            plistlib.dump(entitlements, output, fmt=plistlib.FMT_XML)
+        os.chmod(path, 0o600)
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+    return path
+
+
+def _is_wechat_prepared(app: str | Path, detected: dict | None = None) -> bool:
+    if not _is_adhoc_signed(app):
+        return False
+    return not _uses_raw_key_capture(detected) or _has_get_task_allow(app)
+
+
+def _resign_wechat_app(
+    app: Path,
+    reporter: Reporter | None = None,
+    *,
+    detected: dict | None = None,
+) -> int:
     """Re-sign WeChat during the explicit prepare-wechat stage.
 
     Returns authorization_prompt_count (0 = direct repair, 1 = osascript admin).
     Raises InstallerError on failure.
     """
+    entitlements_path = _write_debug_entitlements(app) if _uses_raw_key_capture(detected) else None
+    codesign_command = ["/usr/bin/codesign", "--force"]
+    if entitlements_path is not None:
+        # Keep nested framework signatures intact on 4.1.12.  The root app
+        # receives the preserved entitlements plus get-task-allow.
+        codesign_command.extend(
+            ["--sign", "-", "--entitlements", str(entitlements_path)]
+        )
+    else:
+        codesign_command.extend(["--deep", "--sign", "-"])
+    codesign_command.append(str(app))
     repair_commands = [
         ["/usr/bin/xattr", "-cr", str(app)],
-        ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)],
+        codesign_command,
     ]
 
     # com.apple.provenance 等扩展属性必须在 codesign 前清理，否则即使已取得
     # 管理员授权，codesign 仍可能失败。
     if reporter:
         reporter.progress("prepare", "正在准备微信，请稍候")
-    direct_succeeded = True
-    for command in repair_commands:
-        direct_result = subprocess.run(
-            command,
-            check=False,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        if direct_result.returncode != 0:
-            direct_succeeded = False
-            break
-    if direct_succeeded and _is_adhoc_signed(app):
-        return 0
-
-    # 受保护的 app bundle 在同一次管理员授权中保持先清理、后签名的顺序。
-    if reporter:
-        reporter.progress("authorization", "请在系统提示中确认，完成后将自动继续")
-    authorized_command = " && ".join(
-        shlex.join(command) for command in repair_commands
-    )
-    result = subprocess.run(
-        [
-            "/usr/bin/osascript",
-            "-e", "on run argv",
-            "-e", "do shell script (item 1 of argv) with administrator privileges",
-            "-e", "end run",
-            authorized_command,
-        ],
-        check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
-    if result.returncode != 0:
-        normalized = result.stderr.lower()
-        cancelled = "user canceled" in normalized or "(-128)" in normalized
-        app_management_denied = _is_app_management_denial(result.stderr)
-        if app_management_denied and not cancelled:
-            responsible_app = _responsible_app_name()
-            settings_opened = _open_app_management_settings()
-            app_hint = f"（{responsible_app}）" if responsible_app else ""
-            raise InstallerError(
-                f"macOS 阻止当前安装应用{app_hint}修改 WeChat.app；请在“系统设置 → 隐私与安全性 → App 管理”中允许该应用后重试",
-                error_code="app_management_permission_required",
-                next_action="enable_app_management_and_retry_prepare_wechat",
-                details={
-                    "authorization_prompt_count": 1,
-                    "responsible_app": responsible_app,
-                    "settings_opened": settings_opened,
-                    "settings_pane": "Privacy_AppBundles",
-                },
+    try:
+        direct_succeeded = True
+        for command in repair_commands:
+            direct_result = subprocess.run(
+                command,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
             )
-        raise InstallerError(
-            "用户取消了管理员授权" if cancelled else "WeChat 安全重签失败",
-            error_code="administrator_authorization_cancelled" if cancelled else "wechat_resign_failed",
-            next_action=(
-                "retry_prepare_wechat_and_approve_the_macos_administrator_prompt"
-                if cancelled
-                else "report_wechat_resign_error"
-            ),
-            details={"authorization_prompt_count": 1},
+            if direct_result.returncode != 0:
+                direct_succeeded = False
+                break
+        if direct_succeeded and _is_wechat_prepared(app, detected):
+            return 0
+
+        # 受保护的 app bundle 在同一次管理员授权中保持先清理、后签名的顺序。
+        if reporter:
+            reporter.progress("authorization", "请在系统提示中确认，完成后将自动继续")
+        authorized_command = " && ".join(
+            shlex.join(command) for command in repair_commands
         )
-    if not _is_adhoc_signed(app):
-        raise InstallerError(
-            "系统命令已完成，但 WeChat 签名校验未通过",
-            error_code="wechat_resign_verification_failed",
-            next_action="report_wechat_resign_error",
-            details={"authorization_prompt_count": 1},
+        result = subprocess.run(
+            [
+                "/usr/bin/osascript",
+                "-e", "on run argv",
+                "-e", "do shell script (item 1 of argv) with administrator privileges",
+                "-e", "end run",
+                authorized_command,
+            ],
+            check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
-    return 1
+        if result.returncode != 0:
+            normalized = result.stderr.lower()
+            cancelled = "user canceled" in normalized or "(-128)" in normalized
+            app_management_denied = _is_app_management_denial(result.stderr)
+            if app_management_denied and not cancelled:
+                responsible_app = _responsible_app_name()
+                settings_opened = _open_app_management_settings()
+                app_hint = f"（{responsible_app}）" if responsible_app else ""
+                raise InstallerError(
+                    f"macOS 阻止当前安装应用{app_hint}修改 WeChat.app；请在“系统设置 → 隐私与安全性 → App 管理”中允许该应用后重试",
+                    error_code="app_management_permission_required",
+                    next_action="enable_app_management_and_retry_prepare_wechat",
+                    details={
+                        "authorization_prompt_count": 1,
+                        "responsible_app": responsible_app,
+                        "settings_opened": settings_opened,
+                        "settings_pane": "Privacy_AppBundles",
+                    },
+                )
+            raise InstallerError(
+                "用户取消了管理员授权" if cancelled else "WeChat 安全重签失败",
+                error_code="administrator_authorization_cancelled" if cancelled else "wechat_resign_failed",
+                next_action=(
+                    "retry_prepare_wechat_and_approve_the_macos_administrator_prompt"
+                    if cancelled
+                    else "report_wechat_resign_error"
+                ),
+                details={"authorization_prompt_count": 1},
+            )
+        if not _is_wechat_prepared(app, detected):
+            raise InstallerError(
+                "系统命令已完成，但 WeChat 签名或调试权限校验未通过",
+                error_code="wechat_resign_verification_failed",
+                next_action="report_wechat_resign_error",
+                details={"authorization_prompt_count": 1},
+            )
+        return 1
+    finally:
+        if entitlements_path is not None:
+            entitlements_path.unlink(missing_ok=True)
 
 
 def _is_app_management_denial(stderr: str | None) -> bool:
@@ -641,6 +748,7 @@ def _open_app_management_settings() -> bool:
 def _preflight_macos_scanner(preflight: dict) -> None:
     """Validate process and signature before the one privileged scanner call."""
     detected = preflight.get("detected") or {}
+    _require_raw_capture_architecture(detected)
     app_path = str(detected.get("app_path") or "")
 
     # 先检查签名（不需要微信在运行），避免用户先登录再退出再登录的冗余流程
@@ -651,7 +759,7 @@ def _preflight_macos_scanner(preflight: dict) -> None:
             next_action="start_wechat_and_retry_initialize",
             details={"authorization_prompt_count": 0},
         )
-    if not _is_adhoc_signed(app_path):
+    if not _is_wechat_prepared(app_path, detected):
         cfg = preflight.get("config") or {}
         process_name = str(cfg.get("wechat_process") or "WeChat")
         probe = subprocess.run(
@@ -695,6 +803,15 @@ def _preflight_macos_scanner(preflight: dict) -> None:
             "请打开并登录个人版微信，完成后再继续。",
             error_code="wechat_not_running",
             next_action="start_wechat_and_retry_initialize",
+            details={"authorization_prompt_count": 0},
+        )
+    try:
+        preflight["wechat_pid"] = int(running.stdout.splitlines()[0].strip())
+    except (ValueError, IndexError):
+        raise InstallerError(
+            "无法确定正在运行的微信进程，请完全退出后重新登录再试。",
+            error_code="wechat_process_access_failed",
+            next_action="inspect_wechat_process_and_signature_before_retry",
             details={"authorization_prompt_count": 0},
         )
 
@@ -825,6 +942,23 @@ def _matching_key_accounts(keys_file: Path, accounts: list[Path]) -> list[Path]:
     return [account for account in accounts if _valid_key_file(keys_file, account)]
 
 
+def _raw_key_file_complete(keys_file: Path, account: Path | None) -> bool:
+    if not _valid_key_file(keys_file, account):
+        return False
+    try:
+        payload = json.loads(keys_file.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return False
+    names = {
+        str(name).replace("\\", "/")
+        for name, value in payload.items()
+        if isinstance(name, str) and not name.startswith("_") and isinstance(value, dict)
+    }
+    return "contact/contact.db" in names and any(
+        re.fullmatch(r"message/message_\d+\.db", name) for name in names
+    )
+
+
 def _normalize_account_key_output(
     keys_file: Path,
     accounts: list[Path],
@@ -870,6 +1004,32 @@ def _normalize_account_key_output(
     return account
 
 
+def _normalize_raw_account_key_output(
+    keys_file: Path,
+    accounts: list[Path],
+    account_index: int,
+) -> Path | None:
+    if account_index < 0 or account_index >= len(accounts):
+        return None
+    try:
+        payload = json.loads(keys_file.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    prefix = f"__account_{account_index:03d}__/"
+    normalized = {
+        name[len(prefix) :]: value
+        for name, value in payload.items()
+        if isinstance(name, str) and name.startswith(prefix)
+    }
+    account = accounts[account_index]
+    normalized["_db_dir"] = str(account)
+    _atomic_write_json(keys_file, normalized)
+    os.chmod(keys_file, 0o600)
+    return account if _raw_key_file_complete(keys_file, account) else None
+
+
 def _extract_macos_keys(
     runtime: Path,
     layout: InstallLayout,
@@ -879,7 +1039,27 @@ def _extract_macos_keys(
     keys_file = layout.data_dir / "all_keys.json"
     configured_db_dir = preflight.get("db_dir")
     accounts = list(preflight.get("account_candidates") or [])
+    detected = preflight.get("detected") or {}
+    raw_capture = _uses_raw_key_capture(detected)
+    if _is_wechat_4112(detected) and not raw_capture:
+        raise InstallerError(
+            "当前微信 4.1.12 构建尚未验证，已停止密钥提取。",
+            error_code="wechat_raw_key_build_unsupported",
+            next_action="update_to_a_release_supporting_this_exact_wechat_build",
+            details={
+                "authorization_prompt_count": 0,
+                "detected_version": detected.get("short_version"),
+                "detected_build": detected.get("build_version"),
+            },
+        )
+    _require_raw_capture_architecture(detected)
     matching_accounts = _matching_key_accounts(keys_file, accounts) if accounts else []
+    if raw_capture:
+        matching_accounts = [
+            account
+            for account in matching_accounts
+            if _raw_key_file_complete(keys_file, account)
+        ]
     if matching_accounts:
         selected = configured_db_dir if configured_db_dir in matching_accounts else matching_accounts[0]
         if selected != configured_db_dir:
@@ -887,7 +1067,11 @@ def _extract_macos_keys(
             preflight["db_dir"] = selected
             preflight["account_changed"] = True
         return False
-    if not accounts and _valid_key_file(keys_file, configured_db_dir):
+    if not accounts and (
+        _raw_key_file_complete(keys_file, configured_db_dir)
+        if raw_capture
+        else _valid_key_file(keys_file, configured_db_dir)
+    ):
         return False
     if keys_file.exists() or keys_file.is_symlink():
         try:
@@ -898,6 +1082,97 @@ def _extract_macos_keys(
                 error_code="key_file_ownership_invalid",
                 next_action="report_key_file_ownership_error_without_privileged_repair",
             ) from exc
+    layout.data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(layout.data_dir, 0o700)
+
+    # These checks require no privileges and must happen before osascript so a
+    # failed attempt never consumes an administrator prompt unnecessarily.
+    _preflight_macos_scanner(preflight)
+
+    if raw_capture:
+        from macos_raw_key_capture import (
+            RawKeyCaptureError,
+            capture_verified_keys,
+            locate_key_hook,
+            wechat_dylib_path,
+        )
+
+        app_path = str(detected.get("app_path") or "")
+        try:
+            dylib = wechat_dylib_path(app_path)
+            hook_offset = locate_key_hook(dylib)
+            pid = int(preflight["wechat_pid"])
+        except (RawKeyCaptureError, KeyError, TypeError, ValueError) as exc:
+            raise InstallerError(
+                "当前微信构建无法安全定位数据库密钥函数，已停止提取。",
+                error_code="wechat_raw_key_locator_failed",
+                next_action="update_to_a_release_supporting_this_exact_wechat_build",
+                details={"authorization_prompt_count": 0},
+            ) from exc
+        if not accounts:
+            raise InstallerError(
+                "没有找到可验证的微信数据。请确认微信已登录并能正常查看消息，然后重试。",
+                error_code="wechat_database_not_found",
+                next_action="confirm_wechat_data_access_and_retry_initialize",
+                details={"authorization_prompt_count": 0},
+            )
+
+        reporter.progress("capture", "正在验证微信数据库密钥，请保持微信打开")
+        try:
+            capture_result = capture_verified_keys(
+                pid=pid,
+                dylib_path=dylib,
+                hook_offset=hook_offset,
+                account_dirs=accounts,
+                output_path=keys_file,
+            )
+        except RawKeyCaptureError as exc:
+            keys_file.unlink(missing_ok=True)
+            raise InstallerError(
+                "微信 4.1.12 数据库密钥提取失败。请保持微信已登录并重试。",
+                error_code="wechat_raw_key_capture_failed",
+                next_action="keep_wechat_open_and_logged_in_then_retry_initialize",
+                details={"authorization_prompt_count": 0},
+            ) from exc
+        if not capture_result.complete:
+            keys_file.unlink(missing_ok=True)
+            raise InstallerError(
+                "暂时没有捕获到联系人和消息数据库的完整密钥，请在微信中打开最近会话后重试。",
+                error_code="wechat_key_not_found",
+                next_action="open_recent_wechat_conversations_then_retry_initialize",
+                details={
+                    "authorization_prompt_count": 0,
+                    "capture_ready": bool(capture_result.ready),
+                    "candidate_count": int(capture_result.candidate_count),
+                    "matched_database_count": len(capture_result.matched_paths),
+                },
+            )
+
+        selected = configured_db_dir
+        if len(accounts) > 1:
+            selected = _normalize_raw_account_key_output(
+                keys_file, accounts, int(capture_result.complete_account_index)
+            )
+        elif accounts:
+            selected = accounts[0]
+            payload = json.loads(keys_file.read_text(encoding="utf-8"))
+            payload["_db_dir"] = str(selected)
+            _atomic_write_json(keys_file, payload)
+        if selected is None or not _raw_key_file_complete(keys_file, selected):
+            keys_file.unlink(missing_ok=True)
+            raise InstallerError(
+                "捕获到的数据库密钥未通过完整性校验，已丢弃结果。",
+                error_code="key_output_invalid",
+                next_action="retry_initialize_and_report_the_structured_diagnostics",
+                details={"authorization_prompt_count": 0},
+            )
+        if selected != configured_db_dir:
+            _save_account_selection(layout, selected, "matched_running_wechat")
+            preflight["db_dir"] = selected
+            preflight["account_changed"] = True
+        os.chmod(keys_file, 0o600)
+        return False
+
     scanner = runtime / "find_all_keys_macos"
     if not scanner.is_file() or not os.access(scanner, os.X_OK):
         raise InstallerError(
@@ -905,12 +1180,6 @@ def _extract_macos_keys(
             error_code="scanner_missing",
             next_action="reinstall_current_release",
         )
-    layout.data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(layout.data_dir, 0o700)
-
-    # These checks require no privileges and must happen before osascript so a
-    # failed attempt never consumes an administrator prompt unnecessarily.
-    _preflight_macos_scanner(preflight)
 
     # Pre-discover DB salts in user context (has FDA) to avoid requiring
     # Full Disk Access for the elevated scanner binary.
@@ -2127,8 +2396,10 @@ def prepare_wechat(args: argparse.Namespace, reporter: Reporter) -> dict:
     manifest = _read_manifest(layout)
     runtime = _installed_runtime(layout, manifest)
     preflight = _preflight_macos_initialize(runtime, layout)
+    detected = preflight.get("detected") or {}
+    _require_raw_capture_architecture(detected)
     app = _validate_wechat_bundle(
-        (preflight.get("detected") or {}).get("app_path") or "",
+        detected.get("app_path") or "",
         layout.home,
     )
 
@@ -2155,7 +2426,7 @@ def prepare_wechat(args: argparse.Namespace, reporter: Reporter) -> dict:
                 "running_pids": running.stdout.split(),
             },
         )
-    if _is_adhoc_signed(app):
+    if _is_wechat_prepared(app, detected):
         _update_activation_state(layout, wechat_prepared=True)
         return {
             "ok": True,
@@ -2165,7 +2436,9 @@ def prepare_wechat(args: argparse.Namespace, reporter: Reporter) -> dict:
             "next_step": "open_wechat_and_initialize",
         }
 
-    authorization_prompt_count = _resign_wechat_app(app, reporter)
+    authorization_prompt_count = _resign_wechat_app(
+        app, reporter, detected=detected
+    )
     _update_activation_state(layout, wechat_prepared=True)
     subprocess.run(
         ["/usr/bin/open", str(app)],
