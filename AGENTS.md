@@ -269,6 +269,35 @@ When `error_code: version_not_allowed` is returned:
    page and release metadata; do not begin with a direct asset download.
 4. **Do NOT** propose editing the policy as a workaround
 
+#### Version replacement with built-in commands
+
+After the user confirms replacement, use the installed management CLI commands
+instead of raw `curl`/`hdiutil`/`mv`/`ditto`:
+
+```text
+quit-wechat -> download-release -> replace-wechat -> prepare-wechat
+```
+
+- `quit-wechat` requests a graceful quit and stops for the user if WeChat
+  remains open; it never force-terminates the user's process implicitly.
+- `download-release --version 4.1.8 --confirm-download` resolves the built-in release catalog,
+  probes HTTP Range support (resume only when the server supports it), streams
+  structured progress events every 5 seconds (`percent`,
+  `transferred_bytes`, `total_bytes`, `speed_bytes_per_second`,
+  `eta_seconds`), and verifies SHA-256 and size before returning `path`.
+  Already-verified local files are reused. Custom sources are supported with
+  `--url --sha256 --size`.
+- `replace-wechat --dmg <path> --confirm-replace` mounts the verified DMG, validates the Bundle
+  ID (`com.tencent.xinWeChat`) and that the version is inside the policy
+  ranges, backs up the current app to the data directory (`backups/`), swaps
+  in the new app, and rolls back automatically on failure.
+- Integrity mismatches (`release_artifact_integrity_mismatch`) stop the
+  operation without touching WeChat; try the next separately verified
+  candidate or update the catalog through a normal upstream release.
+
+Do not keep the same `quit-wechat`-style manual process in agent prompts:
+the commands above are the single supported path for version replacement.
+
 Runtime compatibility and installer integrity are separate checks. The runtime
 version guard accepts a supported WeChat short version (for example `4.1.8`);
 the build number is diagnostic only. A downloaded installer must still match a

@@ -140,6 +140,7 @@ def _plain_user_message(error: InstallerError) -> str:
             else "下一步需要对本机微信做一次兼容设置，确认后可能出现一次系统确认。"
         ),
         "wechat_must_quit_for_resign": "请先完全退出微信，完成后告诉我。",
+        "wechat_must_quit_for_replace": "请先完全退出微信，完成后我会继续安装。",
         "wechat_resign_confirmation_required": (
             "为了让本地消息服务正常工作，需要完成一次微信兼容设置。"
             "这只影响本机，确认后即可继续。"
@@ -159,6 +160,14 @@ def _plain_user_message(error: InstallerError) -> str:
         "release_artifact_integrity_mismatch": (
             "下载文件未通过完整性检查，已停止操作，当前微信没有被修改。"
         ),
+        "release_artifact_not_verified": "安装包还没有准备好，请重新下载后继续。",
+        "download_confirmation_required": "下载兼容版本前需要你的确认。",
+        "replace_confirmation_required": "替换微信前需要你的确认。",
+        "download_integrity_metadata_missing": "暂时无法安全准备安装包，请稍后重试。",
+        "version_policy_unavailable": "暂时无法确认微信兼容性，安装已暂停。",
+        "wechat_quit_failed": "请先完全退出微信，完成后我会继续安装。",
+        "replace_wechat_failed": "微信替换没有完成，原来的微信已恢复。",
+        "replace_wechat_verification_failed": "微信替换没有完成，原来的微信已恢复。",
         "unexpected_management_error": "安装暂时没有完成，请稍后重试。",
     }
     if code == "version_not_allowed":
@@ -1458,6 +1467,49 @@ def _service_command(
     )
 
 
+def _preflight_wechat_version(
+    source: Path, layout: InstallLayout, reporter: Reporter
+) -> None:
+    """部署运行时前预检微信版本，避免装完才发现版本不受支持。
+
+    预检只拦截"版本不在允许区间"这一种情况；其他检查失败（如微信未安装、
+    配置读取异常）不阻塞安装，仍由 install 后的 inspect 阶段继续处理。
+    """
+    diagnostics = io.StringIO()
+    try:
+        with _initialize_environment(source, layout), contextlib.redirect_stdout(diagnostics):
+            from config import load_config
+            from wechat_version_guard import check_version
+
+            cfg = load_config()
+            version_result = check_version(cfg)
+    except Exception:
+        return
+    if version_result.ok:
+        return
+    reasons = [str(reason) for reason in version_result.reasons]
+    if not any("不在允许区间" in reason for reason in reasons):
+        return
+    detected = (version_result.details or {}).get("detected") or {}
+    details = {
+        "authorization_prompt_count": 0,
+        "reasons": reasons,
+        "detected_version": detected.get("short_version"),
+        "detected_build": detected.get("build_version"),
+        "detected_app_path": detected.get("app_path"),
+    }
+    details["release_search"] = _release_search_guidance(cfg, detected)
+    supported = "、".join(details["release_search"].get("supported_versions") or [])
+    support_hint = f"，当前支持 {supported}" if supported else ""
+    raise InstallerError(
+        f"当前微信版本 {detected.get('short_version') or '未知'} 暂不支持{support_hint}。"
+        "可以为你查找可用的历史版本，但下载和替换前仍需要你确认。",
+        error_code="version_not_allowed",
+        next_action="search_public_sources_for_supported_release",
+        details=details,
+    )
+
+
 def install(args: argparse.Namespace, reporter: Reporter) -> dict:
     if platform.system().lower() != "darwin":
         raise InstallerError("当前独立常驻安装器仅支持 macOS")
@@ -1490,6 +1542,8 @@ def install(args: argparse.Namespace, reporter: Reporter) -> dict:
     version = source_info["commit"]
     final_runtime = layout.runtime_dir / version
     if not final_runtime.exists():
+        # 部署前先预检微信版本，避免装完才发现版本不受支持。
+        _preflight_wechat_version(source, layout, reporter)
         layout.runtime_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         staging = layout.runtime_dir / f".{version}.{os.getpid()}.staging"
         if staging.exists():
@@ -2485,6 +2539,663 @@ def uninstall(args: argparse.Namespace, reporter: Reporter) -> dict:
     }
 
 
+def _parse_version(value: str) -> tuple[int, ...]:
+    """把 4.1.8 形式的版本号解析为可比较的整数元组。"""
+    return tuple(int(part) for part in re.split(r"[._-]", value) if part.isdigit())
+
+
+def _version_in_ranges(version: str, ranges: list[tuple[str, str]]) -> bool:
+    """判断版本是否落在任一 [min, max] 闭区间内。"""
+    parsed = _parse_version(version)
+    if not parsed:
+        return False
+    for minimum, maximum in ranges:
+        if _parse_version(minimum) <= parsed <= _parse_version(maximum):
+            return True
+    return False
+
+
+def _wechat_running_pids() -> list[str]:
+    """返回当前运行的微信主进程 PID 列表（未运行返回空列表）。"""
+    result = subprocess.run(
+        ["/usr/bin/pgrep", "-x", "WeChat"],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        return result.stdout.split()
+    return []
+
+
+def quit_wechat(args: argparse.Namespace, reporter: Reporter) -> dict:
+    """请求微信正常退出；仍未退出时停下等待用户处理。"""
+    if platform.system().lower() != "darwin":
+        raise InstallerError(
+            "quit-wechat 仅支持 macOS",
+            error_code="unsupported_platform",
+            next_action="run_quit_wechat_on_macos",
+        )
+
+    if not _wechat_running_pids():
+        return {
+            "ok": True,
+            "command": "quit-wechat",
+            "quit_method": "already_quit",
+            "wechat_running": False,
+        }
+
+    reporter.progress("quit-wechat", "正在请求退出微信")
+    quit_method = "graceful"
+    for attempt in range(3):
+        subprocess.run(
+            ["osascript", "-e", 'tell application "WeChat" to quit'],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(3)
+        if not _wechat_running_pids():
+            return {
+                "ok": True,
+                "command": "quit-wechat",
+                "quit_method": quit_method,
+                "wechat_running": False,
+            }
+
+    # Never terminate a user's process implicitly. A forced quit can lose
+    # unsaved state; stop at the interaction boundary and let the user close
+    # WeChat normally before retrying the replacement.
+    remaining = _wechat_running_pids()
+    raise InstallerError(
+        "微信仍在运行，请先完全退出微信",
+        error_code="wechat_quit_failed",
+        next_action="close_wechat_manually_and_retry",
+        details={"running_pids": remaining},
+    )
+
+
+def _release_catalog() -> dict:
+    """读取随安装器发布的微信版本目录（wechat-release-catalog.json）。"""
+    catalog_path = Path(__file__).resolve().parent / "wechat-release-catalog.json"
+    if not catalog_path.is_file():
+        raise InstallerError(
+            "缺少发布目录文件 wechat-release-catalog.json",
+            error_code="release_catalog_missing",
+            next_action="reinstall_current_release_and_retry",
+        )
+    return json.loads(catalog_path.read_text(encoding="utf-8"))
+
+
+def _catalog_release_for(version: str) -> dict:
+    """按短版本号（如 4.1.8）从发布目录中选取 darwin 平台的安装包。"""
+    catalog = _release_catalog()
+    for release in catalog.get("releases", []):
+        if release.get("platform") != "darwin":
+            continue
+        short = ".".join(str(release.get("version", "")).split(".")[:3])
+        if short == version:
+            return release
+    raise InstallerError(
+        f"发布目录中没有找到 macOS 微信 {version} 的安装包",
+        error_code="release_not_found_in_catalog",
+        next_action="check_release_catalog_or_pass_url_sha256_size",
+        details={"available_darwin_versions": [
+            ".".join(str(r.get("version", "")).split(".")[:3])
+            for r in catalog.get("releases", [])
+            if r.get("platform") == "darwin"
+        ]},
+    )
+
+
+def _server_supports_range(url: str) -> bool:
+    """探测下载服务器是否支持 HTTP Range（决定能否断点续传）。"""
+    probe = subprocess.run(
+        ["/usr/bin/curl", "-sI", "-H", "Range: bytes=0-0", "-o", "/dev/null",
+         "-w", "%{http_code}", "--connect-timeout", "3", "--max-time", "5", url],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return probe.stdout.strip() == "206"
+
+
+def _sha256_of(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _download_receipt_path(target: Path) -> Path:
+    return target.with_name(target.name + ".verified.json")
+
+
+def _write_download_receipt(target: Path, *, url: str, digest: str, size: int) -> None:
+    receipt = {
+        "schema_version": 1,
+        "path": str(target),
+        "url": url,
+        "sha256": digest,
+        "size": size,
+        "verified_at": datetime.now(timezone.utc).isoformat(),
+    }
+    receipt_path = _download_receipt_path(target)
+    temporary = receipt_path.with_name(receipt_path.name + f".{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(receipt, ensure_ascii=False), encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, receipt_path)
+
+
+def _read_download_receipt(target: Path) -> dict | None:
+    try:
+        receipt = json.loads(_download_receipt_path(target).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    return receipt if receipt.get("path") == str(target) else None
+
+
+def _receipt_matches_release_catalog(receipt: dict) -> bool:
+    digest = str(receipt.get("sha256") or "").lower()
+    size = receipt.get("size")
+    try:
+        releases = _release_catalog().get("releases") or []
+    except InstallerError:
+        return False
+    for release in releases:
+        if release.get("platform") != "darwin":
+            continue
+        for artifact in release.get("artifacts") or []:
+            if str(artifact.get("sha256") or "").lower() == digest and artifact.get("size") == size:
+                return True
+    return False
+
+
+def _download_progress_watcher(
+    target: Path,
+    total_bytes: int,
+    reporter: Reporter,
+    stop: threading.Event,
+) -> None:
+    """后台线程：每 5 秒把下载进度作为 JSON 事件输出，避免长下载被误判为卡死。"""
+    started = time.monotonic()
+    last_sample_time = started
+    last_bytes = target.stat().st_size if target.exists() else 0
+    while not stop.wait(5):
+        try:
+            current = target.stat().st_size
+        except FileNotFoundError:
+            current = 0
+        now = time.monotonic()
+        interval = max(now - last_sample_time, 1e-9)
+        # A retry must never produce a negative speed or a visibly regressing
+        # progress message. curl -C normally preserves the partial file, but
+        # this also keeps the UI stable if a server resets the transfer.
+        speed = max(0.0, (current - last_bytes) / interval)
+        last_bytes, last_sample_time = current, now
+        remaining = (total_bytes - current) / speed if speed > 0 and current < total_bytes else None
+        reporter.progress(
+            "download",
+            "正在下载安装包",
+            extra={
+                "percent": round(min(current / total_bytes * 100, 100.0), 1) if total_bytes else None,
+                "transferred_bytes": current,
+                "total_bytes": total_bytes,
+                "speed_bytes_per_second": round(speed),
+                "eta_seconds": round(remaining) if remaining is not None else None,
+            },
+        )
+
+
+def download_release(args: argparse.Namespace, reporter: Reporter) -> dict:
+    """下载并校验微信安装包：Range 探测、断点续传、进度事件、完整性校验。"""
+    if platform.system().lower() != "darwin":
+        raise InstallerError(
+            "download-release 仅支持 macOS",
+            error_code="unsupported_platform",
+            next_action="run_download_release_on_macos",
+        )
+    if not getattr(args, "confirm_download", False):
+        raise InstallerError(
+            "下载兼容版本前需要用户确认",
+            error_code="download_confirmation_required",
+            next_action="confirm_download_and_retry",
+        )
+    # Emit an immediate user-visible event before catalog, HEAD, or Range
+    # probes. Those probes can each take several seconds on a slow network.
+    reporter.progress("download", "正在准备下载安装包")
+
+    if args.version:
+        release = _catalog_release_for(args.version)
+        url = release["url"]
+        expected_sizes: dict[str, int] = {}
+        for artifact in release.get("artifacts") or []:
+            if artifact.get("size"):
+                expected_sizes[artifact["sha256"]] = int(artifact["size"])
+        expected_sha256s: list[str] = []
+        for digest in release.get("sha256s") or []:
+            expected_sha256s.append(digest)
+        if release.get("sha256") and release["sha256"] not in expected_sha256s:
+            expected_sha256s.append(release["sha256"])
+        short_version = args.version
+        filename = f"WeChatMac_{short_version}.dmg"
+    else:
+        if not args.url:
+            raise InstallerError(
+                "需要 --version 或 --url 指定下载来源",
+                error_code="download_source_missing",
+                next_action="provide_version_or_url_sha256_size",
+            )
+        if not args.sha256 or not args.size:
+            raise InstallerError(
+                "自定义下载来源必须同时提供校验信息",
+                error_code="download_integrity_metadata_missing",
+                next_action="provide_verified_url_sha256_size",
+            )
+        url = args.url
+        expected_sha256s = [value for value in [args.sha256] if value]
+        expected_sizes = {args.sha256: args.size} if args.sha256 and args.size else {}
+        short_version = "custom"
+        filename = Path(urlparse(url).path).name or "WeChatInstall.dmg"
+
+    layout = default_layout(Path(args.home).expanduser() if args.home else None)
+    download_dir = layout.data_dir / "downloads"
+    download_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    target = Path(args.output).expanduser() if args.output else download_dir / filename
+    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+    # Prefer the server's actual content length. A catalog may contain more
+    # than one verified artifact for the same short version.
+    total_bytes = None
+    if len(expected_sizes) == 1:
+        total_bytes = next(iter(expected_sizes.values()))
+    if total_bytes is None:
+        head = subprocess.run(
+            ["/usr/bin/curl", "-sIL", "--connect-timeout", "3", "--max-time", "5", url],
+            check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        for line in head.stdout.splitlines():
+            lowered = line.lower()
+            if lowered.startswith("content-length:"):
+                try:
+                    total_bytes = int(line.split(":", 1)[1].strip())
+                except ValueError:
+                    pass
+    if total_bytes is None and expected_sizes:
+        # If the server does not expose Content-Length, retain a useful
+        # estimate from the verified catalog instead of going silent.
+        total_bytes = max(expected_sizes.values())
+
+    # 本地已有完整且校验通过的文件时直接复用，避免重复下载。
+    if target.is_file() and total_bytes and target.stat().st_size == total_bytes:
+        digest = _sha256_of(target)
+        receipt = _read_download_receipt(target)
+        if digest in expected_sha256s and receipt and receipt.get("sha256") == digest and receipt.get("size") == target.stat().st_size:
+            return {
+                "ok": True,
+                "command": "download-release",
+                "path": str(target),
+                "bytes": target.stat().st_size,
+                "sha256": digest,
+                "resume_supported": None,
+                "reused": True,
+                "elapsed_seconds": 0,
+                "next_step": "replace-wechat",
+            }
+
+    resume_supported = _server_supports_range(url)
+    partial = target.with_name(target.name + ".part")
+    curl_args = [
+        "/usr/bin/curl",
+        "--fail",
+        "--location",
+        "--retry", "10",
+        "--retry-all-errors",
+        "--retry-delay", "2",
+        "--connect-timeout", "10",
+        "--max-time", "900",
+        "--speed-limit", "51200",
+        "--speed-time", "30",
+        "-s",
+        "-o", str(partial),
+        url,
+    ]
+    if resume_supported:
+        # 服务器支持 Range 时才启用断点续传，避免不支持续传时重头下载。
+        curl_args[1:1] = ["-C", "-"]
+    elif partial.exists():
+        # A non-resumable endpoint would truncate the file. Remove the stale
+        # partial first so the displayed percentage cannot jump backwards.
+        partial.unlink()
+
+    starting_bytes = partial.stat().st_size if partial.exists() else 0
+    reporter.progress("download", "正在下载安装包", extra={
+        "percent": round(min(starting_bytes / total_bytes * 100, 100.0), 1) if total_bytes else None,
+        "transferred_bytes": starting_bytes,
+        "total_bytes": total_bytes,
+        "speed_bytes_per_second": 0,
+        "eta_seconds": None,
+    })
+    stop_event = threading.Event()
+    if total_bytes:
+        watcher = threading.Thread(
+            target=_download_progress_watcher,
+            args=(partial, total_bytes, reporter, stop_event),
+            daemon=True,
+        )
+        watcher.start()
+    else:
+        watcher = None
+
+    started = time.monotonic()
+    result = subprocess.run(curl_args, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if watcher is not None:
+        stop_event.set()
+        watcher.join(timeout=2)
+    elapsed = round(time.monotonic() - started, 1)
+
+    if result.returncode != 0:
+        stderr_tail = (result.stderr or b"").decode("utf-8", "replace").strip()[-300:]
+        raise InstallerError(
+            f"安装包下载失败（退出码 {result.returncode}）",
+            error_code="release_download_failed",
+            next_action="retry_download_release",
+            details={
+                "path": str(partial),
+                "partial_bytes": partial.stat().st_size if partial.exists() else 0,
+                "resume_supported": resume_supported,
+                "stderr_tail": stderr_tail or None,
+            },
+        )
+
+    downloaded = partial.stat().st_size
+    digest = _sha256_of(partial)
+    expected_sha256s = list(dict.fromkeys(expected_sha256s))
+    reporter.progress("download", "下载完成，正在校验安装包完整性")
+    if expected_sha256s and digest not in expected_sha256s:
+        # A complete-but-invalid artifact must not be resumed on the next
+        # attempt; only interrupted transfers remain resumable.
+        partial.unlink(missing_ok=True)
+        raise InstallerError(
+            "下载文件未通过完整性检查，已停止操作，当前微信没有被修改。",
+            error_code="release_artifact_integrity_mismatch",
+            next_action="try_next_verified_source_or_retry",
+            details={
+                "path": str(partial),
+                "bytes": downloaded,
+                "sha256": digest,
+                "expected_sha256s": expected_sha256s,
+                "expected_sizes": expected_sizes,
+            },
+        )
+    if expected_sizes and digest not in expected_sizes:
+        partial.unlink(missing_ok=True)
+        raise InstallerError(
+            "下载文件未通过完整性检查（缺少匹配的文件大小），已停止操作，当前微信没有被修改。",
+            error_code="release_artifact_integrity_mismatch",
+            next_action="try_next_verified_source_or_retry",
+            details={"path": str(partial), "bytes": downloaded, "sha256": digest},
+        )
+    if digest in expected_sizes and expected_sizes[digest] != downloaded:
+        partial.unlink(missing_ok=True)
+        raise InstallerError(
+            "下载文件未通过完整性检查（大小不匹配），已停止操作，当前微信没有被修改。",
+            error_code="release_artifact_integrity_mismatch",
+            next_action="try_next_verified_source_or_retry",
+            details={
+                "path": str(partial),
+                "bytes": downloaded,
+                "expected_bytes": expected_sizes[digest],
+            },
+        )
+
+    # Publish atomically only after both digest and artifact-size checks pass.
+    os.replace(partial, target)
+    _write_download_receipt(target, url=url, digest=digest, size=downloaded)
+    return {
+        "ok": True,
+        "command": "download-release",
+        "path": str(target),
+        "bytes": downloaded,
+        "sha256": digest,
+        "resume_supported": resume_supported,
+        "reused": False,
+        "elapsed_seconds": elapsed,
+        "next_step": "replace-wechat",
+    }
+
+
+def _mount_dmg(dmg: Path) -> Path:
+    """只读挂载 DMG，返回挂载点路径。"""
+    result = subprocess.run(
+        ["/usr/bin/hdiutil", "attach", "-plist", "-nobrowse", "-readonly", str(dmg)],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        raise InstallerError(
+            f"无法挂载安装包（退出码 {result.returncode}）",
+            error_code="dmg_mount_failed",
+            next_action="verify_dmg_integrity_and_retry",
+            details={"path": str(dmg), "stderr_tail": result.stderr.strip()[-300:] or None},
+        )
+    try:
+        payload = plistlib.loads(result.stdout.encode("utf-8"))
+    except Exception:
+        payload = {}
+    mount_points: list[str] = []
+    for entity in payload.get("system-entities", []):
+        point = entity.get("mount-point")
+        if point:
+            mount_points.append(point)
+    if not mount_points:
+        raise InstallerError(
+            "挂载安装包后未找到卷宗路径",
+            error_code="dmg_mount_failed",
+            next_action="verify_dmg_integrity_and_retry",
+        )
+    return Path(mount_points[-1])
+
+
+def _bundle_version(app: Path) -> tuple[str, str]:
+    """读取 app 的 Bundle ID 和短版本号。"""
+    info = app / "Contents" / "Info.plist"
+    bundle_id = subprocess.run(
+        ["/usr/libexec/PlistBuddy", "-c", "Print :CFBundleIdentifier", str(info)],
+        check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    ).stdout.strip()
+    version = subprocess.run(
+        ["/usr/libexec/PlistBuddy", "-c", "Print :CFBundleShortVersionString", str(info)],
+        check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    ).stdout.strip()
+    return bundle_id, version
+
+
+def _darwin_version_ranges() -> list[tuple[str, str]]:
+    """从版本守卫策略中读取 macOS 微信支持区间。"""
+    policy_path = Path(__file__).resolve().parent / "version-guard.policy.json"
+    if not policy_path.is_file():
+        raise InstallerError(
+            "缺少微信版本兼容策略",
+            error_code="version_policy_unavailable",
+            next_action="reinstall_current_release_and_retry",
+        )
+    try:
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise InstallerError(
+            "微信版本兼容策略无法读取",
+            error_code="version_policy_unavailable",
+            next_action="reinstall_current_release_and_retry",
+        ) from exc
+    ranges = [
+        (str(item["min_version"]), str(item["max_version"]))
+        for item in policy.get("version_guard", {}).get("allowed_version_ranges", [])
+        if item.get("platform") == "darwin"
+    ]
+    if not ranges:
+        raise InstallerError(
+            "微信版本兼容策略为空",
+            error_code="version_policy_unavailable",
+            next_action="reinstall_current_release_and_retry",
+        )
+    return ranges
+
+
+def replace_wechat(args: argparse.Namespace, reporter: Reporter) -> dict:
+    """用本地已校验的安装包替换微信：自动备份旧版，失败时回滚。"""
+    if platform.system().lower() != "darwin":
+        raise InstallerError(
+            "replace-wechat 仅支持 macOS",
+            error_code="unsupported_platform",
+            next_action="run_replace_wechat_on_macos",
+        )
+    if not getattr(args, "confirm_replace", False):
+        raise InstallerError(
+            "替换微信前需要用户确认",
+            error_code="replace_confirmation_required",
+            next_action="confirm_replace_and_retry",
+        )
+    dmg = Path(args.dmg).expanduser()
+    if not dmg.is_file():
+        raise InstallerError(
+            "找不到指定的安装包文件",
+            error_code="dmg_not_found",
+            next_action="run_download_release_first",
+            details={"path": str(dmg)},
+        )
+    receipt = _read_download_receipt(dmg)
+    if (
+        not receipt
+        or not _receipt_matches_release_catalog(receipt)
+        or receipt.get("sha256") != _sha256_of(dmg)
+        or receipt.get("size") != dmg.stat().st_size
+    ):
+        raise InstallerError(
+            "安装包尚未通过完整性检查，请重新下载",
+            error_code="release_artifact_not_verified",
+            next_action="run_download_release_first",
+        )
+
+    running = _wechat_running_pids()
+    if running:
+        raise InstallerError(
+            "微信仍在运行。替换微信前需要先完全退出微信。",
+            error_code="wechat_must_quit_for_replace",
+            next_action="quit_wechat_and_retry_replace_wechat",
+            details={"authorization_prompt_count": 0, "running_pids": running},
+        )
+
+    app_path = Path("/Applications/WeChat.app")
+    mount_point = _mount_dmg(dmg)
+    try:
+        candidate = mount_point / "WeChat.app"
+        if not candidate.is_dir():
+            raise InstallerError(
+                "安装包内没有找到 WeChat.app",
+                error_code="dmg_content_invalid",
+                next_action="verify_dmg_integrity_and_retry",
+                details={"mount_point": str(mount_point)},
+            )
+        bundle_id, new_version = _bundle_version(candidate)
+        if bundle_id != "com.tencent.xinWeChat":
+            raise InstallerError(
+                f"安装包 Bundle ID 校验失败：{bundle_id or '未知'}",
+                error_code="release_bundle_id_mismatch",
+                next_action="reject_candidate_and_try_next_verified_source",
+                details={"bundle_id": bundle_id, "path": str(dmg)},
+            )
+        supported = _darwin_version_ranges()
+        if supported and not _version_in_ranges(new_version, supported):
+            raise InstallerError(
+                f"安装包版本 {new_version} 不在版本守卫支持区间内",
+                error_code="version_not_allowed",
+                next_action="search_public_sources_for_supported_release",
+                details={"detected_version": new_version, "supported_versions": supported},
+            )
+
+        old_version: str | None = None
+        backup_path: Path | None = None
+        if app_path.exists():
+            old_bundle_id, old_version = _bundle_version(app_path)
+            if old_bundle_id != "com.tencent.xinWeChat":
+                raise InstallerError(
+                    f"/Applications/WeChat.app 的 Bundle ID 异常：{old_bundle_id or '未知'}，已停止替换",
+                    error_code="existing_app_unexpected",
+                    next_action="inspect_existing_app_and_retry",
+                    details={"bundle_id": old_bundle_id},
+                )
+            backup_dir = default_layout(
+                Path(args.home).expanduser() if args.home else None
+            ).data_dir / "backups"
+            backup_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            backup_path = backup_dir / f"WeChat_{old_version}_{stamp}.app"
+            reporter.progress("replace-wechat", "正在备份当前微信")
+            shutil.move(str(app_path), str(backup_path))
+
+        try:
+            reporter.progress("replace-wechat", "正在安装新版本微信")
+            subprocess.run(
+                ["/usr/bin/ditto", str(candidate), str(app_path)],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+        except subprocess.CalledProcessError as exc:
+            # ditto may leave a partial destination behind. Remove it before
+            # restoring the known-good application.
+            if app_path.exists():
+                shutil.rmtree(app_path, ignore_errors=True)
+            if backup_path is not None and backup_path.exists() and not app_path.exists():
+                shutil.move(str(backup_path), str(app_path))
+            raise InstallerError(
+                "安装新版本微信失败，已恢复原有微信",
+                error_code="replace_wechat_failed",
+                next_action="retry_replace_wechat_and_report_the_error",
+                details={"stderr_tail": (exc.stderr or b"").decode("utf-8", "replace").strip()[-300:] or None},
+            ) from exc
+
+        installed_bundle_id, installed_version = _bundle_version(app_path)
+        if installed_bundle_id != "com.tencent.xinWeChat" or installed_version != new_version:
+            if app_path.exists():
+                shutil.rmtree(app_path, ignore_errors=True)
+            if backup_path is not None and backup_path.exists() and not app_path.exists():
+                shutil.move(str(backup_path), str(app_path))
+            raise InstallerError(
+                "安装后校验失败，已恢复原有微信",
+                error_code="replace_wechat_verification_failed",
+                next_action="retry_replace_wechat",
+                details={
+                    "installed_bundle_id": installed_bundle_id,
+                    "installed_version": installed_version,
+                    "expected_version": new_version,
+                },
+            )
+
+        return {
+            "ok": True,
+            "command": "replace-wechat",
+            "old_version": old_version,
+            "new_version": new_version,
+            "backup_path": str(backup_path) if backup_path else None,
+            "app_path": str(app_path),
+            "next_step": "prepare_wechat",
+        }
+    finally:
+        subprocess.run(
+            ["/usr/bin/hdiutil", "detach", str(mount_point)],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="安装和维护本机消息 MCP")
     parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
@@ -2555,6 +3266,28 @@ def build_parser() -> argparse.ArgumentParser:
     uninstall_parser = subparsers.add_parser("uninstall", help="卸载 LaunchAgent，默认保留全部数据和运行时")
     uninstall_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
     uninstall_parser.add_argument("--remove-runtime", action="store_true")
+    quit_parser = subparsers.add_parser("quit-wechat", help="请求微信正常退出，未退出时等待用户处理")
+    quit_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
+    download_parser = subparsers.add_parser(
+        "download-release",
+        help="下载并校验微信安装包（Range 探测、断点续传、进度事件、完整性校验）",
+    )
+    download_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
+    download_parser.add_argument(
+        "--version", default=None, help="从发布目录选择 macOS 微信版本（如 4.1.8）"
+    )
+    download_parser.add_argument("--url", default=None, help="自定义下载地址（与 --version 二选一）")
+    download_parser.add_argument("--sha256", default=None, help="自定义来源的期望 SHA-256")
+    download_parser.add_argument("--size", type=int, default=None, help="自定义来源的期望文件大小（字节）")
+    download_parser.add_argument("--output", default=None, help="下载保存路径（默认在数据目录 downloads 下）")
+    download_parser.add_argument("--confirm-download", action="store_true", help="确认下载兼容版本")
+    replace_parser = subparsers.add_parser(
+        "replace-wechat",
+        help="用本地已校验的安装包替换微信（自动备份旧版，失败回滚）",
+    )
+    replace_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
+    replace_parser.add_argument("--dmg", required=True, help="本地微信安装包路径（download-release 的输出）")
+    replace_parser.add_argument("--confirm-replace", action="store_true", help="确认替换当前微信")
     return parser
 
 
@@ -2581,6 +3314,9 @@ def main(argv: list[str] | None = None) -> int:
             "accounts": accounts,
             "select-account": select_account,
             "uninstall": uninstall,
+            "quit-wechat": quit_wechat,
+            "download-release": download_release,
+            "replace-wechat": replace_wechat,
         }
         payload = handlers[args.command](args, reporter)
         reporter.result(payload)
@@ -2610,11 +3346,15 @@ def main(argv: list[str] | None = None) -> int:
             "wechat_not_adhoc_signed": "confirm_wechat_resign",
             "wechat_resign_confirmation_required": "confirm_wechat_resign",
             "wechat_must_quit_for_resign": "quit_wechat",
+            "wechat_must_quit_for_replace": "quit_wechat",
+            "wechat_quit_failed": "quit_wechat",
             "app_management_permission_required": "enable_app_management",
             "administrator_authorization_cancelled": "approve_administrator_prompt",
             "wechat_process_access_failed": "keep_wechat_open_and_signed_in",
             "version_not_allowed": "search_public_sources_for_supported_release",
             "wechat_account_not_found": "select_wechat_account",
+            "download_confirmation_required": "confirm_download",
+            "replace_confirmation_required": "confirm_replace",
         }
         if exc.error_code in user_actions:
             payload["requires_user_action"] = user_actions[exc.error_code]
@@ -2623,9 +3363,13 @@ def main(argv: list[str] | None = None) -> int:
             "wechat_not_adhoc_signed": "prepare-wechat --confirm-resign",
             "wechat_resign_confirmation_required": "prepare-wechat --confirm-resign",
             "wechat_must_quit_for_resign": "prepare-wechat --confirm-resign",
+            "wechat_must_quit_for_replace": "quit-wechat",
+            "wechat_quit_failed": "quit-wechat",
             "app_management_permission_required": "prepare-wechat --confirm-resign",
             "wechat_process_access_failed": "inspect",
             "wechat_account_not_found": "accounts",
+            "download_confirmation_required": "download-release --confirm-download",
+            "replace_confirmation_required": "replace-wechat --confirm-replace",
         }
         if exc.error_code in retry_commands:
             payload["retry_command"] = retry_commands[exc.error_code]

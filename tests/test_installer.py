@@ -714,6 +714,54 @@ class JsonCliTests(unittest.TestCase):
         self.assertEqual(payload["authorization_prompt_count"], 0)
 
 
+class ManagedReleaseWorkflowTests(unittest.TestCase):
+    def test_download_requires_confirmation_before_network_access(self):
+        args = argparse.Namespace(confirm_download=False)
+        with patch.object(installer.platform, "system", return_value="Darwin"), \
+             patch.object(installer.subprocess, "run") as run:
+            with self.assertRaises(installer.InstallerError) as raised:
+                installer.download_release(args, installer.Reporter(json_mode=True))
+
+        self.assertEqual(raised.exception.error_code, "download_confirmation_required")
+        run.assert_not_called()
+
+    def test_replace_requires_confirmation_before_reading_the_dmg(self):
+        args = argparse.Namespace(confirm_replace=False, dmg="/does/not/exist")
+        with patch.object(installer.platform, "system", return_value="Darwin"):
+            with self.assertRaises(installer.InstallerError) as raised:
+                installer.replace_wechat(args, installer.Reporter(json_mode=True))
+
+        self.assertEqual(raised.exception.error_code, "replace_confirmation_required")
+
+    def test_verified_receipt_must_match_a_catalog_artifact(self):
+        receipt = {"sha256": "a" * 64, "size": 123, "url": "https://mirror.invalid/a.dmg"}
+        catalog = {
+            "releases": [{
+                "platform": "darwin",
+                "artifacts": [{"sha256": "a" * 64, "size": 123}],
+            }]
+        }
+        with patch.object(installer, "_release_catalog", return_value=catalog):
+            self.assertTrue(installer._receipt_matches_release_catalog(receipt))
+
+        receipt["size"] = 124
+        with patch.object(installer, "_release_catalog", return_value=catalog):
+            self.assertFalse(installer._receipt_matches_release_catalog(receipt))
+
+    def test_quit_wechat_never_force_terminates_the_process(self):
+        args = argparse.Namespace()
+        graceful = CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with patch.object(installer.platform, "system", return_value="Darwin"), \
+             patch.object(installer, "_wechat_running_pids", return_value=["123"]), \
+             patch.object(installer.subprocess, "run", return_value=graceful) as run, \
+             patch.object(installer.time, "sleep"):
+            with self.assertRaises(installer.InstallerError) as raised:
+                installer.quit_wechat(args, installer.Reporter(json_mode=True))
+
+        self.assertEqual(raised.exception.error_code, "wechat_quit_failed")
+        self.assertTrue(all(call.args[0][0] != "/bin/kill" for call in run.call_args_list))
+
+
 class MacInitializeTests(unittest.TestCase):
     @staticmethod
     def _make_wechat_app(root: Path, bundle_id: str = "com.tencent.xinWeChat") -> Path:
