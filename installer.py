@@ -141,6 +141,9 @@ def _plain_user_message(error: InstallerError) -> str:
         "wechat_resign_failed": "微信准备未完成，请稍后重试。",
         "wechat_resign_verification_failed": "微信准备未完成，请稍后重试。",
         "version_guard_failed": "当前微信未通过兼容性检查，安装已暂停。",
+        "release_artifact_integrity_mismatch": (
+            "下载文件未通过完整性检查，已停止操作，当前微信没有被修改。"
+        ),
         "unexpected_management_error": "安装暂时没有完成，请稍后重试。",
     }
     if code == "version_not_allowed":
@@ -148,7 +151,7 @@ def _plain_user_message(error: InstallerError) -> str:
         version_text = f" {detected}" if detected else ""
         return (
             f"当前微信版本{version_text}暂不支持。"
-            "我可以帮你查找可用版本，下载或替换前会先征得确认。"
+            "继续使用本地消息助手需要换成兼容版本，这会替换当前微信应用并需要重新登录。"
         )
     return messages.get(
         code,
@@ -1446,6 +1449,8 @@ def install(args: argparse.Namespace, reporter: Reporter) -> dict:
 
     source = Path(args.source).expanduser().resolve()
     layout = default_layout(Path(args.home).expanduser() if args.home else None)
+    old_manifest = _read_manifest(layout)
+    old_activation = _read_activation_state(layout)
     reporter.progress("prepare", "正在检查安装文件")
     repositories = list(dict.fromkeys([args.repository, *getattr(args, "fallback_repositories", [])]))
     source_info = verify_source(
@@ -1498,8 +1503,6 @@ def install(args: argparse.Namespace, reporter: Reporter) -> dict:
 
     reporter.progress("data", "正在保留并整理已有数据")
     migrated = migrate_existing_data(source, layout.data_dir)
-    old_manifest = _read_manifest(layout)
-    old_activation = _read_activation_state(layout)
     installation_id = old_manifest.get("installation_id") or str(uuid.uuid4())
     manifest = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
@@ -1550,10 +1553,20 @@ def install(args: argparse.Namespace, reporter: Reporter) -> dict:
                 pass
         raise
 
+    old_version = old_manifest.get("commit") or old_manifest.get("version")
+    installation_mode = (
+        "fresh"
+        if not old_version
+        else "reused"
+        if old_version == version
+        else "upgraded"
+    )
     return {
         "ok": True,
         "command": "install",
         "phase": "runtime_installed",
+        "installation_mode": installation_mode,
+        "installation_reused": installation_mode == "reused",
         "runtime_installed": True,
         "service_enabled": bool(activation.get("service_enabled", False)),
         "installation": manifest,
@@ -1662,10 +1675,21 @@ def _release_search_guidance(cfg: dict, detected: dict) -> dict:
             "show_the_source_page_before_download",
             "do_not_call_a_candidate_official_without_explicit_evidence",
             "verify_download_sha256_when_published",
+            "reject_candidate_when_sha256_or_size_mismatches",
+            "never_offer_or_accept_a_user_override_for_integrity_mismatch",
             "verify_macos_bundle_id_com.tencent.xinWeChat",
             "verify_macos_short_version_matches_a_supported_version",
             "do_not_replace_or_re_sign_wechat_without_a_separate_user_confirmation",
         ],
+        "validation_policy": {
+            "runtime_compatibility_basis": "supported_short_version",
+            "build_number_is_diagnostic_only": True,
+            "download_integrity_basis": "maintainer_verified_sha256_and_size",
+            "multiple_verified_artifacts_per_short_version_allowed": True,
+            "signature_bundle_id_and_version_do_not_replace_digest_verification": True,
+            "user_override_allowed": False,
+            "on_integrity_mismatch": "reject_candidate_and_try_next_verified_source",
+        },
         "disclaimer": (
             "A public repository or stable hosting domain does not prove official authorization, "
             "legality, or safety. Search results are candidates only."
@@ -1706,6 +1730,10 @@ def _release_search_guidance(cfg: dict, detected: dict) -> dict:
                 "A mirror is not equivalent to the original source unless version, file size, "
                 "and published SHA-256 all match."
             ),
+            "integrity_mismatch_rule": (
+                "Reject the candidate without changing WeChat. A valid signature, bundle ID, "
+                "or compatible version is not a substitute for the catalog digest."
+            ),
         },
     }
 
@@ -1731,18 +1759,44 @@ def _built_in_release_candidates(supported_versions: list[str]) -> list[dict]:
         short_version = ".".join(version.split(".")[:3])
         if supported and not any(_release_version_supported(short_version, item) for item in supported):
             continue
-        if not release.get("url") or not release.get("sha256"):
+        if not release.get("url"):
+            continue
+        artifacts = release.get("artifacts") or []
+        declared_hashes = release.get("sha256s") or [release.get("sha256")]
+        if artifacts:
+            declared_hashes.extend(
+                artifact.get("sha256")
+                for artifact in artifacts
+                if isinstance(artifact, dict)
+            )
+        verified_hashes = list(dict.fromkeys(
+            str(value).lower()
+            for value in declared_hashes
+            if value and re.fullmatch(r"[0-9a-fA-F]{64}", str(value))
+        ))
+        if not verified_hashes:
             continue
         candidate = {
             "platform": current_platform,
             "version": version,
             "short_version": short_version,
             "url": str(release["url"]),
-            "sha256": str(release["sha256"]).lower(),
+            "sha256": verified_hashes[0],
+            "sha256s": verified_hashes,
+            "artifacts": [
+                {
+                    "sha256": str(artifact.get("sha256")).lower(),
+                    "size": int(artifact["size"]),
+                }
+                for artifact in artifacts
+                if isinstance(artifact, dict)
+                and re.fullmatch(r"[0-9a-fA-F]{64}", str(artifact.get("sha256") or ""))
+                and artifact.get("size") is not None
+            ],
             "source": "project_builtin",
             "requires_source_page": False,
         }
-        if release.get("size") is not None:
+        if release.get("size") is not None and len(candidate["artifacts"]) <= 1:
             candidate["size"] = int(release["size"])
         candidates.append(candidate)
     return candidates
@@ -1786,6 +1840,8 @@ def inspect(args: argparse.Namespace, reporter: Reporter) -> dict:
     base = {
         "ok": True,
         "command": "inspect",
+        "installation_mode": "existing",
+        "installation_reused": True,
         "installation_id": manifest.get("installation_id"),
         "endpoint": manifest.get("endpoint"),
         "runtime_installed": True,

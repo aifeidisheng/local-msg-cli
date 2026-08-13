@@ -5,13 +5,30 @@
       "version": "4.1.8.67",
       "url": "https://dldir1v6.qq.com/weixin/Universal/Mac/WeChatMac_4.1.8.dmg",
       "sha256": "b74641ef30af5765486f079d83a9a68a3bbe3bf66a0a8caa7fa13b6cccbb7cc5",
-      "size": 482039372
+      "sha256s": [
+        "b74641ef30af5765486f079d83a9a68a3bbe3bf66a0a8caa7fa13b6cccbb7cc5",
+        "972823a966cdaa1f5f0a785bc9f1219d174a75f43d30ec0fbf9ba7ab0249b2f1"
+      ],
+      "size": 482039372,
+      "artifacts": [
+        {
+          "sha256": "b74641ef30af5765486f079d83a9a68a3bbe3bf66a0a8caa7fa13b6cccbb7cc5",
+          "size": 482039372
+        },
+        {
+          "sha256": "972823a966cdaa1f5f0a785bc9f1219d174a75f43d30ec0fbf9ba7ab0249b2f1",
+          "size": 483369372
+        }
+      ]
     },
     {
       "platform": "windows",
       "version": "4.1.9.57",
       "url": "https://dldir1v6.qq.com/weixin/Universal/Windows/WeChatWin_4.1.9.exe",
-      "sha256": "8f43225b7388742a9797d31960bf19d6b0902ea58bf1a85b6d8b95d0b71877ed"
+      "sha256": "8f43225b7388742a9797d31960bf19d6b0902ea58bf1a85b6d8b95d0b71877ed",
+      "sha256s": [
+        "8f43225b7388742a9797d31960bf19d6b0902ea58bf1a85b6d8b95d0b71877ed"
+      ]
     }
   ]
 }

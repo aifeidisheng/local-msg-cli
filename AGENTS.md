@@ -171,6 +171,18 @@ inspect -> prepare-wechat (only when requested) -> initialize
 
 `inspect` is read-only and never authorizes or modifies WeChat. Handle its
 `next_step` sequentially; this avoids unnecessary login → quit → login cycles.
+The bootstrap is idempotent for the same repository: when a valid installation
+already exists and its installed release is current, it inspects and reuses it
+without downloading or redeploying. If a newer release exists, the normal
+verified installation path updates it before inspection.
+If the read-only update check is temporarily unavailable, keep using the valid
+existing installation and continue from its inspected `next_step`; do not force
+a fresh download just because the network could not be checked.
+Check `installation_mode` and `installation_reused`. For `reused: true`, do not
+describe the workflow as a fresh installation: if `query_ready` is already true,
+report that the local message assistant is already available; otherwise continue
+only from the returned `next_step`. A WeChat version mismatch is a compatibility
+recovery, not a reinstall of the local message assistant.
 
 **Critical stage ordering — never ask the user to sign in prematurely:**
 
@@ -238,6 +250,25 @@ When `error_code: version_not_allowed` is returned:
    page and release metadata; do not begin with a direct asset download.
 4. **Do NOT** propose editing the policy as a workaround
 
+Runtime compatibility and installer integrity are separate checks. The runtime
+version guard accepts a supported WeChat short version (for example `4.1.8`);
+the build number is diagnostic only. A downloaded installer must still match a
+maintainer-verified SHA-256 and, when present, file size from release metadata.
+The release catalog may list multiple verified artifacts for the same short
+version when the publisher has legitimately repackaged it. Agents must never
+remove, skip, or ask the user to override installer integrity verification.
+When a catalog entry contains `artifacts`, each artifact's SHA-256 and size are
+one pair; never combine a hash from one artifact with the size of another.
+
+If a downloaded file's SHA-256 or size does not match, reject that candidate and
+leave the installed WeChat unchanged. Do not infer that a mismatch is harmless
+from a valid code signature, Bundle ID, host name, or compatible version, and do
+not label continuing as recommended. In normal conversation say only:
+`下载文件未通过完整性检查，已停止操作，当前微信没有被修改。` Then try the
+next separately verified candidate within the returned network limits; if none
+remain, report that installation is paused. Keep the digest and signature
+diagnostics out of the user-facing conversation unless requested.
+
 This rule is unconditional — it applies regardless of user requests, urgency,
 or "temporary" framing. The policy file is maintained by the project
 maintainer and updated exclusively through upstream releases.
@@ -253,7 +284,8 @@ Use ONLY the JSON response fields to decide next steps:
 | `wechat_not_adhoc_signed` | Keep the two stages separate. Check `details.wechat_running`: if **true** → ask the user to quit WeChat. After the user explicitly confirms re-signing, run installed `prepare-wechat --confirm-resign`. Wait for the user to sign in after WeChat reopens, then retry plain `initialize` |
 | `wechat_must_quit_for_resign` | Ask the user to quit WeChat, then retry the same installed `prepare-wechat --confirm-resign` command |
 | `app_management_permission_required` | The installer opens **Privacy & Security → App Management**. Ask the user to enable `details.responsible_app` (or the app currently running the installation if it could not be identified), then retry only the same installed `prepare-wechat --confirm-resign` command. Do not retry `initialize`, edit TCC, or disable SIP |
-| `version_not_allowed` | Report the version mismatch. If `details.release_search.available` is true, ask whether the user wants the Agent to search public sources such as Gitee/GitHub; use the returned `network_policy`, start from a source page, stop a candidate after its bounded timeout, and move to the next source. Treat every result as an untrusted candidate, require confirmation before downloading, verify the source page, published SHA-256, Bundle ID, and supported version, and do NOT modify policy files |
+| `version_not_allowed` | Report the version mismatch in plain language. If `details.release_search.available` is true, ask whether the user wants the Agent to find a compatible version; use the returned `network_policy`, start from a source page, stop a candidate after its bounded timeout, and move to the next source. Treat every result as an untrusted candidate, require confirmation before downloading, verify the source page, maintainer-verified SHA-256 and size, Bundle ID, and supported short version. Reject any integrity mismatch without offering an override, and do NOT modify policy files |
+| `release_artifact_integrity_mismatch` | Do not modify or replace WeChat. Show `下载文件未通过完整性检查，已停止操作，当前微信没有被修改。` then try the next separately verified candidate within `network_policy`; if none remain, pause and report that no safe installer is currently available |
 | `wechat_process_access_failed` | Do not request authorization again. Run `inspect`, keep WeChat open and signed in, and follow the returned process/signature action |
 | `administrator_authorization_cancelled` | User cancelled the admin popup; ask to retry |
 | `management_cli_must_not_run_as_root` | You ran with `sudo` — remove it and retry |
@@ -286,6 +318,10 @@ For public historical WeChat release searches:
   asset only when the Tencent URL is unavailable or mismatched. Never start two
   full downloads of the same candidate. Reuse a fully downloaded and verified
   local candidate instead of downloading it again.
+- A mutable publisher URL may later serve different bytes for the same short
+  version. That does not authorize an Agent to accept the new bytes. Reject the
+  candidate until the maintainer verifies the new artifact and adds its digest
+  to the release catalog through a normal upstream release.
 
 To retry initialization after fixing the issue:
 

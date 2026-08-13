@@ -11,6 +11,7 @@ set -euo pipefail
 readonly DEFAULT_REPOSITORY="https://gitee.com/feipig_up_tree/local-msg-cli.git"
 readonly RELEASE_BRANCH="main"
 readonly MANAGEMENT_CLI="$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light"
+readonly INSTALL_MANIFEST="$HOME/Library/Application Support/WeChatDecryptLight/install.json"
 
 repositories=("${WECHAT_DECRYPT_REPOSITORY:-$DEFAULT_REPOSITORY}")
 python_bin="${WECHAT_DECRYPT_PYTHON:-}"
@@ -183,16 +184,128 @@ raise SystemExit(1)
 ' "$1"
 }
 
+existing_install_matches_repository() {
+    [[ -x "$MANAGEMENT_CLI" && -f "$INSTALL_MANIFEST" ]] || return 1
+    "$python_bin" -c '
+import json
+import os
+import re
+import sys
+from urllib.parse import urlparse
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as manifest_file:
+        manifest = json.load(manifest_file)
+except (OSError, ValueError, TypeError):
+    raise SystemExit(1)
+
+def identity(value):
+    text = str(value or "").strip().rstrip("/")
+    if not text:
+        return None
+    if re.match(r"^[^/@:]+@[^/:]+:", text):
+        user_host, path = text.split(":", 1)
+        host = user_host.split("@", 1)[1].lower()
+        return host, path.removesuffix(".git").strip("/")
+    parsed = urlparse(text)
+    if parsed.scheme and parsed.hostname:
+        return parsed.hostname.lower(), parsed.path.removesuffix(".git").strip("/")
+    return "local", os.path.realpath(os.path.expanduser(text))
+
+requested = identity(sys.argv[2])
+known = [manifest.get("repository"), manifest.get("source_repository")]
+known.extend(manifest.get("repositories") or [])
+raise SystemExit(0 if requested in {identity(value) for value in known} else 1)
+' "$INSTALL_MANIFEST" "${repositories[0]}"
+}
+
+installed_release_is_current() {
+    local update_output
+    if ! update_output=$("$MANAGEMENT_CLI" --json check-update); then
+        # An unavailable update check must not turn a healthy reinstall into a
+        # needless download. The installed runtime remains the safe fallback.
+        return 0
+    fi
+    if ! update_output=$(normalize_json_output "$update_output"); then
+        return 0
+    fi
+    "$python_bin" -c '
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+raise SystemExit(
+    1
+    if payload.get("command") == "check-update"
+    and payload.get("update_available") is True
+    else 0
+)
+' "$update_output"
+}
+
+emit_existing_install_result() {
+    local inspect_output="$1"
+    "$python_bin" -c '
+import json
+import sys
+
+inspect_data = json.loads(sys.argv[1])
+combined = {
+    "ok": inspect_data.get("ok", False),
+    "command": "install+inspect",
+    "phase": "existing_install_inspected" if inspect_data.get("ok") else "inspect",
+    "install_complete": True,
+    "initialize_complete": bool(inspect_data.get("initialized")),
+    "installation_mode": "reused",
+    "installation_reused": True,
+    "query_ready": inspect_data.get("query_ready", False),
+    "endpoint": inspect_data.get("endpoint"),
+    "inspect": inspect_data,
+}
+if not inspect_data.get("ok", False):
+    for key in ("error_code", "error", "user_message", "requires_user_action",
+                "retry_command", "next_action", "details"):
+        if key in inspect_data:
+            combined[key] = inspect_data[key]
+    combined.setdefault("user_message", "安装暂时没有完成，请稍后重试。")
+combined["next_step"] = inspect_data.get(
+    "next_step", inspect_data.get("next_action", "review_inspect_error")
+)
+print(json.dumps(combined, ensure_ascii=False, separators=(",", ":")))
+' "$inspect_output"
+}
+
 install_source=""
-temporary_sources=()
+# Keep one empty sentinel for macOS Bash 3.2 + set -u compatibility.
+temporary_sources=("")
 
 cleanup() {
     local path
     for path in "${temporary_sources[@]}"; do
         [[ -n "$path" && -d "$path" ]] && rm -rf -- "$path"
     done
+    return 0
 }
 trap cleanup EXIT
+
+# Repeated installation is idempotent. Reuse a healthy installation from the
+# same requested source and continue from its current interaction boundary.
+if [[ "$do_initialize" == true ]] \
+    && existing_install_matches_repository \
+    && installed_release_is_current; then
+    echo "[检查] 正在确认现有安装..." >&2
+    if existing_output=$("$MANAGEMENT_CLI" --json inspect); then
+        existing_exit=0
+    else
+        existing_exit=$?
+    fi
+    if normalized_existing=$(normalize_json_output "$existing_output"); then
+        emit_existing_install_result "$normalized_existing"
+        result_emitted=true
+        exit "$existing_exit"
+    fi
+    echo "[检查] 现有安装需要修复，正在继续安装..." >&2
+fi
 
 # 代理检测：环境变量未设置时尝试读取 macOS 系统代理
 if [[ -z "${https_proxy:-}" && -z "${HTTPS_PROXY:-}" ]]; then
@@ -308,6 +421,8 @@ combined = {
     'inspect': inspect_data,
     'authorization_prompt_count': 0,
     'query_ready': inspect_data.get('query_ready', False),
+    'installation_mode': install_data.get('installation_mode', 'fresh'),
+    'installation_reused': install_data.get('installation_reused', False),
     'endpoint': inspect_data.get('endpoint') or install_data.get('installation', {}).get('endpoint'),
 }
 if not inspect_data.get('ok', False):

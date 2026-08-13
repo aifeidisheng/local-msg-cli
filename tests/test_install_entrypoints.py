@@ -104,6 +104,60 @@ class InstallEntrypointTests(unittest.TestCase):
         self.assertNotIn("Deploying verified commit", script)
         self.assertNotIn('echo "  export https_proxy', script)
 
+    def test_repeated_install_reuses_same_source_without_downloading(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home = base / "home"
+            app_root = home / "Library/Application Support/WeChatDecryptLight"
+            management_cli = app_root / "bin/wechat-decrypt-light"
+            management_cli.parent.mkdir(parents=True)
+            management_cli.write_text(
+                "#!/bin/bash\n"
+                "if [[ \"$2\" == \"check-update\" ]]; then\n"
+                "  echo '{\"ok\":true,\"command\":\"check-update\","
+                "\"update_available\":false}'\n"
+                "else\n"
+                "  echo '{\"ok\":true,\"command\":\"inspect\","
+                "\"initialized\":true,\"query_ready\":true,"
+                "\"next_step\":\"register_with_mcporter\"}'\n"
+                "fi\n",
+                encoding="utf-8",
+            )
+            management_cli.chmod(0o700)
+            repository = str(base / "source-that-must-not-be-downloaded")
+            (app_root / "install.json").write_text(
+                json.dumps({"repository": repository}),
+                encoding="utf-8",
+            )
+
+            env = dict(os.environ)
+            env["HOME"] = str(home)
+            result = subprocess.run(
+                [
+                    "/bin/bash",
+                    str(ROOT / "install.sh"),
+                    "--initialize",
+                    "--repository",
+                    repository,
+                    "--python",
+                    sys.executable,
+                ],
+                cwd=ROOT,
+                env=env,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["installation_mode"], "reused")
+        self.assertTrue(payload["installation_reused"])
+        self.assertTrue(payload["initialize_complete"])
+        self.assertTrue(payload["query_ready"])
+        self.assertNotIn("正在下载安装文件", result.stderr)
+
     def test_development_setup_never_regenerates_version_policy(self):
         script = (ROOT / "setup.sh").read_text(encoding="utf-8")
 

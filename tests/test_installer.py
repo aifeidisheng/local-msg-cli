@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from subprocess import CompletedProcess
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, mock_open, patch
 
 import installer
 
@@ -592,6 +592,24 @@ class JsonCliTests(unittest.TestCase):
         self.assertNotIn("WeChat.app", payload["user_message"])
         self.assertIn("macOS 阻止", payload["error"])
 
+    def test_integrity_mismatch_has_safe_user_message_and_keeps_diagnostics(self):
+        error = installer.InstallerError(
+            "下载文件 SHA-256 不匹配：expected=a actual=b",
+            error_code="release_artifact_integrity_mismatch",
+            next_action="try_next_verified_release_candidate",
+        )
+        with patch.object(installer, "status", side_effect=error), \
+             patch.object(installer.Reporter, "result") as result:
+            exit_code = installer.main(["status", "--json"])
+
+        self.assertEqual(exit_code, 1)
+        payload = result.call_args.args[0]
+        self.assertEqual(
+            payload["user_message"],
+            "下载文件未通过完整性检查，已停止操作，当前微信没有被修改。",
+        )
+        self.assertIn("SHA-256", payload["error"])
+
     def test_management_cli_adds_user_recovery_fields(self):
         error = installer.InstallerError(
             "微信尚未运行",
@@ -1096,7 +1114,16 @@ class MacInitializeTests(unittest.TestCase):
             self.assertIn("gitee.com", search["candidate_hosts"])
             self.assertIn("github.com", search["candidate_hosts"])
             self.assertIn("verify_download_sha256_when_published", search["verification_requirements"])
+            self.assertIn(
+                "never_offer_or_accept_a_user_override_for_integrity_mismatch",
+                search["verification_requirements"],
+            )
             self.assertIn("does not prove official authorization", search["disclaimer"])
+            validation = search["validation_policy"]
+            self.assertEqual(validation["runtime_compatibility_basis"], "supported_short_version")
+            self.assertTrue(validation["build_number_is_diagnostic_only"])
+            self.assertTrue(validation["multiple_verified_artifacts_per_short_version_allowed"])
+            self.assertFalse(validation["user_override_allowed"])
             network = search["network_policy"]
             self.assertEqual(network["search_transport"], "browser_or_web_search_first")
             self.assertEqual(network["max_candidates"], 3)
@@ -1118,7 +1145,56 @@ class MacInitializeTests(unittest.TestCase):
             self.assertTrue(network["download"]["no_unbounded_terminal_command"])
             self.assertTrue(network["download"]["do_not_git_clone_candidate_repository"])
             self.assertEqual(network["on_timeout"], "stop_candidate_and_try_next_source")
+            self.assertIn("Reject the candidate", network["integrity_mismatch_rule"])
             run.assert_not_called()
+
+    def test_release_catalog_accepts_multiple_verified_hashes_for_same_short_version(self):
+        first = "a" * 64
+        second = "b" * 64
+        catalog = {
+            "releases": [
+                {
+                    "platform": "darwin",
+                    "version": "4.1.8.67",
+                    "url": "https://example.invalid/WeChatMac_4.1.8.dmg",
+                    "sha256s": [first, second, "not-a-digest"],
+                    "artifacts": [
+                        {"sha256": first, "size": 123},
+                        {"sha256": second, "size": 456},
+                    ],
+                    "size": 123,
+                }
+            ]
+        }
+        opened = mock_open(read_data=json.dumps(catalog))
+
+        with patch.object(installer.Path, "open", opened), \
+             patch.object(installer.sys, "platform", "darwin"):
+            candidates = installer._built_in_release_candidates(["4.1.8"])
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["sha256"], first)
+        self.assertEqual(candidates[0]["sha256s"], [first, second])
+        self.assertEqual(
+            candidates[0]["artifacts"],
+            [{"sha256": first, "size": 123}, {"sha256": second, "size": 456}],
+        )
+        self.assertEqual(candidates[0]["short_version"], "4.1.8")
+
+    def test_release_catalog_keeps_legacy_sha256_field_for_compatibility(self):
+        catalog = json.loads(
+            Path(installer.__file__).with_name("wechat-release-catalog.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        for release in catalog["releases"]:
+            self.assertIn("sha256", release)
+            self.assertIn("sha256s", release)
+            self.assertIn(release["sha256"], release["sha256s"])
+            if release.get("artifacts"):
+                self.assertTrue(
+                    all("sha256" in item and "size" in item for item in release["artifacts"])
+                )
 
     def test_version_mismatch_error_invites_search_without_treating_source_as_trusted(self):
         error = installer.InstallerError(
