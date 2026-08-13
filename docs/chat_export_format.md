@@ -1,7 +1,7 @@
-# 聊天导出 JSON 数据格式
+# 聊天导出 JSON 格式
 
-`export_chat.py` 和 `export_all_chats.py` 生成的 JSON 文件采用紧凑格式：
-默认值与空值会被省略。本文档说明如何加载和解读这类文件。
+`export_chat.py` 和 `export_all_chats.py` 生成紧凑 JSON 文件，并省略默认值与空值。
+本文档说明文件结构、加载方式和解读注意事项。
 
 ## 生成文件
 

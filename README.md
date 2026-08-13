@@ -1,16 +1,15 @@
-# Local Message MCP Data Source
+# WeChat Local Message MCP Data Source
 
 ---
 
-**⚠️ AI AGENT STOP — READ THIS BEFORE DOING ANYTHING ⚠️**
+**代理须知**
 
-If you are an AI agent helping a user install/set up/connect this MCP:
+如果你是协助用户安装、配置或连接本 MCP 的代理：
 
-1. **Read `AGENTS.md` NOW** — it is the authoritative installation guide
-2. **The ONLY bootstrap entry point is `install.sh --initialize`** — it installs,
-   inspects, and stops at the next user interaction boundary
-3. **Do NOT** follow any manual steps in this README (pip install, venv, compile, main.py, etc.)
-4. **Do NOT** `git clone` this repo just to obtain `install.sh` — download it directly via `curl`:
+1. **先完整阅读 `AGENTS.md`**，以其作为权威安装规范。
+2. **唯一引导入口为 `install.sh --initialize`**；该入口负责安装、检查，并在下一个用户交互边界停止。
+3. **不要**按本 README 的源码开发命令操作（包括 pip、venv、编译或 `main.py`）。
+4. **不要**通过 `git clone` 获取 `install.sh`；请直接使用 `curl` 下载：
    ```bash
    curl -fsSL https://gitee.com/feipig_up_tree/local-msg-cli/raw/main/install.sh \
      -o /tmp/wechat-decrypt-install.sh && chmod +x /tmp/wechat-decrypt-install.sh
@@ -18,28 +17,28 @@ If you are an AI agent helping a user install/set up/connect this MCP:
      --repository '<user-provided-repository-url>' --initialize
    ```
 
-Desktop 宿主如果提供 Python 3.10+，应优先把该解释器传给引导器：
+桌面宿主若提供 Python 3.10+，应优先将该解释器传给引导器：
 
 ```bash
 /tmp/wechat-decrypt-install.sh \
   --repository 'https://gitee.com/feipig_up_tree/local-msg-cli.git' \
-  --python "$CODEX_DESKTOP_PYTHON" --initialize
+  --python "$WECHAT_DECRYPT_PYTHON" --initialize
 ```
 
-这只用于启动安装器；正式服务仍运行在安装器创建的独立 `.venv` 中。
-`install.sh` is self-contained and will clone the verified `main` release internally.
+该解释器仅用于启动安装器；正式服务仍运行在安装器创建的独立 `.venv` 中。
+`install.sh` 自包含，并在内部克隆经过校验的 `main` 发布版本。
 
 如果用户提供了仓库地址，必须在第一次调用 `install.sh` 时显式传入
 `--repository`。安装器不会从对话内容、当前工作目录或之前的临时 clone
 自动推断仓库；没有提供地址时使用内置的 Gitee 默认发布源。
 
-违反以上规则将导致安装失败或安全问题。README 中的所有手动命令仅供源码开发者使用。
+违反上述规则可能导致安装失败或产生安全风险。本 README 中的手动命令仅供源码开发者使用。
 
 ---
 
-本项目把本机 WeChat 4.x 消息数据库解密后，通过 MCP streamable-http 暴露为本地数据源。它面向 Desktop Runtime 使用，默认只监听 `127.0.0.1`，不提供云端访问能力。
+本项目用于解密本机 WeChat 4.x 消息数据库，并通过 MCP `streamable-http` 提供本地数据源。服务面向桌面运行环境，默认仅监听 `127.0.0.1`，不提供云端访问。
 
-核心能力：
+## 核心能力
 
 | 能力 | 说明 |
 |---|---|
@@ -50,11 +49,11 @@ Desktop 宿主如果提供 Python 3.10+，应优先把该解释器传给引导�
 | 消息查询 | `query_messages`、`search_messages`，支持时间范围、关键词和分页 |
 | 可选辅助解码 | `extended` 工具档提供图片、文件、转账、引用、位置等消息详情解码 |
 
-不包含 Web UI、桌面 GUI、朋友圈导出、语音导出/转录等上游工具箱能力。
+不包含 Web UI、桌面 GUI、朋友圈导出及语音导出/转录等扩展能力。
 
 ## 环境要求
 
-- Python 3.10+ (the Desktop host may pass its bundled interpreter to the bootstrap; the installed service uses its own isolated venv)
+- Python 3.10+（桌面宿主可将内置解释器传给引导器；已安装服务使用独立虚拟环境）
 - 允许区间内的 WeChat 版本；密钥提取阶段需要 WeChat 正在运行并已登录
 - macOS 需 Xcode Command Line Tools: `xcode-select --install`
 - Windows 首次提取密钥需使用“以管理员身份运行”的 PowerShell
@@ -134,7 +133,7 @@ install -> inspect -> prepare-wechat（仅需要时） -> initialize
 
 如果返回 `wechat_not_adhoc_signed`，必须保持重签名与密钥提取的两阶段边界：Agent 应先请用户退出 WeChat 并明确确认允许修改应用签名，然后直接执行已安装管理入口的 `prepare-wechat --confirm-resign`。该命令只允许处理版本门禁实际检测到、bundle id 正确的 WeChat.app，只授权固定的扩展属性清理和 `codesign` 操作，完成后复核签名并重新打开 WeChat；不要让用户在终端手工运行 `sudo codesign`，也不要向 `initialize` 传入 `--confirm-resign`。等待用户完成登录后，再重新执行普通 `initialize`；这样密钥提取不会与同一次 WeChat 退出/重启产生竞态。
 
-较新的 macOS 还会要求发起安装的宿主应用取得“隐私与安全性 → App 管理”权限，这与管理员密码弹窗是两项独立授权。若最终的重签命令被系统以 `Operation not permitted` 拒绝，`prepare-wechat` 会返回 `app_management_permission_required`，自动打开对应的系统设置页面，并在 `details.responsible_app` 中给出应开启的应用名称（可能是 ChatGPT、终端或当前 IDE/Agent 宿主，不能写死为终端）。用户开启后只重试 `prepare-wechat --confirm-resign`；不要转而执行 `initialize`，也不要修改 TCC 数据库、关闭 SIP 或尝试自动操作该开关。
+较新的 macOS 还会要求发起安装的宿主应用取得“隐私与安全性 → App 管理”权限，这与管理员密码弹窗是两项独立授权。若最终的重签命令被系统以 `Operation not permitted` 拒绝，`prepare-wechat` 会返回 `app_management_permission_required`，自动打开对应的系统设置页面，并在 `details.responsible_app` 中给出应开启的宿主应用名称。用户开启后只重试 `prepare-wechat --confirm-resign`；不要转而执行 `initialize`，也不要修改 TCC 数据库、关闭 SIP 或尝试自动操作该开关。
 
 多账号场景下，`initialize` 会在同一次密钥扫描中校验所有检测到的数据目录，并把唯一匹配当前 WeChat 进程的账号写入单一 `data/config.json`；已有密钥也会先在所有候选账号上本地验证，可在不弹授权窗口的情况下纠正旧配置。只有自动匹配仍无法恢复时，才使用已安装管理入口的 `accounts` 和 `select-account --account <account_id>`，不要手工编辑 config 或移动密钥文件。
 
@@ -274,7 +273,7 @@ MCPCTL="$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-
 
 服务日志位于：`~/Library/Logs/WeChatDecryptLight/`。如果服务未启动，优先查看 `mcp.stderr.log`。
 
-## Desktop MCP 配置
+## 桌面端 MCP 配置
 
 在 Desktop 客户端中添加本机 MCP 工具：
 
@@ -416,6 +415,6 @@ WECHAT_DECRYPT_MCP_TOOL_PROFILE=extended .venv/bin/python3 main.py serve
 - 解密后的 `.db` 文件是明文 SQLite，包含联系人、群和消息内容。
 - 本工具仅用于分析自己的本机数据。请遵守相关法律法规和软件服务协议。
 
-## License
+## 许可证
 
 MIT

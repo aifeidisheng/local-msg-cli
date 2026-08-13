@@ -1,22 +1,21 @@
-# Agent Instructions
+# Agent Operating Guide
 
-> **CRITICAL**: This file is the authoritative guide for AI agents interacting
-> with this repository. Read it completely before executing any command.
+> **Authoritative instructions:** Read this document in full before running any command.
 
-## How to read this file (zero-clone)
+## Read Documentation Without Cloning
 
-When a user provides the repository URL, read documentation via the release
-source's raw URLs — do NOT `git clone` the repo just to read docs:
+When a user provides a repository URL, read the documentation from the release
+source's raw URLs. Do not `git clone` the repository only to read its files:
 
 ```
 https://gitee.com/feipig_up_tree/local-msg-cli/raw/main/AGENTS.md
 https://gitee.com/feipig_up_tree/local-msg-cli/raw/main/README.md
 ```
 
-The entire end-user installation requires **zero manual git clones**:
-1. Read docs → raw GitHub URL (webfetch / curl)
-2. Obtain installer → `curl` download `install.sh`
-3. Verified clone → handled internally by `install.sh`
+The end-user workflow requires no manual clone:
+1. Read the documentation from raw release URLs (webfetch / curl).
+2. Download `install.sh` with `curl`.
+3. Let `install.sh` perform the verified clone internally.
 
 When the user provides a repository URL, preserve that exact URL and pass it
 to the **first** bootstrap invocation with `--repository`. Do not first run
@@ -25,21 +24,20 @@ from the conversation, the current working directory, or an earlier temporary
 clone. Omit `--repository` only when the user did not provide a source URL and
 the documented default release source is intended.
 
-## Routing: end-user vs source-development
+## Choose the Correct Workflow
 
 | User intent | Workflow |
 |---|---|
-| Install / connect / set up / use / troubleshoot the installed MCP | **End-user** (this section) |
-| Explicitly modify, test, or debug this repository's source code | Source-development (bottom section) |
+| Install, connect, configure, use, or troubleshoot the installed MCP | **End user** (this section) |
+| Explicitly modify, test, or debug this repository's source code | **Source development** (final section) |
 
-Default to **end-user**. Installation or connection troubleshooting remains an
-end-user workflow even when the user calls it "debugging". Use the
-source-development workflow only when the user explicitly asks to change, test,
-or debug this repository's source code.
+Default to the **end-user workflow**. Installation and connection troubleshooting
+remain end-user tasks even when the user calls them "debugging." Use the source
+development workflow only for explicit source modification, testing, or debugging.
 
-## End-user installation (macOS)
+## End-User Installation (macOS)
 
-### Step 1 — Install + Inspect (the ONLY bootstrap entry point)
+### Step 1: Install and Inspect (Only Bootstrap Entry Point)
 
 Run the bootstrap directly. This stage is unprivileged and must not show a
 macOS administrator authorization prompt. Desktop hosts should pass their
@@ -64,7 +62,7 @@ Without an explicit path, the script checks supported Python bundles under
 `/Applications` and `~/Applications`, then falls back to `python3.13` through
 `python3`.
 
-#### Optional: pre-cache acceleration
+#### Optional: Pre-cache Dependencies
 
 The `pip install` step downloads ~20 MB of wheels (79 packages). You can
 eliminate network I/O during installation by pre-downloading wheels into a
@@ -116,7 +114,7 @@ in a terminal. Execute everything directly. User interaction is limited to
 confirming sensitive actions, quitting/signing in to WeChat when requested,
 and clicking "OK" on the macOS admin authorization popup.
 
-### User-facing communication (plain-language mode)
+### User-Facing Communication
 
 The installer JSON and stderr are an Agent control protocol, not an
 installation transcript for the end user. Read them silently and use their
@@ -182,7 +180,7 @@ new `osascript` authorization request.
 If `--initialize` is omitted, `install.sh` deploys the runtime and outputs
 `next_step: "inspect"` without running the inspection.
 
-### Prohibited actions (hard blocklist)
+### Prohibited Actions
 
 Do NOT perform any of the following during end-user installation:
 
@@ -204,7 +202,7 @@ Do NOT perform any of the following during end-user installation:
 If you find yourself about to run any of these, STOP — you are deviating
 from the official workflow.
 
-### Version guard policy — NEVER modify (hard rule)
+### Version Guard Policy (Never Modify)
 
 The file `version-guard.policy.json` is integrity-protected by SHA-256.
 Agents **MUST NOT**:
@@ -227,7 +225,7 @@ This rule is unconditional — it applies regardless of user requests, urgency,
 or "temporary" framing. The policy file is maintained by the project
 maintainer and updated exclusively through upstream releases.
 
-### Error recovery
+### Error Recovery
 
 Use ONLY the JSON response fields to decide next steps:
 
@@ -299,8 +297,8 @@ Management** permission for the GUI app responsible for the installation. This
 is separate from the administrator password prompt. If macOS denies the fixed
 re-sign command with `Operation not permitted`, `prepare-wechat` returns
 `app_management_permission_required` and opens the correct System Settings
-pane. Ask the user to enable the app named by `details.responsible_app` (for
-example ChatGPT, Terminal, or the IDE/agent host), then retry only
+pane. Ask the user to enable the app named by `details.responsible_app` (the
+current GUI host or terminal), then retry only
 `prepare-wechat --confirm-resign`. Never assume the responsible app is Terminal,
 and never attempt to change this TCC permission programmatically.
 
@@ -310,7 +308,7 @@ commands. Do not edit `config.json` or move `all_keys.json` manually. Normal
 accounts and correct stale auto-selected configuration before these commands
 are needed.
 
-### Step 2 — Enable the Local MCP
+### Step 2: Enable the Local MCP
 
 After `initialize` returns `next_step: "enable_service"`, execute the installed
 `enable-service` command. A failure here does not invalidate initialization;
@@ -321,14 +319,14 @@ retry only `enable-service`:
   --json enable-service
 ```
 
-### Step 3 — Register Desktop MCP
+### Step 3: Register the Desktop MCP
 
 Only when `enable-service` returns `query_ready: true`:
 
 Register `http://127.0.0.1:8765/mcp` as a `streamablehttp` MCP in the
 Desktop connector (via mcporter install + enable).
 
-### Step 4 — Validate (no user data)
+### Step 4: Validate Without Reading User Data
 
 Call the registered MCP tool `data_source_status`. Only report success when it
 returns `status: "ready"`. Do not call `list_contacts`, `query_messages`, or
@@ -336,7 +334,7 @@ any tool that returns user data merely to verify installation.
 
 ---
 
-## Source-development workflow
+## Source Development
 
 Only when the user explicitly asks to modify, test, or debug this repository:
 

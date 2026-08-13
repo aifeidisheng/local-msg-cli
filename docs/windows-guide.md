@@ -1,6 +1,7 @@
 # Windows 使用指南
 
-本文说明如何在 Windows 10/11 上运行本机消息 MCP 数据源。轻量版保留 CLI 和 MCP Server，不包含原项目的 Web UI、tkinter GUI、企业微信和朋友圈工具。
+本文档说明如何在 Windows 10/11 上运行本机消息 MCP 数据源。当前版本提供 CLI 和 MCP Server，
+不包含 Web UI、tkinter GUI、企业微信或朋友圈相关功能。
 
 ## 1. 前置条件
 

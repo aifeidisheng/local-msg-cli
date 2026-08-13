@@ -1,6 +1,6 @@
-# Usage Examples / 使用案例
+# 使用示例
 
-WeChat MCP Server 注册到 Claude Code 后，可以直接在对话中查询微信数据。以下是真实使用截图（敏感信息已打码）。
+将 WeChat MCP Server 注册到兼容 MCP 的桌面客户端后，即可在对话中查询微信数据。以下示例均已脱敏。
 
 ## 1. 查看最近会话
 
@@ -8,7 +8,7 @@ WeChat MCP Server 注册到 Claude Code 后，可以直接在对话中查询微�
 > 帮我看看微信最近的会话
 ```
 
-Claude 自动调用 `get_recent_sessions`：
+客户端会自动调用 `get_recent_sessions`：
 
 ```
 最近 10 个会话:
@@ -38,7 +38,7 @@ Claude 自动调用 `get_recent_sessions`：
 > 帮我看看██群在聊啥
 ```
 
-Claude 调用 `query_messages`，然后自动分析总结：
+客户端调用 `query_messages` 后，可自动分析并总结：
 
 ```
 ██群今日话题:
@@ -63,18 +63,18 @@ Claude 调用 `query_messages`，然后自动分析总结：
 ## 3. 搜索消息
 
 ```
-> 搜一下谁提过"claude"
+> 搜一下谁提过“项目”
 ```
 
-Claude 调用 `search_messages(keyword="claude")`：
+客户端调用 `search_messages(keyword="项目")`：
 
 ```
-搜索 "claude" 找到 20 条结果:
+搜索“项目”找到 20 条结果：
 
 [2026-02-28 10:25] [██AI群] ██: max套餐，就用opus模型
-[2026-02-28 10:31] [██AI群] ██: 我小龙虾也没用api接入的
-[2026-02-24 21:58] [██AI群] ██: Claude max 套餐给我干没了
-[2026-02-24 22:16] [██AI群] ██: 最简单的就是装claude
+[2026-02-28 10:31] [██AI群] ██: 这个项目还没有接入 API
+[2026-02-24 21:58] [██AI群] ██: 这个项目的高级套餐已用完
+[2026-02-24 22:16] [██AI群] ██: 最简单的方式是直接安装客户端
 ...
 ```
 
@@ -84,7 +84,7 @@ Claude 调用 `search_messages(keyword="claude")`：
 > 帮我看一下██群 3 月 1 日到 3 月 7 日的聊天，先给我前 20 条
 ```
 
-Claude 可以调用：
+客户端可以调用：
 
 ```python
 query_messages(
@@ -111,14 +111,14 @@ query_messages(
 ## 5. 搜索指定联系人/群聊在某个时间段内的消息
 
 ```
-> 帮我搜一下██群这周谁提到过 Claude
+> 帮我搜一下██群这周谁提到过“项目”
 ```
 
-Claude 可以调用统一接口：
+客户端可以调用统一接口：
 
 ```python
 search_messages(
-    keyword="Claude",
+    keyword="项目",
     chat_name="██群",
     start_time="2026-03-01",
     end_time="2026-03-07",
@@ -133,7 +133,7 @@ search_messages(
 > 帮我看看联系人A、联系人B 和 ██项目群 这周谁提到过“项目”
 ```
 
-Claude 可以调用统一接口：
+客户端可以调用统一接口：
 
 ```python
 search_messages(
@@ -154,7 +154,7 @@ search_messages(
 > 帮我找一下姓张的联系人
 ```
 
-Claude 调用 `list_contacts(query="张")`：
+客户端调用 `list_contacts(query="张")`：
 
 ```
 找到 12 个联系人（搜索: 张）:
@@ -171,7 +171,7 @@ wxid_████  备注: 张██  昵称: 小██
 > 有没有新消息
 ```
 
-Claude 调用 `get_new_messages()`：
+客户端调用 `get_new_messages()`：
 
 ```
 当前 5 个未读会话:
@@ -185,13 +185,13 @@ Claude 调用 `get_new_messages()`：
 
 ## 9. 高级用法：群聊分析
 
-Claude 可以获取大量消息后自动分析活跃度、话题分布、关键人物：
+客户端可以获取消息后自动分析活跃度、话题分布和关键人物：
 
 ```
 > 帮我分析一下██群最近一周的情况
 ```
 
-Claude 会调用 `query_messages(chat_id="██群", start_time="2026-03-01", limit=500)` 获取消息，然后输出。消息很多时，可缩小时间范围，或配合 `offset` 分页读取：
+客户端会调用 `query_messages(chat_id="██群", start_time="2026-03-01", limit=500)` 获取消息并生成分析。消息较多时，可缩小时间范围或配合 `offset` 分页读取：
 
 ```
 ## ██群最近一周分析
@@ -217,7 +217,7 @@ Claude 会调用 `query_messages(chat_id="██群", start_time="2026-03-01", l
 
 ---
 
-## Setup / 配置方法
+## 配置方法
 
 以下命令仅适用于源码开发。macOS 最终用户安装以及通过对话 Agent 安装时，请使用唯一正式入口 `./install.sh --initialize`；不要让 Agent 根据下面的源码命令自行拼装正式安装流程。
 
@@ -225,11 +225,10 @@ Claude 会调用 `query_messages(chat_id="██群", start_time="2026-03-01", l
 # 1. 安装源码开发依赖
 pip install -r requirements.txt
 
-# 2. 注册到 Claude Code
-claude mcp add wechat -- python C:\path\to\mcp_server.py
+# 2. 在兼容 MCP 的桌面客户端中注册服务
+#    请按客户端文档填写 MCP 地址或启动参数
 
-# 3. 在 Claude Code 中直接对话
-claude
+# 3. 在客户端中直接对话
 > 看看微信最近谁找我了
 ```
 

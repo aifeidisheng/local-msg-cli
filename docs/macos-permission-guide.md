@@ -1,6 +1,6 @@
-# macOS WeChat 密钥提取：权限与签名完全指南
+# macOS WeChat 密钥提取：权限与签名指南
 
-> 基于多台机器 (macOS 10.15 ~ 15.x, Intel + Apple Silicon) 的实测经验总结。
+> 本文根据 macOS 10.15–15.x、Intel 与 Apple Silicon 环境的实测结果整理。
 
 ## 核心结论
 
