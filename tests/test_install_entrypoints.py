@@ -56,6 +56,8 @@ class InstallEntrypointTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertEqual(payload["error_code"], "invalid_arguments")
         self.assertEqual(payload["phase"], "arguments")
+        self.assertEqual(payload["user_message"], "安装参数不完整，请稍后重试。")
+        self.assertNotIn("--unsupported", payload["user_message"])
 
     def test_setup_refuses_to_act_as_an_end_user_installer(self):
         result = self.run_script("setup.sh")
@@ -86,6 +88,10 @@ class InstallEntrypointTests(unittest.TestCase):
         self.assertIn("### 普通用户会经历什么", readme)
         self.assertIn("用户不需要打开终端或输入命令", readme)
         self.assertIn("不展示完整 JSON", readme)
+        self.assertIn("do not display a", agents)
+        self.assertIn("detected account ID", agents)
+        self.assertIn("账号标识", readme)
+        self.assertIn("不逐步复述执行结果", readme)
 
     def test_bootstrap_uses_quiet_plain_language_progress(self):
         script = (ROOT / "install.sh").read_text(encoding="utf-8")

@@ -114,7 +114,7 @@ in a terminal. Execute everything directly. User interaction is limited to
 confirming sensitive actions, quitting/signing in to WeChat when requested,
 and clicking "OK" on the macOS admin authorization popup.
 
-### User-Facing Communication
+### User-facing communication (plain-language mode)
 
 The installer JSON and stderr are an Agent control protocol, not an
 installation transcript for the end user. Read them silently and use their
@@ -127,7 +127,7 @@ conversation to a short status line at each real interaction boundary:
 - WeChat must quit: `下一步需要准备微信。请先完全退出微信。`
 - Sign-in needed: `微信已准备好。请打开并登录，完成后告诉我。`
 - System authorization: `接下来会出现一次系统确认，请按提示完成。`
-- Success: `安装完成，本地消息数据源已可以使用。`
+- Success: `安装完成，本地消息助手已经可以使用。`
 
 Do not narrate routine implementation details. In particular, do not expose or
 explain Git clones, commits, branches, Python/venv/pip/uv, package counts,
@@ -138,6 +138,23 @@ them. Do not enumerate the MCP tool list during installation. Translate these
 concepts into the user action or outcome they imply, while preserving exact
 version numbers and security consequences when consent or recovery depends on
 them.
+
+Also keep private identifiers out of the normal conversation: do not display a
+detected account ID, database path, installation ID, endpoint, message-shard
+count, or per-database readiness flags. Do not recap completed internal stages
+after each command. A successful internal stage should either continue silently
+or produce only the next user action.
+
+At the start, do not introduce the repository, its architecture, its tool list,
+or a step-by-step plan. Begin with the Start status above and do the work. Explain
+a permission or security consequence only at the boundary where the user's
+consent or action is needed.
+
+At the one boundary that modifies WeChat, be transparent without using signing
+terminology: say `为了让本地消息助手正常工作，需要完成一次微信兼容设置。`
+If the user asks about privacy, explain that message data is handled locally and
+is not uploaded by this local data source. Do not turn that explanation into a
+routine technical preamble.
 
 Do not produce a running installation diary. Report elapsed time only when it
 helps explain an unusual delay. On completion, report the outcome in one or two
@@ -241,7 +258,7 @@ Use ONLY the JSON response fields to decide next steps:
 | `administrator_authorization_cancelled` | User cancelled the admin popup; ask to retry |
 | `management_cli_must_not_run_as_root` | You ran with `sudo` — remove it and retry |
 | `wechat_account_not_found` | Run installed `accounts`, select one returned `account_id` with installed `select-account`, then retry `initialize` |
-| Other | Report `error_code` + `next_action` text to user |
+| Other | Show the concise `user_message`; keep `error_code`, `next_action`, and `details` for internal diagnosis unless technical detail is necessary or requested |
 
 Do NOT invent recovery steps. Do NOT run internal scanner commands, move key
 files, change directory ownership, or modify policy files.

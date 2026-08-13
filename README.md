@@ -100,7 +100,9 @@
 
 `./install.sh --initialize` 兼容旧 Agent 的入口名称，但不再把提权初始化和服务安装串成一次长事务。它只部署运行时并执行只读 `inspect`，不会弹出管理员授权窗口；Agent 根据 JSON 的 `next_step` 继续。用户无需在终端输入命令，交互仅限于确认敏感操作、退出或登录 WeChat，以及批准 macOS 系统弹窗。
 
-安装器的 JSON、路径和内部组件名称用于 Agent 判断下一步，不是面向普通用户的安装说明。正常安装时，Agent 只需用“正在安装”“请退出微信”“请打开并登录微信”“请按系统提示确认”“安装完成”等简短状态与用户沟通；除非用户主动询问技术细节或排查特定错误，不展示完整 JSON、内部命令、进程号、端口、运行目录、依赖工具、提交信息和服务实现。
+安装器的 JSON、路径和内部组件名称用于 Agent 判断下一步，不是面向普通用户的安装说明。正常安装时，Agent 直接以“正在安装”开始，不先介绍项目、能力、技术架构或完整安装计划；过程中只需用“请退出微信”“请打开并登录微信”“请按系统提示确认”“安装完成”等简短状态与用户沟通。除非用户主动询问技术细节或排查特定错误，不展示完整 JSON、内部命令、进程号、端口、运行目录、依赖工具、提交信息、服务实现、账号标识、数据库状态或工具清单。内部阶段成功后应直接继续，或只告诉用户下一步要做什么，不逐步复述执行结果。
+
+需要修改微信的交互边界仍须透明说明，但使用普通用户能理解的表达：`为了让本地消息助手正常工作，需要完成一次微信兼容设置。` 用户询问隐私时，应说明本地消息数据源在本机处理数据，不上传聊天内容；正常安装过程不把这段说明扩展为技术介绍。
 
 正式安装按以下可恢复阶段推进：
 
@@ -145,7 +147,7 @@ install -> inspect -> prepare-wechat（仅需要时） -> initialize
 "$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light" --json enable-service
 ```
 
-所有失败 JSON 同时包含可直接展示的 `user_message`；需要用户动作时还会包含 `requires_user_action`，可重试的管理操作包含 `retry_command`。`error_code` 和 `next_action` 仍是 Agent 判断恢复分支的稳定机器字段。
+所有失败 JSON 同时包含面向普通用户的 `user_message`；它只说明当前状态和下一步，不展示签名、数据库、进程、路径或服务等实现细节。需要用户动作时还会包含 `requires_user_action`，可重试的管理操作包含 `retry_command`。原始异常文本保留在 `error`，`error_code`、`next_action` 和 `details` 仍是 Agent 判断恢复分支及技术排查使用的稳定机器字段，正常对话不应直接展示。
 
 如果 `error_code` 为 `version_not_allowed`，响应中的 `details.release_search` 会先返回项目内置的 `built_in_releases`，再提供公开来源搜索提示。内置候选来自 `wechat-release-catalog.json`，按平台和受支持版本筛选，`fallback_order` 中固定排在第一位；下载后仍必须核对 SHA-256、文件大小（如果目录提供）、`com.tencent.xinWeChat` Bundle ID 和实际版本。只有没有可用内置候选时，Agent 才进入公开来源搜索：外部候选必须先打开来源页并取得版本、文件大小和已公布摘要，再按 `network_policy` 的短超时和候选上限处理附件；不能对 GitHub 或其他 Git 地址执行无超时的 `curl`、`wget` 或 `git clone`。搜索结果不能自动触发微信替换、重签名或修改 `version-guard.policy.json`。
 

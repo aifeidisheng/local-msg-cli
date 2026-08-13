@@ -30,9 +30,16 @@ emit_error_json() {
     local phase="$2"
     local error_message="$3"
     local next_action="$4"
+    local user_message="$error_message"
+    case "$error_code" in
+        unsupported_platform) user_message="当前设备暂不支持此安装方式。" ;;
+        invalid_arguments) user_message="安装参数不完整，请稍后重试。" ;;
+        all_git_sources_unreachable) user_message="暂时无法下载安装文件，请检查网络后重试。" ;;
+        installer_bootstrap_failed|install_output_invalid) user_message="安装暂时没有完成，请稍后重试。" ;;
+    esac
     result_emitted=true
     printf '{"ok":false,"command":"%s","phase":"%s","error_code":"%s","error":"%s","user_message":"%s","next_action":"%s"}\n' \
-        "$(command_name)" "$phase" "$error_code" "$error_message" "$error_message" "$next_action"
+        "$(command_name)" "$phase" "$error_code" "$error_message" "$user_message" "$next_action"
 }
 
 unexpected_error() {
@@ -43,7 +50,7 @@ unexpected_error() {
         emit_error_json \
             "installer_bootstrap_failed" \
             "bootstrap" \
-            "The installer bootstrap failed before producing a result." \
+            "安装暂时没有完成，请稍后重试。" \
             "retry_and_report_the_structured_error"
     fi
     exit "$exit_code"
@@ -248,7 +255,7 @@ if [[ $install_exit -ne 0 ]]; then
         printf '%s\n' "$normalized_install"
         result_emitted=true
     else
-        emit_error_json "install_output_invalid" "install" "The release installer failed without a structured result." "retry_and_report_the_structured_error"
+        emit_error_json "install_output_invalid" "install" "安装暂时没有完成，请稍后重试。" "retry_and_report_the_structured_error"
     fi
     exit $install_exit
 fi
@@ -256,7 +263,7 @@ fi
 if normalized_install=$(normalize_json_output "$install_output"); then
     install_output="$normalized_install"
 else
-    emit_error_json "install_output_invalid" "install" "The release installer returned an invalid result." "retry_and_report_the_structured_error"
+    emit_error_json "install_output_invalid" "install" "安装暂时没有完成，请稍后重试。" "retry_and_report_the_structured_error"
     exit 1
 fi
 
@@ -280,7 +287,7 @@ fi
 if normalized_inspect=$(normalize_json_output "$inspect_output"); then
     inspect_output="$normalized_inspect"
 else
-    inspect_output='{"ok":false,"command":"inspect","error_code":"inspect_output_invalid","error":"The management CLI returned an invalid result.","next_action":"retry_inspect_and_report_the_structured_error"}'
+    inspect_output='{"ok":false,"command":"inspect","error_code":"inspect_output_invalid","error":"管理程序返回了无效结果。","user_message":"安装暂时没有完成，请稍后重试。","next_action":"retry_inspect_and_report_the_structured_error"}'
     inspect_exit=1
 fi
 
@@ -308,6 +315,7 @@ if not inspect_data.get('ok', False):
                 'retry_command', 'next_action', 'details'):
         if key in inspect_data:
             combined[key] = inspect_data[key]
+    combined.setdefault('user_message', '安装暂时没有完成，请稍后重试。')
 combined['next_step'] = inspect_data.get(
     'next_step', inspect_data.get('next_action', 'review_inspect_error')
 )

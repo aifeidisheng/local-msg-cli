@@ -574,6 +574,24 @@ class JsonCliTests(unittest.TestCase):
         payload = result.call_args.args[0]
         self.assertEqual(payload["authorization_prompt_count"], 0)
 
+    def test_user_message_hides_internal_terms_for_wechat_preparation_error(self):
+        error = installer.InstallerError(
+            "macOS 阻止当前安装应用 AlphaEngine 修改 WeChat.app",
+            error_code="app_management_permission_required",
+            details={"responsible_app": "AlphaEngine"},
+        )
+        with patch.object(installer, "status", side_effect=error), \
+             patch.object(installer.Reporter, "result") as result:
+            exit_code = installer.main(["status", "--json"])
+
+        self.assertEqual(exit_code, 1)
+        payload = result.call_args.args[0]
+        self.assertIn("App 管理", payload["user_message"])
+        self.assertIn("AlphaEngine", payload["user_message"])
+        self.assertNotIn("macOS 阻止", payload["user_message"])
+        self.assertNotIn("WeChat.app", payload["user_message"])
+        self.assertIn("macOS 阻止", payload["error"])
+
     def test_management_cli_adds_user_recovery_fields(self):
         error = installer.InstallerError(
             "微信尚未运行",
@@ -586,7 +604,7 @@ class JsonCliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 1)
         payload = result.call_args.args[0]
-        self.assertEqual(payload["user_message"], "微信尚未运行")
+        self.assertEqual(payload["user_message"], "微信已准备好。请打开并登录，完成后告诉我。")
         self.assertEqual(payload["requires_user_action"], "open_and_sign_in_wechat")
         self.assertEqual(payload["retry_command"], "initialize")
 

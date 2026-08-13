@@ -108,6 +108,54 @@ class Reporter:
             print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
+def _plain_user_message(error: InstallerError) -> str:
+    """Return the small amount of context a non-technical user needs.
+
+    The exception text and structured details remain available to the Agent for
+    diagnostics; this field is deliberately safe to show in the normal flow.
+    """
+    code = error.error_code
+    details = error.details or {}
+    messages = {
+        "wechat_app_not_found": "没有找到个人版微信。请确认已安装，无需登录。",
+        "wechat_not_running": "微信已准备好。请打开并登录，完成后告诉我。",
+        "wechat_not_adhoc_signed": (
+            "下一步需要对本机微信做一次兼容设置。请先完全退出微信，完成后告诉我。"
+            if details.get("wechat_running")
+            else "下一步需要对本机微信做一次兼容设置，确认后可能出现一次系统确认。"
+        ),
+        "wechat_must_quit_for_resign": "请先完全退出微信，完成后告诉我。",
+        "wechat_resign_confirmation_required": (
+            "为了让本地消息助手正常工作，需要完成一次微信兼容设置。"
+            "这只影响本机，确认后即可继续。"
+        ),
+        "app_management_permission_required": (
+            "请在“系统设置 → 隐私与安全性 → App 管理”中，允许"
+            f"“{details.get('responsible_app') or '当前安装应用'}”管理其他应用，完成后告诉我。"
+        ),
+        "administrator_authorization_cancelled": "系统确认未完成。请按提示允许操作，或稍后重试。",
+        "wechat_process_access_failed": "暂时无法读取微信状态。请保持微信打开并已登录，然后重试。",
+        "wechat_database_not_found": "暂时找不到微信数据。请确认微信已登录，然后重试。",
+        "wechat_account_not_found": "未找到可用的微信账号。请重新选择账号后再继续。",
+        "initialization_required": "还需要先完成微信准备，暂时无法继续。",
+        "wechat_resign_failed": "微信准备未完成，请稍后重试。",
+        "wechat_resign_verification_failed": "微信准备未完成，请稍后重试。",
+        "version_guard_failed": "当前微信未通过兼容性检查，安装已暂停。",
+        "unexpected_management_error": "安装暂时没有完成，请稍后重试。",
+    }
+    if code == "version_not_allowed":
+        detected = details.get("detected_version")
+        version_text = f" {detected}" if detected else ""
+        return (
+            f"当前微信版本{version_text}暂不支持。"
+            "我可以帮你查找可用版本，下载或替换前会先征得确认。"
+        )
+    return messages.get(
+        code,
+        "安装暂时没有完成，请稍后重试；如仍失败，可查看技术诊断信息。",
+    )
+
+
 def default_layout(home: Path | None = None) -> InstallLayout:
     home = (home or Path.home()).expanduser().resolve()
     root = home / "Library" / "Application Support" / APP_DIR_NAME
@@ -1779,7 +1827,7 @@ def inspect(args: argparse.Namespace, reporter: Reporter) -> dict:
             "ready_for_initialize": False,
             "preflight_error": {
                 "error_code": exc.error_code,
-                "user_message": str(exc),
+                "user_message": _plain_user_message(exc),
                 "next_action": exc.next_action,
                 "details": exc.details,
             },
@@ -2088,7 +2136,7 @@ def enable_service(
         )
     host = str(manifest.get("host") or DEFAULT_HOST)
     port = int(manifest.get("port") or DEFAULT_PORT)
-    reporter.progress("service", "正在启动本地服务")
+    reporter.progress("service", "正在完成最后配置")
     _service_command(
         runtime,
         layout,
@@ -2414,7 +2462,7 @@ def main(argv: list[str] | None = None) -> int:
             "command": args.command,
             "error_code": exc.error_code,
             "error": str(exc),
-            "user_message": str(exc),
+            "user_message": _plain_user_message(exc),
         }
         if exc.next_action:
             payload["next_action"] = exc.next_action
@@ -2459,13 +2507,17 @@ def main(argv: list[str] | None = None) -> int:
         reporter.result(payload)
         return 1
     except Exception as exc:
+        unexpected = InstallerError(
+            f"{type(exc).__name__}: {exc}",
+            error_code="unexpected_management_error",
+        )
         reporter.result(
             {
                 "ok": False,
                 "command": args.command,
                 "error_code": "unexpected_management_error",
                 "error": f"{type(exc).__name__}: {exc}",
-                "user_message": "管理操作遇到未预期错误，请报告结构化错误信息。",
+                "user_message": _plain_user_message(unexpected),
             }
         )
         return 1
