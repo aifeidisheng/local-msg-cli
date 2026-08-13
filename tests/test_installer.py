@@ -1178,6 +1178,87 @@ class MacInitializeTests(unittest.TestCase):
             self.assertIn("Reject the candidate", network["integrity_mismatch_rule"])
             run.assert_not_called()
 
+    def _release_search_on_version_mismatch(self):
+        """Trigger the version guard and return its release_search payload."""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            runtime = base / "runtime"
+            runtime.mkdir()
+            layout = installer.default_layout(base / "home")
+            db_dir = base / "db_storage"
+            db_dir.mkdir()
+            version_result = Mock(
+                ok=False,
+                reasons=["当前微信版本不在允许区间: 4.2.0"],
+                details={
+                    "detected": {
+                        "short_version": "4.2.0",
+                        "build_version": "123",
+                        "app_path": "/Applications/WeChat.app",
+                    }
+                },
+            )
+
+            with patch(
+                "config.load_config",
+                return_value={
+                    "db_dir": str(db_dir),
+                    "version_guard": {
+                        "allowed_version_ranges": [
+                            {
+                                "platform": "darwin",
+                                "min_version": "4.1.5",
+                                "max_version": "4.1.8",
+                            }
+                        ]
+                    },
+                },
+            ), \
+                 patch("wechat_version_guard.check_version", return_value=version_result), \
+                 patch.object(installer.subprocess, "run") as run:
+                with self.assertRaises(installer.InstallerError) as raised:
+                    installer._preflight_macos_initialize(runtime, layout)
+
+            run.assert_not_called()
+            return raised.exception.details["release_search"]
+
+    def test_release_search_allows_bounded_resume_without_relaxing_source_limits(self):
+        search = self._release_search_on_version_mismatch()
+        network = search["network_policy"]
+        download = network["download"]
+
+        # A dropped connection must be resumable on the same verified URL.
+        self.assertTrue(download["resume_from_partial_file"])
+        self.assertTrue(download["resume_same_verified_url_only"])
+        self.assertGreater(download["max_resume_attempts"], 1)
+        self.assertGreater(download["resume_delay_seconds"], 0)
+
+        # A resume is not a source retry: candidate limits stay unchanged.
+        self.assertEqual(network["max_candidates"], 3)
+        self.assertEqual(network["max_attempts_per_candidate"], 1)
+        self.assertEqual(download["max_attempts"], 1)
+        self.assertEqual(download["max_attempts_basis"], "restarts_from_zero_bytes")
+        self.assertIn("not a source retry", download["resume_rule"].replace("\n", " "))
+
+        # A few hundred MB needs minutes, and a stalled link must self-abort.
+        self.assertGreaterEqual(download["max_time_seconds"], 600)
+        self.assertGreater(download["stall_detect_bytes_per_second"], 0)
+        self.assertGreater(download["stall_detect_window_seconds"], 0)
+
+        # Integrity verification must never be traded away for convenience.
+        self.assertTrue(download["no_unbounded_terminal_command"])
+        self.assertIn("SHA-256", download["resume_rule"])
+
+    def test_release_search_requires_observable_download_progress(self):
+        download = self._release_search_on_version_mismatch()["network_policy"]["download"]
+        progress = download["progress_reporting"]
+        self.assertTrue(progress["required_for_large_artifact"])
+        self.assertTrue(progress["suppress_raw_progress_meter"])
+        self.assertGreater(progress["report_interval_seconds"], 0)
+        for field in ("percent", "transferred_bytes", "total_bytes"):
+            self.assertIn(field, progress["report_fields"])
+        self.assertTrue(download["reuse_verified_local_file"])
+
     def test_release_catalog_accepts_multiple_verified_hashes_for_same_short_version(self):
         first = "a" * 64
         second = "b" * 64

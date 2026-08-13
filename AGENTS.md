@@ -129,6 +129,25 @@ conversation to a short status line at each real interaction boundary:
 - System authorization: `接下来会出现一次系统确认，请按提示完成。`
 - Success: `安装完成，本地消息服务已经可以使用。`
 
+#### Long download progress
+
+A several-hundred-MB download takes minutes. Silence during that window is
+indistinguishable from a hang, so a multi-minute transfer must show observable
+progress. Report a compact status roughly every
+`download.progress_reporting.report_interval_seconds`, using plain units and no
+internal identifiers:
+
+- In progress: `正在下载安装包 42%（195MB / 461MB，4.4MB/s，预计还需 1 分钟）`
+- After an interruption: `网络中断，已从断点继续，无需重新开始。`
+- Verifying: `下载完成，正在校验安装包完整性。`
+- Reused cache: `已找到之前下载并校验通过的安装包，跳过下载。`
+
+Report percent, transferred size, total size, speed and ETA only. Do not stream
+the raw `curl` meter, and do not show the URL, digest, byte offsets, or retry
+counters unless the user asks or an error requires them. When emitting these
+through the installer's own progress channel, pass the numbers via the
+`progress` reporter's optional fields instead of formatting them into `step`.
+
 Do not narrate routine implementation details. In particular, do not expose or
 explain Git clones, commits, branches, Python/venv/pip/uv, package counts,
 compilers, scanners, hashes, bundle IDs, ad-hoc signing, LaunchAgents, PIDs,
@@ -303,9 +322,32 @@ For public historical WeChat release searches:
 - Never run an unbounded `curl`, `wget`, or other download command. Use the
   `network_policy` timeouts and one attempt per candidate; after a timeout,
   stop the operation and try the next source.
+- Distinguish a **source retry** from a **resume on the same verified URL**.
+  Starting over on a different candidate is a source retry and stays bounded by
+  `max_candidates` and `max_attempts_per_candidate`. Continuing an interrupted
+  transfer on the URL you already verified is a resume: it is bounded by
+  `download.max_resume_attempts`, does not consume a candidate, and never
+  relaxes digest verification. Do not abandon a healthy official source and
+  re-download 400+ MB from zero just because the connection dropped once.
 - Do not retry the same GitHub URL repeatedly or wait on a stalled transfer.
   A Gitee page, a user-provided local file, or another candidate is a fallback,
   not proof that the files are equivalent.
+- Write the download command so it survives a transient reset without a second
+  human turn. Use `download.resume_from_partial_file`,
+  `stall_detect_bytes_per_second` and `stall_detect_window_seconds` from the
+  returned `network_policy`, and keep the raw transfer meter out of the
+  conversation:
+
+  ```bash
+  curl -fL -C - --retry 10 --retry-all-errors --retry-delay 2 \
+       --connect-timeout 10 --max-time 900 \
+       --speed-limit 51200 --speed-time 30 \
+       -o <target-file> '<verified-url>'
+  ```
+
+  Never emit the default progress bar into the transcript; it produces hundreds
+  of noise lines. Either use `-s` with `-w` to capture only the fields you need,
+  or write the meter to a file you poll.
 - Do not tell the user that a candidate is official or safe based only on its
   domain, repository name, stars, Release label, or download count.
 - To avoid wasting a large download, inspect the source page and release

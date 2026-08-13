@@ -93,14 +93,23 @@ class Reporter:
     def __init__(self, json_mode: bool) -> None:
         self.json_mode = json_mode
 
-    def progress(self, step: str, message: str) -> None:
+    def progress(self, step: str, message: str, extra: dict | None = None) -> None:
+        """Report a step, optionally carrying transfer progress fields.
+
+        ``extra`` is for long-running work such as a several-hundred-MB download,
+        where a silent stretch is indistinguishable from a hang. Reserved keys are
+        ``percent``, ``transferred_bytes``, ``total_bytes``,
+        ``speed_bytes_per_second`` and ``eta_seconds``; ``event``, ``step`` and
+        ``message`` cannot be overridden. Omitting ``extra`` keeps the previous
+        output byte for byte.
+        """
         if self.json_mode:
+            payload = {"event": "progress", "step": step, "message": message}
+            for key, value in (extra or {}).items():
+                if key not in {"event", "step", "message"} and value is not None:
+                    payload[key] = value
             print(
-                json.dumps(
-                    {"event": "progress", "step": step, "message": message},
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ),
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
                 file=sys.stderr,
                 flush=True,
             )
@@ -1738,10 +1747,50 @@ def _release_search_guidance(cfg: dict, detected: dict) -> dict:
                 "requires_explicit_user_confirmation": True,
                 "prefer_browser_download": True,
                 "connect_timeout_seconds": 10,
-                "max_time_seconds": 120,
+                "max_time_seconds": 900,
+                "max_time_basis": (
+                    "A verified installer is a few hundred MB. Bound the transfer in minutes, "
+                    "not seconds, so a healthy link is never cut off mid-download."
+                ),
                 "max_attempts": 1,
+                "max_attempts_basis": "restarts_from_zero_bytes",
+                "resume_from_partial_file": True,
+                "max_resume_attempts": 10,
+                "resume_delay_seconds": 2,
+                "resume_same_verified_url_only": True,
+                "resume_rule": (
+                    "Resuming a partial transfer on the same already-verified URL is not a "
+                    "source retry. It does not consume max_candidates or "
+                    "max_attempts_per_candidate, and it never relaxes digest verification: "
+                    "the assembled file must still match a catalog SHA-256 and size."
+                ),
+                "stall_detect_bytes_per_second": 51200,
+                "stall_detect_window_seconds": 30,
+                "stall_rule": (
+                    "Abort and resume a connection that stays below the stall threshold for "
+                    "the stall window instead of waiting for the overall timeout."
+                ),
+                "reuse_verified_local_file": True,
                 "no_unbounded_terminal_command": True,
                 "do_not_git_clone_candidate_repository": True,
+                "progress_reporting": {
+                    "required_for_large_artifact": True,
+                    "suppress_raw_progress_meter": True,
+                    "report_interval_seconds": 5,
+                    "report_fields": [
+                        "percent",
+                        "transferred_bytes",
+                        "total_bytes",
+                        "speed_bytes_per_second",
+                        "eta_seconds",
+                    ],
+                    "reporting_rule": (
+                        "A multi-minute download must show observable progress so the user can "
+                        "tell it apart from a hang. Emit a periodic compact status instead of "
+                        "streaming the raw transfer meter into the conversation."
+                    ),
+                    "on_resume": "state_that_the_transfer_continues_from_the_existing_bytes",
+                },
             },
             "on_timeout": "stop_candidate_and_try_next_source",
             "mirror_rule": (
