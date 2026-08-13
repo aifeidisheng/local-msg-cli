@@ -26,17 +26,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
+from install_protocol import (
+    MCP_CONNECTOR_DISPLAY_NAME,
+    MCP_CONNECTOR_NAME,
+    MCP_CONNECTOR_TRANSPORT,
+)
 from runtime_guard import INSTALLED_RUNTIME_MARKER
 
 
 APP_DIR_NAME = "WeChatDecryptLight"
-MANIFEST_SCHEMA_VERSION = 2
+MANIFEST_SCHEMA_VERSION = 3
 ACTIVATION_SCHEMA_VERSION = 1
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 REQUIRED_SOURCE_FILES = {
     "config.py",
     "installer.py",
+    "install_protocol.py",
     "main.py",
     "mcp_server.py",
     "requirements.txt",
@@ -126,7 +132,7 @@ def _plain_user_message(error: InstallerError) -> str:
         ),
         "wechat_must_quit_for_resign": "请先完全退出微信，完成后告诉我。",
         "wechat_resign_confirmation_required": (
-            "为了让本地消息助手正常工作，需要完成一次微信兼容设置。"
+            "为了让本地消息服务正常工作，需要完成一次微信兼容设置。"
             "这只影响本机，确认后即可继续。"
         ),
         "app_management_permission_required": (
@@ -151,7 +157,7 @@ def _plain_user_message(error: InstallerError) -> str:
         version_text = f" {detected}" if detected else ""
         return (
             f"当前微信版本{version_text}暂不支持。"
-            "继续使用本地消息助手需要换成兼容版本，这会替换当前微信应用并需要重新登录。"
+            "继续使用本地消息服务需要换成兼容版本，这会替换当前微信应用并需要重新登录。"
         )
     return messages.get(
         code,
@@ -174,6 +180,16 @@ def default_layout(home: Path | None = None) -> InstallLayout:
         bin_dir=root / "bin",
         cli=root / "bin" / "wechat-decrypt-light",
     )
+
+
+def _connector_protocol(endpoint: str | None) -> dict[str, str | None]:
+    """Return the canonical Desktop registration contract."""
+    return {
+        "name": MCP_CONNECTOR_NAME,
+        "display_name": MCP_CONNECTOR_DISPLAY_NAME,
+        "transport": MCP_CONNECTOR_TRANSPORT,
+        "endpoint": endpoint,
+    }
 
 
 def _run(
@@ -1515,6 +1531,7 @@ def install(args: argparse.Namespace, reporter: Reporter) -> dict:
         "runtime_dir": str(final_runtime),
         "data_dir": str(layout.data_dir),
         "endpoint": f"http://{args.host}:{args.port}/mcp",
+        "connector": _connector_protocol(f"http://{args.host}:{args.port}/mcp"),
         "host": args.host,
         "port": args.port,
         "installed_at": datetime.now(timezone.utc).isoformat(),
@@ -1569,6 +1586,7 @@ def install(args: argparse.Namespace, reporter: Reporter) -> dict:
         "installation_reused": installation_mode == "reused",
         "runtime_installed": True,
         "service_enabled": bool(activation.get("service_enabled", False)),
+        "connector": _connector_protocol(manifest.get("endpoint")),
         "installation": manifest,
         "migrated": migrated,
         "next_step": "inspect",
@@ -1844,6 +1862,7 @@ def inspect(args: argparse.Namespace, reporter: Reporter) -> dict:
         "installation_reused": True,
         "installation_id": manifest.get("installation_id"),
         "endpoint": manifest.get("endpoint"),
+        "connector": _connector_protocol(manifest.get("endpoint")),
         "runtime_installed": True,
         "initialized": initialized,
         "service_enabled": service_enabled,
@@ -1904,6 +1923,7 @@ def status(args: argparse.Namespace, reporter: Reporter) -> dict:
         "commit": manifest.get("commit") or manifest.get("version"),
         "branch": manifest.get("branch") or manifest.get("release_branch") or "main",
         "endpoint": manifest.get("endpoint"),
+        "connector": _connector_protocol(manifest.get("endpoint")),
         "runtime_dir": str(runtime),
         "data_dir": str(layout.data_dir),
         "service": service_payload,
@@ -2109,6 +2129,7 @@ def upgrade(args: argparse.Namespace, reporter: Reporter) -> dict:
             "command": "upgrade",
             "upgraded": False,
             "commit": installed_commit,
+            "connector": _connector_protocol(manifest.get("endpoint")),
             "message": "当前已是最新版本",
         }
 
@@ -2163,6 +2184,7 @@ def upgrade(args: argparse.Namespace, reporter: Reporter) -> dict:
         "to_commit": installation.get("commit"),
         "runtime_installed": bool(install_payload.get("runtime_installed")),
         "service_enabled": bool(install_payload.get("service_enabled")),
+        "connector": _connector_protocol(installation.get("endpoint")),
         "installation": installation,
         "next_step": install_payload.get("next_step") or "inspect",
     }
@@ -2217,6 +2239,7 @@ def enable_service(
         "initialized": True,
         "service_enabled": True,
         "query_ready": query_ready,
+        "connector": _connector_protocol(manifest.get("endpoint")),
         "service": service_payload,
         "next_step": "register_with_mcporter" if query_ready else "retry_enable_service",
     }
@@ -2261,6 +2284,7 @@ def initialize(args: argparse.Namespace, reporter: Reporter) -> dict:
         "command": "initialize",
         "installation_id": manifest.get("installation_id"),
         "endpoint": manifest.get("endpoint"),
+        "connector": _connector_protocol(manifest.get("endpoint")),
         "initialized": True,
         "service_enabled": False,
         "query_ready": False,

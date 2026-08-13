@@ -12,6 +12,9 @@ readonly DEFAULT_REPOSITORY="https://gitee.com/feipig_up_tree/local-msg-cli.git"
 readonly RELEASE_BRANCH="main"
 readonly MANAGEMENT_CLI="$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-light"
 readonly INSTALL_MANIFEST="$HOME/Library/Application Support/WeChatDecryptLight/install.json"
+readonly CONNECTOR_NAME="local-msg-cli"
+readonly CONNECTOR_DISPLAY_NAME="本地消息服务"
+readonly CONNECTOR_TRANSPORT="streamablehttp"
 
 repositories=("${WECHAT_DECRYPT_REPOSITORY:-$DEFAULT_REPOSITORY}")
 python_bin="${WECHAT_DECRYPT_PYTHON:-}"
@@ -250,6 +253,13 @@ import json
 import sys
 
 inspect_data = json.loads(sys.argv[1])
+endpoint = inspect_data.get("endpoint") or "http://127.0.0.1:8765/mcp"
+connector = {
+    "name": sys.argv[2],
+    "display_name": sys.argv[3],
+    "transport": sys.argv[4],
+    "endpoint": endpoint,
+}
 combined = {
     "ok": inspect_data.get("ok", False),
     "command": "install+inspect",
@@ -259,7 +269,8 @@ combined = {
     "installation_mode": "reused",
     "installation_reused": True,
     "query_ready": inspect_data.get("query_ready", False),
-    "endpoint": inspect_data.get("endpoint"),
+    "endpoint": endpoint,
+    "connector": connector,
     "inspect": inspect_data,
 }
 if not inspect_data.get("ok", False):
@@ -272,7 +283,7 @@ combined["next_step"] = inspect_data.get(
     "next_step", inspect_data.get("next_action", "review_inspect_error")
 )
 print(json.dumps(combined, ensure_ascii=False, separators=(",", ":")))
-' "$inspect_output"
+' "$inspect_output" "$CONNECTOR_NAME" "$CONNECTOR_DISPLAY_NAME" "$CONNECTOR_TRANSPORT"
 }
 
 install_source=""
@@ -410,6 +421,15 @@ import json, sys
 
 install_data = json.loads(sys.argv[1])
 inspect_data = json.loads(sys.argv[2])
+endpoint = (inspect_data.get('endpoint')
+            or install_data.get('installation', {}).get('endpoint')
+            or 'http://127.0.0.1:8765/mcp')
+connector = {
+    'name': sys.argv[3],
+    'display_name': sys.argv[4],
+    'transport': sys.argv[5],
+    'endpoint': endpoint,
+}
 
 combined = {
     'ok': install_data.get('ok', False) and inspect_data.get('ok', False),
@@ -423,7 +443,8 @@ combined = {
     'query_ready': inspect_data.get('query_ready', False),
     'installation_mode': install_data.get('installation_mode', 'fresh'),
     'installation_reused': install_data.get('installation_reused', False),
-    'endpoint': inspect_data.get('endpoint') or install_data.get('installation', {}).get('endpoint'),
+    'endpoint': endpoint,
+    'connector': connector,
 }
 if not inspect_data.get('ok', False):
     for key in ('error_code', 'error', 'user_message', 'requires_user_action',
@@ -436,7 +457,7 @@ combined['next_step'] = inspect_data.get(
 )
 
 print(json.dumps(combined, ensure_ascii=False))
-" "$install_output" "$inspect_output"
+" "$install_output" "$inspect_output" "$CONNECTOR_NAME" "$CONNECTOR_DISPLAY_NAME" "$CONNECTOR_TRANSPORT"
 result_emitted=true
 
 # Exit with the worst of the two exit codes.

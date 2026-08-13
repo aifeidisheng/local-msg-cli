@@ -10,9 +10,28 @@ from subprocess import CompletedProcess
 from unittest.mock import Mock, mock_open, patch
 
 import installer
+from install_protocol import (
+    MCP_CONNECTOR_DISPLAY_NAME,
+    MCP_CONNECTOR_NAME,
+    MCP_CONNECTOR_TRANSPORT,
+)
 
 
 class RepositoryVerificationTests(unittest.TestCase):
+    def test_connector_registration_contract_is_stable(self):
+        self.assertEqual(MCP_CONNECTOR_NAME, "local-msg-cli")
+        self.assertEqual(MCP_CONNECTOR_DISPLAY_NAME, "本地消息服务")
+        self.assertEqual(MCP_CONNECTOR_TRANSPORT, "streamablehttp")
+        self.assertEqual(
+            installer._connector_protocol("http://127.0.0.1:8765/mcp"),
+            {
+                "name": "local-msg-cli",
+                "display_name": "本地消息服务",
+                "transport": "streamablehttp",
+                "endpoint": "http://127.0.0.1:8765/mcp",
+            },
+        )
+
     def test_repository_identity_accepts_https_and_ssh_for_same_repository(self):
         self.assertEqual(
             installer._repository_identity("https://github.com/example/wechat-decrypt.git"),
@@ -339,6 +358,17 @@ class InstallerFlowTests(unittest.TestCase):
                 (Path(manifest["runtime_dir"]) / installer.INSTALLED_RUNTIME_MARKER).is_file()
             )
             self.assertEqual(manifest["data_dir"], str(layout.data_dir))
+            self.assertEqual(manifest["schema_version"], 3)
+            self.assertEqual(
+                manifest["connector"],
+                {
+                    "name": "local-msg-cli",
+                    "display_name": "本地消息服务",
+                    "transport": "streamablehttp",
+                    "endpoint": "http://127.0.0.1:8765/mcp",
+                },
+            )
+            self.assertEqual(payload["connector"], manifest["connector"])
             self.assertTrue(os.access(layout.cli, os.X_OK))
             self.assertIn("runtime/current/installer.py", layout.cli.read_text(encoding="utf-8"))
             service_command.assert_not_called()
@@ -1487,6 +1517,7 @@ class MacInitializeTests(unittest.TestCase):
                 error_context="LaunchAgent 启用失败；初始化结果已保留，可只重试 enable-service",
             )
             self.assertTrue(payload["query_ready"])
+            self.assertEqual(payload["connector"]["name"], "local-msg-cli")
             self.assertEqual(payload["next_step"], "register_with_mcporter")
 
     def test_enable_service_failure_preserves_initialized_stage(self):

@@ -156,7 +156,26 @@ class InstallEntrypointTests(unittest.TestCase):
         self.assertTrue(payload["installation_reused"])
         self.assertTrue(payload["initialize_complete"])
         self.assertTrue(payload["query_ready"])
+        self.assertEqual(
+            payload["connector"],
+            {
+                "name": "local-msg-cli",
+                "display_name": "本地消息服务",
+                "transport": "streamablehttp",
+                "endpoint": "http://127.0.0.1:8765/mcp",
+            },
+        )
         self.assertNotIn("正在下载安装文件", result.stderr)
+
+    def test_install_protocol_requires_one_canonical_connector_name(self):
+        agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        script = (ROOT / "install.sh").read_text(encoding="utf-8")
+
+        self.assertIn('readonly CONNECTOR_NAME="local-msg-cli"', script)
+        self.assertIn('`connector.name`: `local-msg-cli`', agents)
+        self.assertIn("重复安装也应复用 `local-msg-cli`", readme)
+        self.assertIn("Never invent, derive, or substitute another registration name", agents)
 
     def test_development_setup_never_regenerates_version_policy(self):
         script = (ROOT / "setup.sh").read_text(encoding="utf-8")

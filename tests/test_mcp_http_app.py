@@ -2,9 +2,14 @@ import unittest
 from unittest.mock import patch
 
 import mcp_server
+from install_protocol import MCP_CONNECTOR_NAME
 
 
 class McpHttpAppTests(unittest.TestCase):
+    def test_mcp_server_uses_canonical_connector_name(self):
+        self.assertEqual(MCP_CONNECTOR_NAME, "local-msg-cli")
+        self.assertEqual(mcp_server.mcp.name, MCP_CONNECTOR_NAME)
+
     def test_build_mcp_http_app_prefers_http_app(self):
         class FakeMcp:
             def http_app(self):

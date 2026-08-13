@@ -127,7 +127,7 @@ conversation to a short status line at each real interaction boundary:
 - WeChat must quit: `下一步需要准备微信。请先完全退出微信。`
 - Sign-in needed: `微信已准备好。请打开并登录，完成后告诉我。`
 - System authorization: `接下来会出现一次系统确认，请按提示完成。`
-- Success: `安装完成，本地消息助手已经可以使用。`
+- Success: `安装完成，本地消息服务已经可以使用。`
 
 Do not narrate routine implementation details. In particular, do not expose or
 explain Git clones, commits, branches, Python/venv/pip/uv, package counts,
@@ -151,7 +151,7 @@ a permission or security consequence only at the boundary where the user's
 consent or action is needed.
 
 At the one boundary that modifies WeChat, be transparent without using signing
-terminology: say `为了让本地消息助手正常工作，需要完成一次微信兼容设置。`
+terminology: say `为了让本地消息服务正常工作，需要完成一次微信兼容设置。`
 If the user asks about privacy, explain that message data is handled locally and
 is not uploaded by this local data source. Do not turn that explanation into a
 routine technical preamble.
@@ -376,8 +376,20 @@ retry only `enable-service`:
 
 Only when `enable-service` returns `query_ready: true`:
 
-Register `http://127.0.0.1:8765/mcp` as a `streamablehttp` MCP in the
-Desktop connector (via mcporter install + enable).
+Treat the returned `connector` object as the canonical Desktop registration
+contract. Register and enable it via mcporter using exactly these fields:
+
+- `connector.name`: `local-msg-cli` (stable internal name)
+- `connector.display_name`: `本地消息服务` (user-facing label)
+- `connector.transport`: `streamablehttp`
+- `connector.endpoint`: `http://127.0.0.1:8765/mcp`
+
+Never invent, derive, or substitute another registration name such as
+`wechat-local-msg`, `local-msg`, or `local-message-source`. On a repeated
+installation, look up and reuse `local-msg-cli`; do not create a second connector
+under a different name. Older aliases may be migrated to `local-msg-cli` when the
+Desktop registration layer supports rename/removal, but the installer protocol
+must always emit only the canonical name.
 
 ### Step 4: Validate Without Reading User Data
 

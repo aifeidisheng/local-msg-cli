@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional, List, Union
 import xml.etree.ElementTree as ET
 from Crypto.Cipher import AES
+from install_protocol import MCP_CONNECTOR_NAME
 try:
     from fastmcp import FastMCP
 except ImportError:  # pragma: no cover - compatibility for older local test envs
@@ -2065,7 +2066,7 @@ def _search_all_messages(keyword, start_ts, end_ts, start_time, end_time, limit,
 # ============ MCP Server ============
 
 mcp = FastMCP(
-    "local-message-source",
+    MCP_CONNECTOR_NAME,
     instructions=(
         "安装验收优先使用 data_source_status，不要为连通性测试读取联系人或消息。"
         "查询本机消息时优先使用 list_contacts 获取聊天 ID，"

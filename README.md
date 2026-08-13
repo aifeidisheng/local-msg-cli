@@ -100,11 +100,11 @@
 
 `./install.sh --initialize` 兼容旧 Agent 的入口名称，但不再把提权初始化和服务安装串成一次长事务。它只部署运行时并执行只读 `inspect`，不会弹出管理员授权窗口；Agent 根据 JSON 的 `next_step` 继续。用户无需在终端输入命令，交互仅限于确认敏感操作、退出或登录 WeChat，以及批准 macOS 系统弹窗。
 
-该入口对同一发布仓库的重复调用是幂等的：检测到有效的现有安装时，先只读检查发布更新；已是当前版本时不再下载或重新部署运行环境，而是直接检查现有状态，并返回 `installation_mode: "reused"` 与 `installation_reused: true`。存在新版本时，走原有的验证安装路径完成更新后再检查。已经可用时应直接报告无需重复安装；尚未完成时只从返回的 `next_step` 继续。如果只是微信升级后超出兼容范围，应将其描述为“恢复微信兼容性”，而不是重新安装本地消息助手。现有安装清单损坏、管理入口无效或用户指定了不同发布源时，才回到正常安装流程。
+该入口对同一发布仓库的重复调用是幂等的：检测到有效的现有安装时，先只读检查发布更新；已是当前版本时不再下载或重新部署运行环境，而是直接检查现有状态，并返回 `installation_mode: "reused"` 与 `installation_reused: true`。存在新版本时，走原有的验证安装路径完成更新后再检查。已经可用时应直接报告无需重复安装；尚未完成时只从返回的 `next_step` 继续。如果只是微信升级后超出兼容范围，应将其描述为“恢复微信兼容性”，而不是重新安装本地消息服务。现有安装清单损坏、管理入口无效或用户指定了不同发布源时，才回到正常安装流程。
 
 安装器的 JSON、路径和内部组件名称用于 Agent 判断下一步，不是面向普通用户的安装说明。正常安装时，Agent 直接以“正在安装”开始，不先介绍项目、能力、技术架构或完整安装计划；过程中只需用“请退出微信”“请打开并登录微信”“请按系统提示确认”“安装完成”等简短状态与用户沟通。除非用户主动询问技术细节或排查特定错误，不展示完整 JSON、内部命令、进程号、端口、运行目录、依赖工具、提交信息、服务实现、账号标识、数据库状态或工具清单。内部阶段成功后应直接继续，或只告诉用户下一步要做什么，不逐步复述执行结果。
 
-需要修改微信的交互边界仍须透明说明，但使用普通用户能理解的表达：`为了让本地消息助手正常工作，需要完成一次微信兼容设置。` 用户询问隐私时，应说明本地消息数据源在本机处理数据，不上传聊天内容；正常安装过程不把这段说明扩展为技术介绍。
+需要修改微信的交互边界仍须透明说明，但使用普通用户能理解的表达：`为了让本地消息服务正常工作，需要完成一次微信兼容设置。` 用户询问隐私时，应说明本地消息服务在本机处理数据，不上传聊天内容；正常安装过程不把这段说明扩展为技术介绍。
 
 正式安装按以下可恢复阶段推进：
 
@@ -158,7 +158,7 @@ install -> inspect -> prepare-wechat（仅需要时） -> initialize
 
 完整性失败使用稳定错误码 `release_artifact_integrity_mismatch`，用户层只显示“下载文件未通过完整性检查，已停止操作，当前微信没有被修改。”摘要、文件大小、签名和来源页面保留在诊断字段中。
 
-只有 `enable-service` 返回 `query_ready: true`，才可通过 mcporter install + enable 把 `http://127.0.0.1:8765/mcp` 以 `streamablehttp` 注册到 Desktop。注册后调用不返回用户数据的 MCP 工具 `data_source_status`，且只有它返回 `status: "ready"` 才报告完成。不要用 `list_contacts`、`query_messages` 等用户数据工具验证安装。`waiting_for_wechat` 表示常驻机制正常，但 MCP 尚不可调用，不能提前注册或报告接入完成。
+只有 `enable-service` 返回 `query_ready: true`，才可通过 mcporter install + enable 注册到 Desktop。安装协议会在 `connector` 对象中统一返回：内部名称 `local-msg-cli`、用户可见名称“本地消息服务”、类型 `streamablehttp` 和地址 `http://127.0.0.1:8765/mcp`。桌面注册必须原样使用这些字段；不得临时改成 `wechat-local-msg`、`local-msg` 或 `local-message-source`，重复安装也应复用 `local-msg-cli`，避免产生多个同源连接器。注册后调用不返回用户数据的 MCP 工具 `data_source_status`，且只有它返回 `status: "ready"` 才报告完成。不要用 `list_contacts`、`query_messages` 等用户数据工具验证安装。`waiting_for_wechat` 表示常驻机制正常，但 MCP 尚不可调用，不能提前注册或报告接入完成。
 
 `data_source_status` 返回原生结构化对象（不是嵌套 JSON 字符串），只包含 `status`、数据库可访问性和消息分片数量等非敏感字段。
 
@@ -288,6 +288,8 @@ MCPCTL="$HOME/Library/Application Support/WeChatDecryptLight/bin/wechat-decrypt-
 
 | 配置项 | 值 |
 |---|---|
+| 内部名称 | `local-msg-cli` |
+| 显示名称 | `本地消息服务` |
 | 类型 | `streamablehttp` |
 | 地址 | `http://127.0.0.1:8765/mcp` |
 | Runtime | Desktop |
