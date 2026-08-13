@@ -43,6 +43,7 @@ REQUIRED_SOURCE_FILES = {
     "service.py",
     "runtime_guard.py",
     "version-guard.policy.json",
+    "wechat-release-catalog.json",
 }
 MIGRATED_FILES = ("config.json", "all_keys.json")
 MIGRATED_DIRS = ("decrypted", "decoded_images", "wechat_files", "mcp_cache")
@@ -1552,7 +1553,7 @@ def _safe_service_status(layout: InstallLayout, runtime: Path) -> dict:
 
 
 def _release_search_guidance(cfg: dict, detected: dict) -> dict:
-    """Describe a bounded Agent search without endorsing a download source."""
+    """Describe built-in and bounded external release discovery guidance."""
     guard = cfg.get("version_guard") or {}
     supported_versions: list[str] = []
     for item in guard.get("allowed_version_ranges") or []:
@@ -1582,11 +1583,14 @@ def _release_search_guidance(cfg: dict, detected: dict) -> dict:
     supported_versions = list(dict.fromkeys(supported_versions))
     target = ", ".join(supported_versions) or "the project-verified macOS version"
     detected_version = str(detected.get("short_version") or "unknown")
+    built_in_releases = _built_in_release_candidates(supported_versions)
     return {
         "available": True,
         "requires_user_confirmation": True,
         "detected_version": detected_version,
         "supported_versions": supported_versions,
+        "built_in_releases": built_in_releases,
+        "built_in_release_priority": "first",
         "search_queries": [
             f'WeChat macOS {target} DMG SHA-256',
             f'site:dldir1.qq.com WeChat macOS {target} DMG',
@@ -1628,11 +1632,13 @@ def _release_search_guidance(cfg: dict, detected: dict) -> dict:
             "original_publisher_download": {
                 "preferred_hosts": ["dldir1.qq.com", "dldir1v6.qq.com"],
                 "prefer_when_release_metadata_matches": True,
+                "built_in_releases_are_always_first": True,
                 "required_metadata": ["version", "file_size", "published_digest"],
                 "fallback_only_when_unavailable_or_mismatched": True,
                 "never_construct_or_guess_a_version_url": True,
             },
             "fallback_order": [
+                "project_builtin_release",
                 "verified_original_publisher_download",
                 "maintainer_declared_gitee_release",
                 "maintainer_declared_github_release",
@@ -1654,6 +1660,64 @@ def _release_search_guidance(cfg: dict, detected: dict) -> dict:
             ),
         },
     }
+
+
+def _built_in_release_candidates(supported_versions: list[str]) -> list[dict]:
+    """Return project-maintained release links matching supported versions."""
+    catalog_path = Path(__file__).with_name("wechat-release-catalog.json")
+    try:
+        with catalog_path.open("r", encoding="utf-8") as catalog_file:
+            releases = json.load(catalog_file).get("releases") or []
+    except (OSError, ValueError, TypeError):
+        return []
+
+    supported = {str(version) for version in supported_versions}
+    current_platform = "darwin" if sys.platform == "darwin" else "windows" if sys.platform == "win32" else sys.platform
+    candidates: list[dict] = []
+    for release in releases:
+        if not isinstance(release, dict):
+            continue
+        if str(release.get("platform") or "").lower() not in {current_platform, "macos"}:
+            continue
+        version = str(release.get("version") or "")
+        short_version = ".".join(version.split(".")[:3])
+        if supported and not any(_release_version_supported(short_version, item) for item in supported):
+            continue
+        if not release.get("url") or not release.get("sha256"):
+            continue
+        candidate = {
+            "platform": current_platform,
+            "version": version,
+            "short_version": short_version,
+            "url": str(release["url"]),
+            "sha256": str(release["sha256"]).lower(),
+            "source": "project_builtin",
+            "requires_source_page": False,
+        }
+        if release.get("size") is not None:
+            candidate["size"] = int(release["size"])
+        candidates.append(candidate)
+    return candidates
+
+
+def _release_version_supported(version: str, supported: str) -> bool:
+    """Match a catalog version against the display form of a policy range."""
+    if supported == version:
+        return True
+    try:
+        current = tuple(int(part) for part in version.split("."))
+        if supported.startswith(">="):
+            return current >= tuple(int(part) for part in supported[2:].split("."))
+        if supported.startswith("<="):
+            return current <= tuple(int(part) for part in supported[2:].split("."))
+        if "-" in supported:
+            lower, upper = supported.split("-", 1)
+            return tuple(int(part) for part in lower.split(".")) <= current <= tuple(
+                int(part) for part in upper.split(".")
+            )
+    except ValueError:
+        return False
+    return False
 
 
 def inspect(args: argparse.Namespace, reporter: Reporter) -> dict:

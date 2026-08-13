@@ -1068,6 +1068,10 @@ class MacInitializeTests(unittest.TestCase):
             search = raised.exception.details["release_search"]
             self.assertTrue(search["available"])
             self.assertTrue(search["requires_user_confirmation"])
+            self.assertEqual(search["built_in_release_priority"], "first")
+            self.assertEqual(search["built_in_releases"][0]["source"], "project_builtin")
+            self.assertEqual(search["built_in_releases"][0]["short_version"], "4.1.8")
+            self.assertFalse(search["built_in_releases"][0]["requires_source_page"])
             self.assertIn("4.1.5-4.1.8", search["supported_versions"])
             self.assertIn("dldir1.qq.com", search["candidate_hosts"])
             self.assertIn("dldir1v6.qq.com", search["candidate_hosts"])
@@ -1090,7 +1094,7 @@ class MacInitializeTests(unittest.TestCase):
             self.assertTrue(publisher["never_construct_or_guess_a_version_url"])
             self.assertEqual(
                 network["fallback_order"][0],
-                "verified_original_publisher_download",
+                "project_builtin_release",
             )
             self.assertTrue(network["download"]["prefer_browser_download"])
             self.assertTrue(network["download"]["no_unbounded_terminal_command"])

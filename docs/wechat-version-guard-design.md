@@ -82,14 +82,17 @@
 ## 版本不匹配时的搜索引导
 
 当检测到的微信版本不在允许范围内，管理 CLI 返回 `version_not_allowed`，并在
-`details.release_search` 中提供面向 Agent 的搜索提示。该提示只描述搜索目标和
-校验边界，不包含项目维护者托管的微信安装包，也不把任何搜索结果标记为官方来源。
+`details.release_search` 中提供面向 Agent 的候选和搜索提示。项目维护的
+`wechat-release-catalog.json` 会先返回匹配平台和受支持版本的 `built_in_releases`；
+这些内置链接优先级最高。内置条目只需记录平台、完整版本、下载 URL、SHA-256 和可选
+文件大小；下载后仍须校验摘要、大小、Bundle ID 和实际版本。
 
 Agent 可以在用户明确同意后搜索官方页面、明确声明有分发权的发布仓库，以及
 Gitee、GitHub 等公开托管平台。Gitee 或 GitHub 只是候选发现渠道；稳定域名、项目
 仓库、Release 页面或下载量都不能证明微信安装包获得授权，也不能证明文件安全。
 
-搜索网络本身可能不稳定，尤其是 GitHub Release 附件和 Git 直连。Agent 应优先使用
+只有没有可用内置候选时才进入公开来源搜索。搜索网络本身可能不稳定，尤其是 GitHub
+Release 附件和 Git 直连。外部候选仍必须先从来源页取得版本、文件大小和已公布摘要。Agent 应优先使用
 浏览器或网络搜索打开来源页面，再按 `details.release_search.network_policy` 处理候选：
 每个候选最多尝试一次，先以短超时读取来源页和附件元数据；超时就停止并切换下一个
 来源。不得执行无界限的 `curl`、`wget` 或 `git clone`，也不得对同一个地址反复重试。
