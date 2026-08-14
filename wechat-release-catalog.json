@@ -24,10 +24,17 @@
     {
       "platform": "windows",
       "version": "4.1.9.57",
-      "url": "https://dldir1v6.qq.com/weixin/Universal/Windows/WeChatWin_4.1.9.exe",
+      "url": "https://github.com/aifeidisheng/local-msg-cli/releases/download/v0.1.0/WeChatWin_4.1.9.exe",
       "sha256": "8f43225b7388742a9797d31960bf19d6b0902ea58bf1a85b6d8b95d0b71877ed",
       "sha256s": [
         "8f43225b7388742a9797d31960bf19d6b0902ea58bf1a85b6d8b95d0b71877ed"
+      ],
+      "size": 234965064,
+      "artifacts": [
+        {
+          "sha256": "8f43225b7388742a9797d31960bf19d6b0902ea58bf1a85b6d8b95d0b71877ed",
+          "size": 234965064
+        }
       ]
     }
   ]

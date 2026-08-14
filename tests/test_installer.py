@@ -1355,6 +1355,42 @@ class MacInitializeTests(unittest.TestCase):
                     all("sha256" in item and "size" in item for item in release["artifacts"])
                 )
 
+    def test_windows_release_catalog_uses_verified_github_attachment(self):
+        catalog = json.loads(
+            Path(installer.__file__).with_name("wechat-release-catalog.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        release = next(item for item in catalog["releases"] if item.get("platform") == "windows")
+
+        self.assertEqual(
+            release["url"],
+            "https://github.com/aifeidisheng/local-msg-cli/releases/download/v0.1.0/WeChatWin_4.1.9.exe",
+        )
+        self.assertEqual(release["version"], "4.1.9.57")
+        self.assertEqual(release["size"], 234965064)
+        self.assertEqual(
+            release["sha256"],
+            "8f43225b7388742a9797d31960bf19d6b0902ea58bf1a85b6d8b95d0b71877ed",
+        )
+        self.assertEqual(
+            release["artifacts"],
+            [{
+                "sha256": "8f43225b7388742a9797d31960bf19d6b0902ea58bf1a85b6d8b95d0b71877ed",
+                "size": 234965064,
+            }],
+        )
+
+        with patch.object(installer.sys, "platform", "win32"):
+            candidates = installer._built_in_release_candidates(["4.1.9"])
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["platform"], "windows")
+        self.assertEqual(candidates[0]["short_version"], "4.1.9")
+        self.assertEqual(candidates[0]["url"], release["url"])
+        self.assertEqual(candidates[0]["size"], 234965064)
+        self.assertEqual(candidates[0]["artifacts"], release["artifacts"])
+
     def test_version_mismatch_error_invites_search_without_treating_source_as_trusted(self):
         error = installer.InstallerError(
             "版本不匹配",
